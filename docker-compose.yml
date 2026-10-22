@@ -1,0 +1,28 @@
+services:
+  market:
+    build:
+      context: .
+      dockerfile: Dockerfile.nas
+    restart: unless-stopped
+    env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - opend
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8088}:8000"
+    volumes:
+      - ./data:/data
+      - ${OPEND_RSA_SOURCE}:/run/secrets/opend_rsa.pem:ro
+    mem_limit: 384m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/status', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  opend:
+    external: true
+    name: ${OPEND_NETWORK:-moomoo-opend_default}
