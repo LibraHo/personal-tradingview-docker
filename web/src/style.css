@@ -54,3 +54,9 @@ aside .side-title{padding-bottom:16px}aside .side-group{min-height:0;overflow-y:
 .scope-chips button.chosen{border-color:#4b85c6;background:#245486;color:#fff}
 .scope-chips button:hover{border-color:#79aaf0}
 @media(max-width:600px){.indicator-panel{width:100vw}}
+.custom-language{display:flex;gap:5px;margin:0 0 10px}
+.custom-language button{flex:1;border:1px solid #344964;background:#17263a;color:#8ea8c5;border-radius:5px;padding:7px 8px;font-size:11px}
+.custom-language button.chosen{background:#285d9b;border-color:#4b87d0;color:#fff}
+.custom-editor textarea{min-height:125px;line-height:1.5}
+.indicator-language{font-size:10px;color:#9bc7ff;background:#1d3655;border:1px solid #315a84;padding:4px 7px;border-radius:4px;margin-left:auto}
+.indicator-card .python-code{display:block;width:100%;min-height:135px;resize:vertical;background:#0e1a2b;color:#d9e8fa;border:1px solid #35506e;border-radius:5px;padding:9px;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;margin:0 0 10px}

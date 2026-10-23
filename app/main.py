@@ -6,6 +6,8 @@ import math
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
@@ -19,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .indicators import calculate
+from .python_indicator_worker import validate_code
 
 ET = ZoneInfo('America/New_York')
 CN_TZ = ZoneInfo('Asia/Shanghai')
@@ -38,6 +41,7 @@ listeners: dict[tuple[str, str, str], set[asyncio.Queue]] = {}
 last_fetch: dict[tuple[str, str, str], float] = {}
 fetched_days: dict[tuple[str, str, str], int] = {}
 fetch_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+python_slots = asyncio.Semaphore(1)
 loop = None
 
 
@@ -143,6 +147,36 @@ def frame_to_bars(frame, symbol):
                        'low': float(record['low']), 'close': float(record['close']),
                        'volume': float(record.get('volume') or 0), 'turnover': float(record.get('turnover') or 0)})
     return result
+
+
+def run_python_indicator(code, bars):
+    payload = {'code': code, 'bars': [{field: bar[field] for field in
+        ('time', 'open', 'high', 'low', 'close', 'volume', 'session', 'trade_date')} for bar in bars]}
+    worker = Path(__file__).with_name('python_indicator_worker.py')
+    def limit_resources():
+        import resource
+        memory = 128 * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
+        resource.setrlimit(resource.RLIMIT_CPU, (2, 2))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+    try:
+        result = subprocess.run(
+            [sys.executable, '-I', '-S', str(worker)], input=json.dumps(payload),
+            text=True, capture_output=True, timeout=3,
+            env={'PYTHONIOENCODING': 'utf-8'}, cwd='/',
+            preexec_fn=limit_resources if os.name == 'posix' else None,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError('Python 指标运行超时（3 秒）') from exc
+    if result.returncode != 0:
+        raise ValueError('Python 指标进程异常或达到资源限制')
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError('Python 指标未返回有效结果') from exc
+    if 'error' in data:
+        raise ValueError(data['error'])
+    return data
 
 
 class Bridge:
@@ -425,6 +459,40 @@ async def indicators(symbol: str, period: str, mode: str, name: str, params: str
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(400, str(exc))
     return {'time': [b['time'] for b in response['bars']], 'values': values, 'stale': response['stale']}
+
+
+class PythonIndicatorRequest(BaseModel):
+    symbol: str = ''
+    period: str = '5m'
+    mode: str = 'all'
+    code: str
+
+
+@app.post('/api/python-indicator/validate')
+def validate_python_indicator(request: PythonIndicatorRequest):
+    try:
+        validate_code(request.code)
+    except (SyntaxError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    return {'ok': True}
+
+
+@app.post('/api/python-indicator')
+async def python_indicator(request: PythonIndicatorRequest):
+    try:
+        key = validate(request.symbol, request.period, request.mode)
+        validate_code(request.code)
+    except (SyntaxError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    days = DAILY_HISTORY_DAYS if key[1] == '1d' else DEFAULT_DAYS
+    bars_data = await asyncio.to_thread(read_bars, key, days, 5000)
+    if not bars_data:
+        raise HTTPException(409, '请先加载该图表的 K 线')
+    try:
+        async with python_slots:
+            return await asyncio.to_thread(run_python_indicator, request.code, bars_data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 class Setting(BaseModel):

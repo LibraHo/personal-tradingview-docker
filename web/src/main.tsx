@@ -13,6 +13,7 @@ const priceText=(value:number|null,market:'US'|'CN')=>value===null?'—':`${mark
 type TrendPoint={time:number;price:number};
 const periods:Period[]=['1m','5m','15m','30m','60m','1d'];const names=['EMA','SMA','VWAP','BBI','BOLL','ATR','MACD','DMI','RSI','VOLUME'];
 const chartSlots=[0,1,2,3];
+const pythonExample='fast = EMA(C, 12)\nslow = EMA(C, 26)\nresult = {"difference": fast - slow}';
 const appliesTo=(indicator:Indicator,index:number,period:Period)=>indicator.visible&&
   (!Array.isArray(indicator.charts)||indicator.charts.includes(index))&&
   (!Array.isArray(indicator.periods)||indicator.periods.includes(period));
@@ -29,8 +30,11 @@ function IndicatorScope({indicator,onChange}:{indicator:Indicator;onChange:(patc
 }
 
 function IndicatorSettings({indicator,onPatch,onDelete}:{indicator:Indicator;onPatch:(patch:Partial<Indicator>)=>void;onDelete:()=>void}){
+  let pythonCode='';
+  if(indicator.name==='PYTHON')try{pythonCode=String(JSON.parse(indicator.params).code||'')}catch{}
   return <div className="indicator-card">
-    <div className="indicator-row"><label><input type="checkbox" checked={indicator.visible} onChange={e=>onPatch({visible:e.target.checked})}/><strong>{indicator.title||indicator.name}</strong></label><input className="params" aria-label={`${indicator.title||indicator.name} 参数`} value={indicator.params} spellCheck={false} onChange={e=>onPatch({params:e.target.value})}/><button className="icon-button" title={`删除 ${indicator.title||indicator.name}`} onClick={onDelete}><Trash2 size={15}/></button></div>
+    <div className="indicator-row"><label><input type="checkbox" checked={indicator.visible} onChange={e=>onPatch({visible:e.target.checked})}/><strong>{indicator.title||indicator.name}</strong></label>{indicator.name==='PYTHON'?<span className="indicator-language">Python</span>:<input className="params" aria-label={`${indicator.title||indicator.name} 参数`} value={indicator.params} spellCheck={false} onChange={e=>onPatch({params:e.target.value})}/>}<button className="icon-button" title={`删除 ${indicator.title||indicator.name}`} onClick={onDelete}><Trash2 size={15}/></button></div>
+    {indicator.name==='PYTHON'&&<textarea className="python-code" aria-label={`${indicator.title||indicator.name} Python 代码`} value={pythonCode} spellCheck={false} onChange={e=>onPatch({params:JSON.stringify({code:e.target.value})})}/>}
     <IndicatorScope indicator={indicator} onChange={onPatch}/>
   </div>;
 }
@@ -47,6 +51,8 @@ let syncingCharts=false;
 function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw,trends,onTrend,version}:{index:number;tile:Tile;mode:Mode;indicators:Indicator[];active:boolean;onActivate:()=>void;drawings:number[];onDraw:(v:number[])=>void;trends:TrendPoint[][];onTrend:(v:TrendPoint[][])=>void;version:number}){
  const box=useRef<HTMLDivElement>(null),chartRef=useRef<IChartApi|null>(null),candleRef=useRef<ISeriesApi<'Candlestick'>|null>(null),fittedKey=useRef('');
  const [bars,setBars]=useState<Bar[]>([]),[loadedKey,setLoadedKey]=useState(''),[error,setError]=useState(''),[formulaError,setFormulaError]=useState(''),[stale,setStale]=useState(false),[live,setLive]=useState(false),[draw,setDraw]=useState<'off'|'horizontal'|'trend'>('off'),[trendStart,setTrendStart]=useState<TrendPoint|null>(null);
+ const [pythonResults,setPythonResults]=useState<Record<string,{time:number[];values:Record<string,(number|null)[]>}>>({}),[pythonError,setPythonError]=useState('');
+ const lastPythonRun=useRef({key:'',time:0});
  const key=`${tile.symbol}:${tile.period}:${mode}`;
  const activeIndicators=useMemo(()=>indicators.filter(ind=>appliesTo(ind,index,tile.period)),[indicators,index,tile.period]);
  const isUS=tile.symbol.startsWith('US.');
@@ -57,6 +63,32 @@ function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw
   load().then(open);return()=>{stop=true;clearTimeout(timer);ws?.close()}
  },[key,version]);
  const filtered=useMemo(()=>bars.filter(x=>mode==='all'||x.session!=='overnight').filter(x=>mode!=='regular'||x.session==='regular'),[bars,mode]);
+ const pythonIndicators=useMemo(()=>activeIndicators.filter(ind=>ind.name==='PYTHON'),[activeIndicators]);
+ const latestPythonBar=filtered.at(-1);
+ const pythonFingerprint=latestPythonBar?`${filtered.length}:${latestPythonBar.time}:${latestPythonBar.high}:${latestPythonBar.low}:${latestPythonBar.close}:${latestPythonBar.volume}`:'';
+ const pythonCodeKey=pythonIndicators.map(ind=>`${ind.id}:${ind.params}`).join('|');
+ useEffect(()=>{
+  const runKey=`${key}:${pythonCodeKey}`;
+  if(lastPythonRun.current.key!==runKey)lastPythonRun.current={key:runKey,time:0};
+  if(!pythonIndicators.length||!filtered.length||loadedKey!==key){setPythonResults({});setPythonError('');return}
+  let stopped=false;const controller=new AbortController();
+  const delay=Math.max(350,10000-(Date.now()-lastPythonRun.current.time));
+  const timer=window.setTimeout(async()=>{
+   lastPythonRun.current.time=Date.now();
+   const results=await Promise.all(pythonIndicators.map(async ind=>{
+    try{
+     const code=String(JSON.parse(ind.params).code||'');
+     const response=await fetch('/api/python-indicator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:tile.symbol,period:tile.period,mode:tile.period==='1d'?'regular':mode,code}),signal:controller.signal});
+     const data=await response.json();if(!response.ok)throw Error(data.detail||'Python 指标计算失败');
+     return {id:ind.id,data};
+    }catch(e){return {id:ind.id,error:String(e)}}
+   }));
+   if(stopped)return;
+   setPythonResults(Object.fromEntries(results.filter(x=>'data'in x).map(x=>[x.id,x.data])));
+   setPythonError(results.find(x=>'error'in x)?.error||'');
+  },delay);
+  return()=>{stopped=true;clearTimeout(timer);controller.abort()};
+ },[key,loadedKey,pythonIndicators,pythonCodeKey,pythonFingerprint]);
  useEffect(()=>{if(!box.current)return;const chart=createChart(box.current,{autoSize:true,layout:{background:{color:'#0e1624'},textColor:'#9aa9be',fontFamily:'Inter, system-ui, sans-serif',fontSize:11,panes:{separatorColor:'#263449',enableResize:true}},grid:{vertLines:{color:'#1c283a'},horzLines:{color:'#1c283a'}},crosshair:{vertLine:{color:'#6c829d'},horzLine:{color:'#6c829d'}},rightPriceScale:{borderColor:'#263449'},localization:{timeFormatter:(time:Time)=>typeof time==='number'?displayTime.full.format(time*1000):String(time)},timeScale:{borderColor:'#263449',timeVisible:true,secondsVisible:false,tickMarkFormatter:(time:Time,kind:TickMarkType)=>typeof time==='number'?(kind<=TickMarkType.DayOfMonth?displayTime.day.format(time*1000):displayTime.clock.format(time*1000)):null},handleScroll:true,handleScale:true});chartRef.current=chart;const candle=chart.addSeries(CandlestickSeries,{upColor:'#45caa6',downColor:'#ed6b7d',borderVisible:false,wickUpColor:'#45caa6',wickDownColor:'#ed6b7d'});candleRef.current=candle;chartGroup.set(index,{chart,candle});
   const cross=(p:any)=>{if(syncingCharts)return;syncingCharts=true;for(const[id,target]of chartGroup){if(id===index)continue;if(p.time&&p.point){const source=p.seriesData.get(candle) as {close:number}|undefined;target.chart.setCrosshairPosition(source?.close||0,p.time,target.candle)}else target.chart.clearCrosshairPosition()}syncingCharts=false};
   const range=(r:any)=>{if(syncingCharts||!r)return;syncingCharts=true;for(const[id,target]of chartGroup){if(id!==index)try{target.chart.timeScale().setVisibleRange(r)}catch{}}syncingCharts=false};
@@ -65,15 +97,21 @@ function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw
  useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle)return;const data=filtered.map(x=>({time:toTime(x.time),open:x.open,high:x.high,low:x.low,close:x.close}));candle.setData(data);const series:ISeriesApi<any>[]=[];const lines:any[]=[];
   for(const price of drawings){const line=candle.createPriceLine({price,color:'#c6d6e7',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'水平线'});lines.push(line)}
   for(const trend of trends){if(trend.length!==2)continue;const s=chart.addSeries(LineSeries,{color:'#e3b76b',lineWidth:2,priceLineVisible:false,lastValueVisible:false,title:'趋势线'});s.setData([...trend].sort((a,b)=>a.time-b.time).map(p=>({time:toTime(p.time),value:p.price})));series.push(s)}
-  let pane=1;let indicatorIssue='';for(const ind of activeIndicators){let values:Record<string,(number|null)[]>;try{values=compute(filtered,ind.name,ind.params)}catch(e){indicatorIssue=`${ind.title||ind.name}: ${String(e)}`;continue}const overlay=ind.pane?ind.pane==='main':['EMA','SMA','BBI','BOLL','VWAP'].includes(ind.name);const target=overlay?0:pane++;
+  let pane=1;let indicatorIssue='';for(const ind of activeIndicators){let values:Record<string,(number|null)[]>;try{
+   if(ind.name==='PYTHON'){
+    const result=pythonResults[ind.id];if(!result)continue;
+    const times=new Map(result.time.map((time,i)=>[time,i]));
+    values=Object.fromEntries(Object.entries(result.values).map(([name,row])=>[name,filtered.map(bar=>{const i=times.get(bar.time);return i===undefined?null:row[i]??null})]));
+   }else values=compute(filtered,ind.name,ind.params);
+  }catch(e){indicatorIssue=`${ind.title||ind.name}: ${String(e)}`;continue}const overlay=ind.pane?ind.pane==='main':['EMA','SMA','BBI','BOLL','VWAP'].includes(ind.name);const target=overlay?0:pane++;
    Object.entries(values).forEach(([label,arr],idx)=>{if(ind.name==='ATR'&&label.startsWith('stop_'))return;const isHist=label==='hist'||label==='volume';const s=chart.addSeries(isHist?HistogramSeries:LineSeries,{color:palette[(idx+pane)%palette.length],lineWidth:2,priceFormat:ind.name==='VOLUME'?{type:'volume'}:{type:'price',precision:3,minMove:0.001},lastValueVisible:idx===0,priceLineVisible:false,title:`${ind.title||ind.name} ${label}`},target);s.setData(arr.flatMap((value,i)=>value===null||!Number.isFinite(value)?[]:[{time:toTime(filtered[i].time),value}]));series.push(s)})
   }
   setFormulaError(indicatorIssue);
   if(data.length&&loadedKey===key&&fittedKey.current!==key){chart.timeScale().fitContent();fittedKey.current=key}return()=>{if(chartRef.current!==chart)return;for(const line of lines)candle.removePriceLine(line);for(const s of series)chart.removeSeries(s)}
- },[filtered,activeIndicators,drawings,trends,key,loadedKey]);
+ },[filtered,activeIndicators,pythonResults,drawings,trends,key,loadedKey]);
  useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||draw==='off')return;const handler=(p:any)=>{if(!p.point||!p.time||typeof p.time!=='number')return;const price=candle.coordinateToPrice(p.point.y);if(price===null)return;if(draw==='horizontal'){onDraw([...drawings,Number(price)]);setDraw('off')}else{const point={time:Number(p.time),price:Number(price)};if(!trendStart)setTrendStart(point);else{onTrend([...trends,[trendStart,point]]);setTrendStart(null);setDraw('off')}}};chart.subscribeClick(handler);return()=>chart.unsubscribeClick(handler)},[draw,drawings,onDraw,trends,onTrend,trendStart]);
  const last=filtered.at(-1),previous=filtered.at(-2),change=last&&previous?(last.close-previous.close)/previous.close*100:0;
- return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div><strong>{tile.symbol.replace('US.','')}</strong><span className="market-tag">{isUS?"美股":"沪深 A 股"} · {tile.period.toUpperCase()}</span>{stale&&<span className="warning">缓存数据</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时推送已连接':'正在重连'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div><div className="chart-tools"><span>{draw==='trend'?(trendStart?'选择趋势线终点':'选择趋势线起点'):isUS?(mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div><button title="画水平线" onClick={()=>setDraw(draw==='horizontal'?'off':'horizontal')}>─</button><button title="画趋势线" onClick={()=>{setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>╱</button><button title="移除画线" onClick={()=>{onDraw([]);onTrend([])}}><Trash2 size={13}/></button></div></div>{(error||formulaError)&&<div className="chart-error">{error||formulaError}</div>}<div className="chart-canvas" ref={box}/><div className="chart-foot"><span>OPEN D · {filtered.length} 根 K 线</span><span>OHLC {last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}</span></div></div>
+ return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div><strong>{tile.symbol.replace('US.','')}</strong><span className="market-tag">{isUS?"美股":"沪深 A 股"} · {tile.period.toUpperCase()}</span>{stale&&<span className="warning">缓存数据</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时推送已连接':'正在重连'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div><div className="chart-tools"><span>{draw==='trend'?(trendStart?'选择趋势线终点':'选择趋势线起点'):isUS?(mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div><button title="画水平线" onClick={()=>setDraw(draw==='horizontal'?'off':'horizontal')}>─</button><button title="画趋势线" onClick={()=>{setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>╱</button><button title="移除画线" onClick={()=>{onDraw([]);onTrend([])}}><Trash2 size={13}/></button></div></div>{(error||formulaError||pythonError)&&<div className="chart-error">{error||formulaError||pythonError}</div>}<div className="chart-canvas" ref={box}/><div className="chart-foot"><span>OPEN D · {filtered.length} 根 K 线</span><span>OHLC {last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}</span></div></div>
 }
 type Market = 'US' | 'CN';
 type WatchGroup = {id:string; name:string; symbols:string[]};
@@ -133,7 +171,7 @@ function App(){
   const [editingGroup,setEditingGroup]=useState(''),[groupDraft,setGroupDraft]=useState('');
   const [showIndicators,setShowIndicators]=useState(false),[newIndicator,setNewIndicator]=useState('EMA'),[refresh,setRefresh]=useState(0),[status,setStatus]=useState<any>({});
   const [templates,setTemplates]=useState<Record<string,Indicator[]>>({}),[templateName,setTemplateName]=useState('');
-  const [customName,setCustomName]=useState(''),[customFormula,setCustomFormula]=useState('EMA(C,12)-EMA(C,26)'),[customPane,setCustomPane]=useState<'main'|'separate'>('separate'),[customError,setCustomError]=useState('');
+  const [customName,setCustomName]=useState(''),[customFormula,setCustomFormula]=useState('EMA(C,12)-EMA(C,26)'),[customLanguage,setCustomLanguage]=useState<'formula'|'python'>('formula'),[customPane,setCustomPane]=useState<'main'|'separate'>('separate'),[customError,setCustomError]=useState('');
   const [quotes,setQuotes]=useState<Record<string,StockQuote>>({}),[quotesStale,setQuotesStale]=useState(false),[quoteError,setQuoteError]=useState('');
   const market=state.activeMarket,ws=state.markets[market];
   const selectedGroup=ws.groups.find(g=>g.id===ws.selectedGroupId)||ws.groups[0];
@@ -224,13 +262,23 @@ function App(){
     setActive(0);
   };
   const setTile=(patch:Partial<Tile>)=>updateMarket(w=>({...w,tiles:w.tiles.map((t,i)=>i===active?{...t,...patch}:t)}));
-  const addCustom=()=>{try{
-    if(!customName.trim())throw Error('请填写指标名称');formula(customFormula);
-    updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:'CUSTOM',title:customName.trim(),pane:customPane,params:JSON.stringify({formula:customFormula.trim()}),visible:true}]}));
+  const addCustom=async()=>{try{
+    if(!customName.trim())throw Error('请填写指标名称');
+    if(customLanguage==='python'){
+      const response=await fetch('/api/python-indicator/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:customFormula})});
+      if(!response.ok)throw Error((await response.json()).detail||'Python 代码不受支持');
+    }else formula(customFormula);
+    updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:customLanguage==='python'?'PYTHON':'CUSTOM',title:customName.trim(),pane:customPane,params:JSON.stringify(customLanguage==='python'?{code:customFormula.trim()}:{formula:customFormula.trim()}),visible:true}]}));
     setCustomError('');setCustomName('');
   }catch(e){setCustomError(String(e))}};
   const saveTemplate=()=>{if(!templateName.trim())return;const next={...templates,[templateName.trim()]:ws.indicators};setTemplates(next);fetch('/api/settings/templates',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:next})});setTemplateName('')};
   const patchIndicator=(id:string,patch:Partial<Indicator>)=>updateMarket(w=>({...w,indicators:w.indicators.map(ind=>ind.id===id?{...ind,...patch}:ind)}));
+  const selectCustomLanguage=(next:'formula'|'python')=>{
+    if(next===customLanguage)return;
+    if(next==='python'&&customFormula==='EMA(C,12)-EMA(C,26)')setCustomFormula(pythonExample);
+    if(next==='formula'&&customFormula===pythonExample)setCustomFormula('EMA(C,12)-EMA(C,26)');
+    setCustomLanguage(next);setCustomError('');
+  };
 
   return <div className="shell">
     <header><div className="brand"><div className="brand-mark"><Activity size={20}/></div><div><strong>NAS MARKET</strong><small>私人多市场看盘终端</small></div></div>
@@ -273,10 +321,18 @@ function App(){
       <div className="toolbar"><div className="toolbar-section"><span>周期</span>{periods.map(p=><button key={p} className={current?.period===p?'on':''} onClick={()=>setTile({period:p})}>{p}</button>)}</div><div className="toolbar-line"/><div className="toolbar-section"><span>时段</span>{market==='US'?<select value={ws.mode} onChange={e=>updateMarket(w=>({...w,mode:e.target.value as Mode}))}><option value="all">24H 全时段</option><option value="extended">盘前 + 常规 + 盘后</option><option value="regular">仅常规</option></select>:<span className="cn-session">沪深常规时段 · 北京时间</span>}</div><div className="toolbar-end">{ws.indicators.filter(i=>current&&appliesTo(i,active,current.period)).length} 个指标用于当前图</div></div>
       {selectedGroup.symbols.length?<div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane key={`${market}-${i}-${tile.symbol}`} index={i} tile={tile} mode={ws.mode} indicators={ws.indicators} active={active===i} onActivate={()=>setActive(i)} drawings={ws.drawings[`${tile.symbol}:${tile.period}`]||[]} onDraw={v=>updateMarket(w=>({...w,drawings:{...w.drawings,[`${tile.symbol}:${tile.period}`]:v}}))} trends={ws.trends[`${tile.symbol}:${tile.period}`]||[]} onTrend={v=>updateMarket(w=>({...w,trends:{...w.trends,[`${tile.symbol}:${tile.period}`]:v}}))} version={refresh}/>)}</div>:
         <div className="empty-watchlist"><strong>{selectedGroup.name}还是空的</strong><p>在左侧输入股票代码，就能开始看盘。</p><small>{market==='US'?'示例：AAPL、US.SNDK':'示例：SH.600519、SZ.000001'}</small></div>}
-      {showIndicators&&<div className="indicator-panel"><div className="panel-head"><div><div className="eyebrow">CUSTOMIZE / {market}</div><h2>指标管理</h2></div><button className="icon-button" onClick={()=>setShowIndicators(false)}>×</button></div><div className="add-indicator"><select value={newIndicator} onChange={e=>setNewIndicator(e.target.value)}>{names.map(n=><option key={n}>{n}</option>)}</select><button className="primary" onClick={()=>updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:newIndicator,params:'{}',visible:true}]}))}><Plus size={14}/> 添加指标</button></div><div className="indicator-list">{ws.indicators.map(ind=><IndicatorSettings key={ind.id} indicator={ind} onPatch={patch=>patchIndicator(ind.id,patch)} onDelete={()=>updateMarket(w=>({...w,indicators:w.indicators.filter(x=>x.id!==ind.id)}))}/>)}</div><div className="custom-editor"><h3>新建自定义指标</h3><input placeholder="名称，如双均线差" value={customName} onChange={e=>setCustomName(e.target.value)}/><textarea aria-label="指标公式" value={customFormula} onChange={e=>setCustomFormula(e.target.value)} spellCheck={false}/><div className="custom-options"><select value={customPane} onChange={e=>setCustomPane(e.target.value as 'main'|'separate')}><option value="separate">独立副图</option><option value="main">叠加主图</option></select><button onClick={addCustom}><Plus size={14}/> 添加</button></div><small>支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、ABS、MAX、MIN 和四则运算。例：EMA(C,12)-EMA(C,26)</small>{customError&&<p className="custom-error">{customError}</p>}</div><div className="template"><h3>指标模板</h3><div className="template-save"><input placeholder="模板名称" value={templateName} onChange={e=>setTemplateName(e.target.value)}/><button onClick={saveTemplate}><Save size={14}/> 保存</button></div>{Object.entries(templates).map(([name,value])=><button className="template-item" key={name} onClick={()=>updateMarket(w=>({...w,indicators:value}))}>{name} <span>{value.length} 项</span></button>)}</div></div>}
+      {showIndicators&&<div className="indicator-panel"><div className="panel-head"><div><div className="eyebrow">CUSTOMIZE / {market}</div><h2>指标管理</h2></div><button className="icon-button" onClick={()=>setShowIndicators(false)}>×</button></div><div className="add-indicator"><select value={newIndicator} onChange={e=>setNewIndicator(e.target.value)}>{names.map(n=><option key={n}>{n}</option>)}</select><button className="primary" onClick={()=>updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:newIndicator,params:'{}',visible:true}]}))}><Plus size={14}/> 添加指标</button></div><div className="indicator-list">{ws.indicators.map(ind=><IndicatorSettings key={ind.id} indicator={ind} onPatch={patch=>patchIndicator(ind.id,patch)} onDelete={()=>updateMarket(w=>({...w,indicators:w.indicators.filter(x=>x.id!==ind.id)}))}/>)}</div><div className="custom-editor"><h3>新建自定义指标</h3>
+  <div className="custom-language" role="tablist" aria-label="自定义指标语言"><button role="tab" aria-selected={customLanguage==='formula'} className={customLanguage==='formula'?'chosen':''} onClick={()=>selectCustomLanguage('formula')}>简易公式</button><button role="tab" aria-selected={customLanguage==='python'} className={customLanguage==='python'?'chosen':''} onClick={()=>selectCustomLanguage('python')}>Python</button></div>
+  <input placeholder="名称，如双均线差" value={customName} onChange={e=>setCustomName(e.target.value)}/>
+  <textarea aria-label={customLanguage==='python'?'Python 指标代码':'指标公式'} value={customFormula} onChange={e=>setCustomFormula(e.target.value)} spellCheck={false}/>
+  <div className="custom-options"><select value={customPane} onChange={e=>setCustomPane(e.target.value as 'main'|'separate')}><option value="separate">独立副图</option><option value="main">叠加主图</option></select><button onClick={addCustom}><Plus size={14}/> 添加</button></div>
+  <small>{customLanguage==='python'?'Python：使用 O/H/L/C/V、TIME、SESSION、TRADE_DATE 和 SMA、EMA、REF、HHV、LLV；把序列或多线字典赋给 result。为保护 NAS，不支持 import 或第三方包。':'简易公式：支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、ABS、MAX、MIN 和四则运算。'}</small>
+  {customError&&<p className="custom-error">{customError}</p>}
+</div><div className="template"><h3>指标模板</h3><div className="template-save"><input placeholder="模板名称" value={templateName} onChange={e=>setTemplateName(e.target.value)}/><button onClick={saveTemplate}><Save size={14}/> 保存</button></div>{Object.entries(templates).map(([name,value])=><button className="template-item" key={name} onClick={()=>updateMarket(w=>({...w,indicators:value}))}>{name} <span>{value.length} 项</span></button>)}</div></div>}
     </main></div>
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);
+
 
 

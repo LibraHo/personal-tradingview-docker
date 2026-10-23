@@ -39,6 +39,7 @@ Compose 默认使用 `Dockerfile.nas`，复用本机已有的 `moomoo-opend:loca
 - 日线默认读取最近 730 天，可通过 `DAILY_HISTORY_DAYS` 调整；分钟线默认读取最近 5 天，可通过 `HISTORY_DAYS` 调整。历史范围由 OpenD 权限、股票上市日期及可提供的数据决定。
 - MACD、VWAP、BBI、ATR、DMI/ADX、EMA、SMA、BOLL、RSI、成交量与均量；指标无限数量，参数用 JSON 编辑，模板存 SQLite。例：MACD `{"fast":12,"slow":26,"signal":9}`，VWAP `{"reset":"session"}` 或 `day` / `never`。
 - 在“指标管理”中，每个指标可分别选择适用的图 1–4 和周期 1m、5m、15m、30m、60m、日线；两个条件同时满足才绘制。已有指标没有范围配置时默认用于所有图和周期，已有工作区与模板可继续使用。范围随工作区和指标模板保存到 NAS SQLite。
+- 自定义指标可选“简易公式”或“Python”。Python 模式提供 `O/H/L/C/V` 价格与成交量序列、`TIME/SESSION/TRADE_DATE` 元数据，以及 `SMA/EMA/REF/HHV/LLV` 函数。把一条序列或最多 8 条序列组成的字典赋给 `result`；编辑后可保存进指标模板，并同样选择主图/副图及适用图、周期。示例见下方。Python 代码在独立进程按需计算，限制 4000 字符、500 个语法节点、5000 根 K 线、128 MB 内存及 3 秒运行时间；不支持 `import`、属性访问、文件/网络操作或第三方包。它是受限的 Python 指标环境，不是通用 Python 控制台。
 - 可画水平价格线和两点趋势线并持久化。多图可同步时间轴与十字光标；不同股票价格轴不共用尺度，十字光标的横向价格值仅作参考。现版本应视为首个可用版本，而非与 TradingView 功能完全对等。
 - 当前 K 线通过 OpenD 回调写入缓存和 WebSocket；同时间戳用 SQLite 主键覆盖，处理校正与重复推送。浏览器断线 5 秒重连；后端每 20 秒检查订阅并重新订阅，每 10 分钟重新拉取最近两天用于修正缺口。最近历史默认 2 分钟以内不重复请求。非交易时段或无成交时不会生成虚假 K 线。
 
@@ -51,10 +52,24 @@ Compose 默认使用 `Dockerfile.nas`，复用本机已有的 `moomoo-opend:loca
 | `GET /api/indicators?symbol=US.SNDK&period=5m&mode=all&name=MACD&params={...}` | 服务端指标计算 |
 | `WS /api/stream?symbol=US.SNDK&period=5m&mode=all` | 实时 K 线与连接心跳 |
 | `GET /api/status` | OpenD 状态、订阅数量 |
+| `POST /api/python-indicator/validate` | 检查自定义 Python 指标语法及可用函数 |
+| `POST /api/python-indicator` | 按当前图表的 SQLite K 线计算 Python 指标，不重复请求 OpenD |
 | `GET /api/quotes?symbols=US.SNDK,US.SNXX` | 批量股票快照，最多 100 只；价格、涨跌幅和可用的盘前/盘后/夜盘字段 |
 | `GET/PUT /api/settings/workspace`、`templates` | 保存布局、自选与模板 |
 
 `bars` 表以 `(symbol, period, mode, time)` 为主键；时间是 UTC Unix 秒。美股按美东时间解析，隔夜 20:00 至次日 04:00 归入次交易日；A 股按北京时间解析，VWAP 默认按交易日重置，午间休市不另起一日。MACD/EMA 默认连续跨时段计算，但先按选择的时段过滤数据，切换时段后重算。无交易时段没有补零 K 线。时区转换由 IANA 数据处理。
+
+Python 指标示例（在“指标管理 → 新建自定义指标 → Python”粘贴，选择主图或副图）：
+
+```python
+fast = EMA(C, 12)
+slow = EMA(C, 26)
+diff = fast - slow
+signal = EMA(diff, 9)
+result = {"MACD": diff, "Signal": signal, "Histogram": diff - signal}
+```
+
+输出每条线必须与当前 K 线根数相同；没有数值的位置用 `None`。网页打开且图表有数据时才计算，实时 K 线更新时最多约 10 秒重算一次。Python 指标只读取本地 SQLite 中已有的 K 线，不连接交易接口。
 
 ## 备用数据源
 
