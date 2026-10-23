@@ -7,6 +7,9 @@ import{formula}from'./formula';
 import './style.css';
 type Mode='all'|'extended'|'regular';type Period='1m'|'5m'|'15m'|'30m'|'60m'|'1d';
 type Tile={symbol:string;period:Period};
+type StockQuote={symbol:string;name:string;price:number|null;change_percent:number|null;pre_price:number|null;pre_change_percent:number|null;after_price:number|null;after_change_percent:number|null;overnight_price:number|null;overnight_change_percent:number|null;update_time:string};
+const percent=(value:number|null)=>value===null?'—':`${value>0?'+':''}${value.toFixed(2)}%`;
+const priceText=(value:number|null,market:'US'|'CN')=>value===null?'—':`${market==='US'?'$':'¥'}${value.toFixed(2)}`;
 type TrendPoint={time:number;price:number};
 const periods:Period[]=['1m','5m','15m','30m','60m','1d'];const names=['EMA','SMA','VWAP','BBI','BOLL','ATR','MACD','DMI','RSI','VOLUME'];
 const palette=['#74a9ff','#ffc86d','#9e89fa','#65d6bb','#f58291','#d3dce9'];
@@ -108,16 +111,37 @@ function App(){
   const [showIndicators,setShowIndicators]=useState(false),[newIndicator,setNewIndicator]=useState('EMA'),[refresh,setRefresh]=useState(0),[status,setStatus]=useState<any>({});
   const [templates,setTemplates]=useState<Record<string,Indicator[]>>({}),[templateName,setTemplateName]=useState('');
   const [customName,setCustomName]=useState(''),[customFormula,setCustomFormula]=useState('EMA(C,12)-EMA(C,26)'),[customPane,setCustomPane]=useState<'main'|'separate'>('separate'),[customError,setCustomError]=useState('');
+  const [quotes,setQuotes]=useState<Record<string,StockQuote>>({}),[quotesStale,setQuotesStale]=useState(false),[quoteError,setQuoteError]=useState('');
   const market=state.activeMarket,ws=state.markets[market];
   const selectedGroup=ws.groups.find(g=>g.id===ws.selectedGroupId)||ws.groups[0];
   const featured=ws.groups.find(g=>g.id==='featured')!;
   const current=ws.tiles[active]||ws.tiles[0];
+  const quoteSymbols=selectedGroup.symbols.join(',');
+
+  useEffect(()=>{
+    setQuotes({});setQuotesStale(false);setQuoteError('');
+    if(!ready||!quoteSymbols)return;
+    let cancelled=false;
+    const load=()=>{
+      if(document.visibilityState!=='visible')return;
+      fetch(`/api/quotes?symbols=${encodeURIComponent(quoteSymbols)}`)
+        .then(async r=>{if(!r.ok)throw Error((await r.json()).detail||'快照不可用');return r.json()})
+        .then(data=>{if(!cancelled){setQuotes(Object.fromEntries((data.quotes as StockQuote[]).map(q=>[q.symbol,q])));setQuotesStale(!!data.stale);setQuoteError('')}})
+        .catch(e=>{if(!cancelled)setQuoteError(String(e.message||e))});
+    };
+    load();
+    const timer=setInterval(load,20000);
+    document.addEventListener('visibilitychange',load);
+    return()=>{cancelled=true;clearInterval(timer);document.removeEventListener('visibilitychange',load)};
+  },[ready,market,selectedGroup.id,quoteSymbols]);
 
   useEffect(()=>{
     Promise.all([fetch('/api/settings/workspace').then(r=>r.json()),fetch('/api/settings/templates').then(r=>r.json())])
       .then(([a,b])=>{setState(restoreWorkspace(a.value));setTemplates(b.value||{});setReady(true)})
       .catch(()=>setReady(true));
-    const t=setInterval(()=>fetch('/api/status').then(r=>r.json()).then(setStatus).catch(()=>{}),5000);
+    const loadStatus=()=>fetch('/api/status').then(r=>r.json()).then(setStatus).catch(()=>{});
+    loadStatus();
+    const t=setInterval(loadStatus,5000);
     return()=>clearInterval(t);
   },[]);
   useEffect(()=>{
@@ -187,7 +211,7 @@ function App(){
   return <div className="shell">
     <header><div className="brand"><div className="brand-mark"><Activity size={20}/></div><div><strong>NAS MARKET</strong><small>私人多市场看盘终端</small></div></div>
       <div className="header-center"><span className="pulse"/> {market==='US'?'美股 24/5 · 美东时间':'A 股 · 北京时间'} <span className="header-divider"/> <span>{selectedGroup.name}</span></div>
-      <div className="header-right"><span className="connection">{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:<><span className="dot red"/> OpenD 待连接</>}</span><button className="icon-button" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
+      <div className="header-right"><span className="connection">{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:status.last_error?<><span className="dot red"/> OpenD 连接异常</>:<><span className="dot idle"/> OpenD 按需连接</>}</span><button className="icon-button" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
     </header>
     <div className="app-body"><aside>
       <div className="side-title">工作区 <Settings2 size={14}/></div>
@@ -203,11 +227,18 @@ function App(){
         </div>)}</div>
         <div className="add-group"><input aria-label="新分组名称" value={newGroupName} onChange={e=>setNewGroupName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addGroup()} placeholder="新建分组"/><button title="创建分组" onClick={addGroup}><Plus size={15}/></button></div>
         {groupError&&<div className="side-error">{groupError}</div>}
-        <div className="group-label selected-label">{selectedGroup.name} <span>{selectedGroup.symbols.length}</span></div>
+        <div className="group-label selected-label">股票 · {selectedGroup.name} <span>{selectedGroup.symbols.length}</span></div>
+        {quoteError&&<div className="quote-notice" title={quoteError}>报价暂不可用，图表仍可查看</div>}
+        {quotesStale&&<div className="quote-notice">报价为上次缓存数据</div>}
         <div className="symbol-list">{selectedGroup.symbols.map(s=><div key={s} className={`symbol ${current?.symbol===s?'active':''}`}>
-          <button onClick={()=>setTile({symbol:s})}><span className="symbol-icon">{s.split('.')[1].slice(0,1)}</span><span><strong>{s.split('.')[1]}</strong><small>{s.startsWith('US.')?'US EQUITY':s.startsWith('SH.')?'上海 · A 股':'深圳 · A 股'}</small></span></button>
-          <button className={`favorite ${featured.symbols.includes(s)?'on':''}`} title={featured.symbols.includes(s)?'从精选移除':'加入精选'} onClick={()=>toggleFeatured(s)}>★</button>
-          <button className="remove" title="从当前分组移除" onClick={()=>removeSymbol(s)}><Minus size={13}/></button>
+          <button className="stock-select" onClick={()=>setTile({symbol:s})} title={quotes[s]?.update_time?`OpenD 更新：${quotes[s].update_time}`:s}>
+            <span className="symbol-icon">{s.split('.')[1].slice(0,1)}</span>
+            <span className="stock-main"><span className="stock-top"><strong>{s.split('.')[1]}</strong><b>{priceText(quotes[s]?.price??null,market)}</b></span>
+              <span className="stock-middle"><small>{quotes[s]?.name||s}</small><em className={quotes[s]?.change_percent==null?'flat':quotes[s].change_percent!>=0?'positive':'negative'}>{percent(quotes[s]?.change_percent??null)}</em></span>
+              {market==='US'&&<span className="stock-sessions">{quotes[s]?.after_price!=null&&quotes[s].after_price!>0&&<span>盘后 <em className={quotes[s].after_change_percent!=null&&quotes[s].after_change_percent!<0?'negative':'positive'}>{percent(quotes[s].after_change_percent)}</em></span>}{quotes[s]?.overnight_price!=null&&quotes[s].overnight_price!>0&&<span>夜盘 <em className={quotes[s].overnight_change_percent!=null&&quotes[s].overnight_change_percent!<0?'negative':'positive'}>{percent(quotes[s].overnight_change_percent)}</em></span>}</span>}
+            </span>
+          </button>
+          <span className="stock-actions"><button className={`favorite ${featured.symbols.includes(s)?'on':''}`} title={featured.symbols.includes(s)?'从精选移除':'加入精选'} onClick={()=>toggleFeatured(s)}>★</button><button className="remove" title="从当前分组移除" onClick={()=>removeSymbol(s)}><Minus size={13}/></button></span>
         </div>)}</div>
         <div className="add-symbol"><input aria-label="添加股票代码" value={newSymbol} onChange={e=>setNewSymbol(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSymbol()} placeholder={market==='US'?'添加美股代码，如 AAPL':'添加 A 股，如 SH.600519'}/><button title="加入当前分组" onClick={addSymbol}><Plus size={16}/></button></div>
         {symbolError&&<div className="side-error">{symbolError}</div>}
@@ -223,3 +254,4 @@ function App(){
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);
+

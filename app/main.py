@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import sqlite3
@@ -152,6 +153,7 @@ class Bridge:
         self.last_error = None
         self.last_request = 0.0
         self.last_activity = time.monotonic()
+        self.snapshot_cache: dict[tuple[str, ...], tuple[float, list[dict]]] = {}
 
     def rate_limit(self):
         delay = 0.52 - (time.monotonic() - self.last_request)
@@ -221,6 +223,48 @@ class Bridge:
                 return len(all_bars)
             except Exception as exc:
                 self.reset(exc)
+                raise
+
+    def snapshots(self, symbols):
+        from moomoo import RET_OK
+        key = tuple(sorted(set(symbols)))
+        with self.lock:
+            cached = self.snapshot_cache.get(key)
+            if cached and time.monotonic() - cached[0] < 15:
+                return cached[1], False
+            try:
+                ctx = self.ensure()
+                self.rate_limit()
+                ret, data = ctx.get_market_snapshot(list(key))
+                if ret != RET_OK:
+                    raise RuntimeError(str(data))
+                def number(row, field):
+                    value = row.get(field)
+                    try:
+                        value = float(value)
+                        return value if math.isfinite(value) else None
+                    except (TypeError, ValueError):
+                        return None
+                items = []
+                for row in data.to_dict('records'):
+                    price = number(row, 'last_price')
+                    previous = number(row, 'prev_close_price')
+                    items.append({
+                        'symbol': str(row['code']), 'name': str(row.get('name') or ''),
+                        'price': price,
+                        'change_percent': round((price / previous - 1) * 100, 2) if price is not None and previous and previous > 0 else None,
+                        'pre_price': number(row, 'pre_price'), 'pre_change_percent': number(row, 'pre_change_rate'),
+                        'after_price': number(row, 'after_price'), 'after_change_percent': number(row, 'after_change_rate'),
+                        'overnight_price': number(row, 'overnight_price'), 'overnight_change_percent': number(row, 'overnight_change_rate'),
+                        'update_time': str(row.get('update_time') or ''),
+                    })
+                self.snapshot_cache[key] = (time.monotonic(), items)
+                self.last_activity = time.monotonic()
+                return items, False
+            except Exception as exc:
+                self.last_error = str(exc)
+                if cached:
+                    return cached[1], True
                 raise
 
     def subscribe(self, key):
@@ -335,6 +379,18 @@ def status():
             'active_streams': len(bridge.active), 'max_streams': MAX_STREAMS}
 
 
+@app.get('/api/quotes')
+async def quotes(symbols: str):
+    codes = [s.strip().upper() for s in symbols.split(',') if s.strip()]
+    if not codes or len(codes) > 100 or any(not SYMBOL_RE.fullmatch(s) for s in codes):
+        raise HTTPException(400, '请输入 1 至 100 个有效股票代码')
+    try:
+        data, stale = await asyncio.to_thread(bridge.snapshots, codes)
+        return {'quotes': data, 'stale': stale}
+    except Exception as exc:
+        raise HTTPException(503, f'OpenD 快照不可用：{exc}')
+
+
 @app.get('/api/bars')
 async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | None = None, limit: int = 5000):
     try:
@@ -436,4 +492,4 @@ if STATIC.exists():
 def frontend(path: str):
     if not STATIC.exists():
         raise HTTPException(404, '前端尚未构建')
-    return FileResponse(STATIC / 'index.html')
+    return FileResponse(STATIC / 'index.html', headers={'Cache-Control': 'no-store, max-age=0'})

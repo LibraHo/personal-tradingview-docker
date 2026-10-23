@@ -13,8 +13,9 @@
 | 权限 | OpenAPI 行情权限可能与 moomoo App 不同。若权限不足，接口返回真实错误。某些证券可能没有隔夜交易或对应数据。 |
 | 额度 | 订阅每只股票每种数据类型占 1 个额度；官方列出的基础订阅额度为 100，具体账号可能不同。历史 K 线配额按过去 7 天请求过的不同股票计算，不按周期重复计数。 |
 | 频率 | 官方建议请求间隔至少 0.5 秒；服务对历史分页延迟 0.52 秒，缓存避免重复查询。 |
+| 自选报价 | `get_market_snapshot` 可批量获取价格、昨收，以及美股盘前、盘后和隔夜独立价格与涨跌幅字段。只有 OpenD 实际返回数值时网页才显示对应标签；数值与实时性仍受账号权限及证券交易情况限制。 |
 
-文档：[订阅](https://openapi.moomoo.com/moomoo-api-doc/en/quote/sub.html)、[历史 K 线](https://openapi.moomoo.com/moomoo-api-doc/en/quote/request-history-kline.html)、[实时回调](https://openapi.moomoo.com/moomoo-api-doc/en/quote/update-kl.html)、[权限与额度](https://openapi.moomoo.com/moomoo-api-doc/en/intro/authority.html)、[股票代码与时段](https://openapi.moomoo.com/moomoo-api-doc/en/qa/quote.html)。A 股 OpenAPI 行情权限可能因账户和 OpenD 登录地区而不可用，网页会显示真实错误。
+文档：[订阅](https://openapi.moomoo.com/moomoo-api-doc/en/quote/sub.html)、[历史 K 线](https://openapi.moomoo.com/moomoo-api-doc/en/quote/request-history-kline.html)、[市场快照](https://openapi.moomoo.com/moomoo-api-doc/en/quote/get-market-snapshot.html)、[实时回调](https://openapi.moomoo.com/moomoo-api-doc/en/quote/update-kl.html)、[权限与额度](https://openapi.moomoo.com/moomoo-api-doc/en/intro/authority.html)、[股票代码与时段](https://openapi.moomoo.com/moomoo-api-doc/en/qa/quote.html)。A 股 OpenAPI 行情权限可能因账户和 OpenD 登录地区而不可用，网页会显示真实错误。
 
 ## 部署
 
@@ -32,6 +33,7 @@ Compose 默认使用 `Dockerfile.nas`，复用本机已有的 `moomoo-opend:loca
 
 - 自选股快速切换、1/2/4 图、每图独立周期；选中图后顶部周期按钮作用于该图。
 - 美股和 A 股为两个独立工作区，各自保存图表布局、周期、指标、自选分组和“精选”组。可创建、重命名、删除分组，在当前分组添加或移除股票；星标可快速加入或移出精选。旧版美股自选会迁入美股精选组。
+- 左侧按“工作区切换 → 自选分组 → 组内股票”排列。股票行展示 OpenD 快照当前价、相对昨收涨跌幅、美股盘后及隔夜涨跌幅（若有）。当前分组每 20 秒批量刷新一次；浏览器页签隐藏时暂停刷新，关闭网页后不再请求快照。后端对相同股票组合做 15 秒缓存。
 - 1m、5m、15m、30m、60m、日线；全时段、盘前+盘中+盘后、常规时段筛选。
 - A 股支持同样的 K 线周期，但只显示常规交易时段；时间轴使用北京时间。美股继续使用美东时间和原有时段选择。
 - 日线默认读取最近 730 天，可通过 `DAILY_HISTORY_DAYS` 调整；分钟线默认读取最近 5 天，可通过 `HISTORY_DAYS` 调整。历史范围由 OpenD 权限、股票上市日期及可提供的数据决定。
@@ -48,6 +50,7 @@ Compose 默认使用 `Dockerfile.nas`，复用本机已有的 `moomoo-opend:loca
 | `GET /api/indicators?symbol=US.SNDK&period=5m&mode=all&name=MACD&params={...}` | 服务端指标计算 |
 | `WS /api/stream?symbol=US.SNDK&period=5m&mode=all` | 实时 K 线与连接心跳 |
 | `GET /api/status` | OpenD 状态、订阅数量 |
+| `GET /api/quotes?symbols=US.SNDK,US.SNXX` | 批量股票快照，最多 100 只；价格、涨跌幅和可用的盘前/盘后/夜盘字段 |
 | `GET/PUT /api/settings/workspace`、`templates` | 保存布局、自选与模板 |
 
 `bars` 表以 `(symbol, period, mode, time)` 为主键；时间是 UTC Unix 秒。美股按美东时间解析，隔夜 20:00 至次日 04:00 归入次交易日；A 股按北京时间解析，VWAP 默认按交易日重置，午间休市不另起一日。MACD/EMA 默认连续跨时段计算，但先按选择的时段过滤数据，切换时段后重算。无交易时段没有补零 K 线。时区转换由 IANA 数据处理。

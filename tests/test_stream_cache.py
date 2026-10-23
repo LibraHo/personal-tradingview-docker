@@ -64,6 +64,30 @@ class CacheTests(unittest.TestCase):
 
 
 class PushTests(unittest.IsolatedAsyncioTestCase):
+    async def test_snapshot_quotes_use_opend_session_fields_and_cache(self):
+        fake = types.SimpleNamespace(RET_OK=0)
+        class Context:
+            calls = 0
+            def get_market_snapshot(self, symbols):
+                self.calls += 1
+                self_symbols = symbols
+                return 0, types.SimpleNamespace(to_dict=lambda kind: [
+                    {'code': self_symbols[0], 'name': 'Sample', 'last_price': 102,
+                     'prev_close_price': 100, 'after_price': 104,
+                     'after_change_rate': 1.96, 'overnight_price': float('nan'),
+                     'update_time': '2026-10-22 16:05:00'}])
+        ctx = Context()
+        bridge = market.Bridge()
+        with patch.dict(sys.modules, {'moomoo': fake}), patch.object(bridge, 'ensure', return_value=ctx):
+            first, stale = bridge.snapshots(['US.SNDK'])
+            second, _ = bridge.snapshots(['US.SNDK'])
+        self.assertFalse(stale)
+        self.assertEqual(ctx.calls, 1)
+        self.assertEqual(first, second)
+        self.assertEqual(first[0]['change_percent'], 2.0)
+        self.assertEqual(first[0]['after_change_percent'], 1.96)
+        self.assertIsNone(first[0]['overnight_price'])
+
     async def test_daily_loads_two_years_then_refreshes_recent_days(self):
         key = ('US.SNDQ', '1d', 'regular')
         market.last_fetch.pop(key, None)
