@@ -41,3 +41,16 @@ aside .side-title{padding-bottom:16px}aside .side-group{min-height:0;overflow-y:
 .symbol-list{max-height:none;overflow:visible}.market-tabs button{font-size:12px;padding:10px 6px}.watch-group{min-height:37px}.group-label{font-size:11px}.selected-label{margin-top:20px;padding-top:17px}
 
 .dot.idle{background:#e2b96b}
+.indicator-panel{width:min(470px,100vw)}
+.indicator-card{border:1px solid #2b3e56;background:#142136;border-radius:9px;padding:10px 12px;margin:10px 0}
+.indicator-card .indicator-row{margin:0 0 10px;display:flex;align-items:center;gap:8px}
+.indicator-card .indicator-row label{width:112px;min-width:112px;overflow:hidden;text-overflow:ellipsis}
+.indicator-card .indicator-row .params{width:auto;flex:1;min-width:0}
+.indicator-scope{border-top:1px solid #2b3d52;padding-top:9px;display:grid;gap:8px}
+.scope-line{display:flex;align-items:flex-start;gap:10px}
+.scope-line>span{font-size:10px;color:#8fa6c1;min-width:43px;padding-top:5px}
+.scope-chips{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.scope-chips button{border:1px solid #344964;background:#1a2a40;color:#889db8;border-radius:5px;padding:4px 7px;font-size:10px;line-height:1.2}
+.scope-chips button.chosen{border-color:#4b85c6;background:#245486;color:#fff}
+.scope-chips button:hover{border-color:#79aaf0}
+@media(max-width:600px){.indicator-panel{width:100vw}}
