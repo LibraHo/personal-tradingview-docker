@@ -139,6 +139,15 @@ def read_bars(key, days, limit):
     return [row_to_bar(r) for r in reversed(rows)]
 
 
+def read_bars_before(key, before, limit):
+    retention = DAILY_RETENTION_DAYS if key[1] == '1d' else RETENTION_DAYS
+    cutoff = int((datetime.now(ET) - timedelta(days=retention)).timestamp())
+    with connect_db() as db:
+        rows = db.execute('SELECT * FROM bars WHERE symbol=? AND period=? AND mode=? AND time<? AND time>=? ORDER BY time DESC LIMIT ?',
+                          (*key, before, cutoff, limit)).fetchall()
+    return [row_to_bar(r) for r in reversed(rows)]
+
+
 def frame_to_bars(frame, symbol):
     result = []
     zone = ET if symbol.startswith('US.') else CN_TZ
@@ -235,12 +244,12 @@ class Bridge:
         self.ctx = None
         self.active.clear()
 
-    def history(self, key, days):
+    def history(self, key, days, end_date=None):
         from moomoo import KLType, AuType, Session, RET_OK
         with self.lock:
             try:
                 ctx = self.ensure()
-                end = datetime.now(ET if key[0].startswith('US.') else CN_TZ).date()
+                end = end_date or datetime.now(ET if key[0].startswith('US.') else CN_TZ).date()
                 start = end - timedelta(days=days)
                 kwargs = dict(code=key[0], start=str(start), end=str(end), ktype=getattr(KLType, PERIODS[key[1]]),
                               autype=AuType.NONE, max_count=1000, session=Session.NONE if key[1] == '1d' or not key[0].startswith('US.') else getattr(Session, MODES[key[2]]))
@@ -452,7 +461,7 @@ async def quotes(symbols: str):
 
 
 @app.get('/api/bars')
-async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | None = None, limit: int = 5000):
+async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | None = None, limit: int = 5000, refresh: bool = False):
     try:
         key = validate(symbol, period, mode)
     except ValueError as exc:
@@ -463,7 +472,7 @@ async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | N
     limit = min(max(limit, 1), 10000)
     lock = fetch_locks.setdefault(key, asyncio.Lock())
     async with lock:
-        if time.monotonic()-last_fetch.get(key, 0) > REFRESH or days > fetched_days.get(key, 0):
+        if refresh or time.monotonic()-last_fetch.get(key, 0) > REFRESH or days > fetched_days.get(key, 0):
             try:
                 refresh_days = days if days > fetched_days.get(key, 0) else min(days, 2)
                 await asyncio.to_thread(bridge.history, key, refresh_days)
@@ -475,6 +484,37 @@ async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | N
                     raise HTTPException(503, f'OpenD 行情不可用：{exc}')
                 return {'bars': cached, 'stale': True, 'error': str(exc)}
     return {'bars': await asyncio.to_thread(read_bars, key, days, limit), 'stale': False}
+
+
+@app.get('/api/bars/older')
+async def older_bars(symbol: str, period: str, mode: str, before: int, limit: int = 1000):
+    try:
+        key = validate(symbol, period, mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if before <= 0 or before > int(time.time()) + 86400:
+        raise HTTPException(400, '无效的历史时间')
+    limit = min(max(limit, 1), 2000)
+    retention = DAILY_RETENTION_DAYS if period == '1d' else RETENTION_DAYS
+    cutoff = int((datetime.now(ET) - timedelta(days=retention)).timestamp())
+    if before <= cutoff:
+        return {'bars': [], 'next_before': before, 'has_more': False}
+    lock = fetch_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        cached = await asyncio.to_thread(read_bars_before, key, before, limit)
+        if cached:
+            return {'bars': cached, 'next_before': cached[0]['time'], 'has_more': cached[0]['time'] > cutoff}
+        zone = ET if key[0].startswith('US.') else CN_TZ
+        end_date = datetime.fromtimestamp(before, zone).date()
+        window_days = 365 if period == '1d' else 3 if period == '1m' else 10 if period == '5m' else 21 if period == '15m' else 35
+        start_date = end_date - timedelta(days=window_days)
+        try:
+            await asyncio.to_thread(bridge.history, key, window_days, end_date)
+        except Exception as exc:
+            raise HTTPException(503, f'历史 K 线暂不可用：{exc}')
+        result = await asyncio.to_thread(read_bars_before, key, before, limit)
+        next_before = result[0]['time'] if result else int(datetime.combine(start_date, datetime.min.time(), zone).timestamp())
+        return {'bars': result, 'next_before': next_before, 'has_more': next_before > cutoff}
 
 
 @app.get('/api/indicators')

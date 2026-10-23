@@ -33,6 +33,28 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['close'], 12)
 
+    def test_older_cached_bars_are_returned_in_time_order(self):
+        key = ('US.HIST', '5m', 'all')
+        now = int(datetime.now(market.ET).timestamp())
+        market.save_bars(key, [sample(now - 300 * i, float(i)) for i in range(1, 5)])
+        rows = market.read_bars_before(key, now - 300, 2)
+        self.assertEqual([row['time'] for row in rows], [now - 900, now - 600])
+
+    def test_older_request_fetches_prior_window(self):
+        key = ('US.HIST2', '5m', 'all')
+        before = int(datetime.now(market.ET).timestamp()) - 60
+        class FakeBridge:
+            calls = []
+            def history(self, requested_key, days, end_date=None):
+                self.calls.append((requested_key, days, end_date))
+                market.save_bars(requested_key, [sample(before - 3600, 20)])
+        fake = FakeBridge()
+        with patch.object(market, 'bridge', fake):
+            response = asyncio.run(market.older_bars('US.HIST2', '5m', 'all', before))
+        self.assertEqual(response['bars'][0]['close'], 20)
+        self.assertEqual(fake.calls[0][0], key)
+        self.assertLess(response['next_before'], before)
+
     def test_overnight_trade_date_rolls_forward(self):
         et = ZoneInfo('America/New_York')
         before = int(datetime(2026, 10, 21, 21, tzinfo=et).timestamp())

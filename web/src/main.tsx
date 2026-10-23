@@ -10,6 +10,7 @@ type Tile={symbol:string;period:Period};
 type StockQuote={symbol:string;name:string;price:number|null;change_percent:number|null;pre_price:number|null;pre_change_percent:number|null;after_price:number|null;after_change_percent:number|null;overnight_price:number|null;overnight_change_percent:number|null;update_time:string};
 const percent=(value:number|null)=>value===null?'—':`${value>0?'+':''}${value.toFixed(2)}%`;
 const priceText=(value:number|null,market:'US'|'CN')=>value===null?'—':`${market==='US'?'$':'¥'}${value.toFixed(2)}`;
+const mergeBars=(older:Bar[],newer:Bar[])=>[...new Map([...older,...newer].map(bar=>[bar.time,bar])).values()].sort((a,b)=>a.time-b.time);
 type TrendPoint={time:number;price:number};
 const periods:Period[]=['1m','5m','15m','30m','60m','1d'];const names=['EMA','SMA','VWAP','BBI','BOLL','ATR','MACD','DMI','RSI','VOLUME'];
 const chartSlots=[0,1,2,3];
@@ -53,15 +54,37 @@ function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw
  const [bars,setBars]=useState<Bar[]>([]),[loadedKey,setLoadedKey]=useState(''),[error,setError]=useState(''),[formulaError,setFormulaError]=useState(''),[stale,setStale]=useState(false),[live,setLive]=useState(false),[draw,setDraw]=useState<'off'|'horizontal'|'trend'>('off'),[trendStart,setTrendStart]=useState<TrendPoint|null>(null);
  const [pythonResults,setPythonResults]=useState<Record<string,{time:number[];values:Record<string,(number|null)[]>}>>({}),[pythonError,setPythonError]=useState('');
  const lastPythonRun=useRef({key:'',time:0});
+ const [historyCursor,setHistoryCursor]=useState<number|null>(null),[hasMore,setHasMore]=useState(true),[loadingOlder,setLoadingOlder]=useState(false),[historyError,setHistoryError]=useState('');
+ const historyInteraction=useRef(false),olderBusy=useRef(false),liveRef=useRef(false),pendingHistoryJump=useRef<{from:number;to:number}|null>(null);
  const key=`${tile.symbol}:${tile.period}:${mode}`;
+ const currentKey=useRef(key);currentKey.current=key;
  const activeIndicators=useMemo(()=>indicators.filter(ind=>appliesTo(ind,index,tile.period)),[indicators,index,tile.period]);
  const isUS=tile.symbol.startsWith('US.');
  const displayTime=isUS?{clock:etClock,day:etDay,full:etFull}:{clock:cnClock,day:cnDay,full:cnFull};
- useEffect(()=>{let stop=false,ws:WebSocket|null=null,timer:number|undefined;
-  const load=async()=>{try{const r=await fetch(`/api/bars?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${tile.period==='1d'?'regular':mode}`);const data=await r.json();if(!r.ok)throw Error(data.detail);if(!stop){setBars(data.bars);setLoadedKey(key);setStale(data.stale);setError(data.error||'')}}catch(e){if(!stop)setError(String(e))}};
-  const open=()=>{if(stop)return;ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/stream?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${tile.period==='1d'?'regular':mode}`);ws.onopen=()=>setLive(true);ws.onmessage=e=>{const msg=JSON.parse(e.data);if(msg.type==='bar')setBars(old=>{const i=old.findIndex(x=>x.time===msg.bar.time);if(i>=0){const copy=[...old];copy[i]=msg.bar;return copy}return [...old,msg.bar].sort((a,b)=>a.time-b.time).slice(-10000)});if(msg.type==='error')setError(msg.message)};ws.onclose=()=>{setLive(false);if(!stop)timer=window.setTimeout(open,5000)}};
-  load().then(open);return()=>{stop=true;clearTimeout(timer);ws?.close()}
+ useEffect(()=>{let stop=false,ws:WebSocket|null=null,timer:number|undefined,initialized=false,openedOnce=false;
+  historyInteraction.current=false;olderBusy.current=false;setHistoryCursor(null);setHasMore(true);setHistoryError('');
+  const load=async(force=false)=>{try{const r=await fetch(`/api/bars?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${tile.period==='1d'?'regular':mode}${force?'&refresh=true':''}`);const data=await r.json();if(!r.ok)throw Error(data.detail);if(!stop){const wasInitialized=initialized;initialized=true;setBars(old=>wasInitialized?mergeBars(old,data.bars):data.bars);if(!wasInitialized)setHistoryCursor(data.bars[0]?.time||null);setLoadedKey(key);setStale(data.stale);setError(data.error||'')}}catch(e){if(!stop)setError(String(e))}};
+  const open=()=>{if(stop)return;ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/stream?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${tile.period==='1d'?'regular':mode}`);ws.onopen=()=>{setLive(true);liveRef.current=true;if(openedOnce)load(true);openedOnce=true};ws.onmessage=e=>{const msg=JSON.parse(e.data);if(msg.type==='bar')setBars(old=>mergeBars(old,[msg.bar]));if(msg.type==='error')setError(msg.message)};ws.onclose=()=>{setLive(false);liveRef.current=false;if(!stop)timer=window.setTimeout(open,5000)}};
+  load(version>0).then(open);
+  const poll=window.setInterval(()=>{if(document.visibilityState==='visible'&&(tile.period==='1d'||!liveRef.current))load(true)},300000);
+  return()=>{stop=true;clearTimeout(timer);clearInterval(poll);ws?.close()}
  },[key,version]);
+ const requestOlder=async(jumpToOlder=false)=>{
+  if(olderBusy.current||!hasMore||historyCursor===null||loadedKey!==key)return;
+  olderBusy.current=true;setLoadingOlder(true);setHistoryError('');
+  try{
+   const r=await fetch(`/api/bars/older?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${tile.period==='1d'?'regular':mode}&before=${historyCursor}`);
+   const data=await r.json();if(currentKey.current!==key)return;if(!r.ok)throw Error(data.detail||'加载历史 K 线失败');
+   if(data.bars.length){if(jumpToOlder){pendingHistoryJump.current={from:data.bars[0].time,to:historyCursor};historyInteraction.current=false}setBars(old=>mergeBars(old,data.bars))}
+   setHistoryCursor(data.next_before);
+   setHasMore(!!data.has_more&&data.next_before<historyCursor);
+  }catch(e){setHistoryError(String(e))}finally{olderBusy.current=false;setLoadingOlder(false)}
+ };
+ useEffect(()=>{const chart=chartRef.current;if(!chart)return;
+  const onRange=(range:any)=>{if(historyInteraction.current&&range&&range.from<35&&hasMore&&!loadingOlder&&historyCursor!==null)void requestOlder()};
+  chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
+  return()=>chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange);
+ },[key,historyCursor,hasMore,loadingOlder,loadedKey]);
  const filtered=useMemo(()=>bars.filter(x=>mode==='all'||x.session!=='overnight').filter(x=>mode!=='regular'||x.session==='regular'),[bars,mode]);
  const pythonIndicators=useMemo(()=>activeIndicators.filter(ind=>ind.name==='PYTHON'),[activeIndicators]);
  const latestPythonBar=filtered.at(-1);
@@ -107,11 +130,13 @@ function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw
    Object.entries(values).forEach(([label,arr],idx)=>{if(ind.name==='ATR'&&label.startsWith('stop_'))return;const isHist=label==='hist'||label==='volume';const s=chart.addSeries(isHist?HistogramSeries:LineSeries,{color:palette[(idx+pane)%palette.length],lineWidth:2,priceFormat:ind.name==='VOLUME'?{type:'volume'}:{type:'price',precision:3,minMove:0.001},lastValueVisible:idx===0,priceLineVisible:false,title:`${ind.title||ind.name} ${label}`},target);s.setData(arr.flatMap((value,i)=>value===null||!Number.isFinite(value)?[]:[{time:toTime(filtered[i].time),value}]));series.push(s)})
   }
   setFormulaError(indicatorIssue);
-  if(data.length&&loadedKey===key&&fittedKey.current!==key){chart.timeScale().fitContent();fittedKey.current=key}return()=>{if(chartRef.current!==chart)return;for(const line of lines)candle.removePriceLine(line);for(const s of series)chart.removeSeries(s)}
+  if(data.length&&loadedKey===key&&fittedKey.current!==key){chart.timeScale().fitContent();fittedKey.current=key}
+  if(pendingHistoryJump.current){const jump=pendingHistoryJump.current;pendingHistoryJump.current=null;chart.timeScale().setVisibleRange({from:toTime(jump.from),to:toTime(jump.to)})}
+  return()=>{if(chartRef.current!==chart)return;for(const line of lines)candle.removePriceLine(line);for(const s of series)chart.removeSeries(s)}
  },[filtered,activeIndicators,pythonResults,drawings,trends,key,loadedKey]);
  useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||draw==='off')return;const handler=(p:any)=>{if(!p.point||!p.time||typeof p.time!=='number')return;const price=candle.coordinateToPrice(p.point.y);if(price===null)return;if(draw==='horizontal'){onDraw([...drawings,Number(price)]);setDraw('off')}else{const point={time:Number(p.time),price:Number(price)};if(!trendStart)setTrendStart(point);else{onTrend([...trends,[trendStart,point]]);setTrendStart(null);setDraw('off')}}};chart.subscribeClick(handler);return()=>chart.unsubscribeClick(handler)},[draw,drawings,onDraw,trends,onTrend,trendStart]);
  const last=filtered.at(-1),previous=filtered.at(-2),change=last&&previous?(last.close-previous.close)/previous.close*100:0;
- return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div><strong>{tile.symbol.replace('US.','')}</strong><span className="market-tag">{isUS?"美股":"沪深 A 股"} · {tile.period.toUpperCase()}</span>{stale&&<span className="warning">缓存数据</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时推送已连接':'正在重连'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div><div className="chart-tools"><span>{draw==='trend'?(trendStart?'选择趋势线终点':'选择趋势线起点'):isUS?(mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div><button title="画水平线" onClick={()=>setDraw(draw==='horizontal'?'off':'horizontal')}>─</button><button title="画趋势线" onClick={()=>{setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>╱</button><button title="移除画线" onClick={()=>{onDraw([]);onTrend([])}}><Trash2 size={13}/></button></div></div>{(error||formulaError||pythonError)&&<div className="chart-error">{error||formulaError||pythonError}</div>}<div className="chart-canvas" ref={box}/><div className="chart-foot"><span>OPEN D · {filtered.length} 根 K 线</span><span>OHLC {last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}</span></div></div>
+ return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div><strong>{tile.symbol.replace('US.','')}</strong><span className="market-tag">{isUS?"美股":"沪深 A 股"} · {tile.period.toUpperCase()}</span>{stale&&<span className="warning">缓存数据</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时推送已连接':'正在重连'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div><div className="chart-tools"><span>{draw==='trend'?(trendStart?'选择趋势线终点':'选择趋势线起点'):isUS?(mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div><button title="画水平线" onClick={()=>setDraw(draw==='horizontal'?'off':'horizontal')}>─</button><button title="画趋势线" onClick={()=>{setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>╱</button><button title="移除画线" onClick={()=>{onDraw([]);onTrend([])}}><Trash2 size={13}/></button></div></div>{(error||formulaError||pythonError)&&<div className="chart-error">{error||formulaError||pythonError}</div>}<div className="chart-canvas" ref={box} onPointerDown={()=>{historyInteraction.current=true}} onWheel={()=>{historyInteraction.current=true}}/><div className="chart-foot"><span>OPEN D · {filtered.length} 根 K 线</span><button className="older-button" disabled={!hasMore||loadingOlder||historyCursor===null} onClick={()=>void requestOlder(true)}>{loadingOlder?'加载中…':hasMore?'← 更早 K 线':'已到缓存范围'}</button><span>{historyError||`OHLC ${last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}`}</span></div></div>
 }
 type Market = 'US' | 'CN';
 type WatchGroup = {id:string; name:string; symbols:string[]};
@@ -125,6 +150,7 @@ const baseIndicators:Indicator[] = [
   {id:'volume',name:'VOLUME',params:'{"period":20}',visible:true},
   {id:'vwap',name:'VWAP',params:'{"reset":"session"}',visible:true},
   {id:'macd',name:'MACD',params:'{"fast":12,"slow":26,"signal":9}',visible:true},
+  {id:'bbi',name:'BBI',params:'{"periods":[3,6,12,24]}',visible:true},
 ];
 const freshMarket = (market:Market):MarketWorkspace => ({
   groups:[{id:'featured',name:'精选',symbols:market==='US'?['US.SNDK','US.SNXX','US.SNDQ']:[]}],
