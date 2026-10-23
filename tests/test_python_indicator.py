@@ -31,6 +31,15 @@ class PythonIndicatorTests(unittest.TestCase):
             with self.subTest(code=code), self.assertRaises(ValueError):
                 validate_code(code)
 
+    def test_safe_imports(self):
+        code = 'import math\nfrom statistics import mean\nresult = [math.sqrt(x) + mean([1, 3]) for x in C]'
+        output = calculate(code, sample_bars())
+        self.assertAlmostEqual(output['values']['main'][0], 2 + 2 ** .5)
+        for code in ('import pathlib\nresult=C', 'from math import __dict__\nresult=C',
+                     'import math\nresult=math.__dict__'):
+            with self.subTest(code=code), self.assertRaises(ValueError):
+                validate_code(code)
+
     def test_worker_process_returns_matching_series(self):
         output = run_python_indicator('result = C - O', sample_bars())
         self.assertEqual(output['values']['main'], [1.0] * 5)

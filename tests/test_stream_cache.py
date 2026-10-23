@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 temp = tempfile.TemporaryDirectory()
 os.environ['DB_PATH'] = os.path.join(temp.name, 'test.sqlite3')
 from app import main as market
+market.DB = os.environ['DB_PATH']
 
 
 def sample(ts, close):

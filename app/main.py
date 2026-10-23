@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -301,6 +302,31 @@ class Bridge:
                     return cached[1], True
                 raise
 
+    def user_watchlists(self):
+        from moomoo import RET_OK, UserSecurityGroupType
+        with self.lock:
+            ctx = self.ensure()
+            self.rate_limit()
+            ret, data = ctx.get_user_security_group(UserSecurityGroupType.ALL)
+            if ret != RET_OK:
+                raise RuntimeError(str(data))
+            groups = []
+            for row in data.to_dict('records'):
+                name, kind = str(row['group_name']), str(row['group_type'])
+                # Market-wide system categories are not personal watchlists.
+                if kind != 'CUSTOM' and name != 'Favorites':
+                    continue
+                # The OpenD watchlist endpoint has a stricter request quota.
+                time.sleep(max(0, 3.2 - (time.monotonic() - self.last_request)))
+                self.last_request = time.monotonic()
+                ret, stocks = ctx.get_user_security(name)
+                if ret != RET_OK:
+                    raise RuntimeError(f'{name}: {stocks}')
+                codes = list(dict.fromkeys(str(item['code']) for item in stocks.to_dict('records')))
+                groups.append({'name': name, 'kind': kind, 'symbols': codes})
+            self.last_activity = time.monotonic()
+            return groups
+
     def subscribe(self, key):
         from moomoo import SubType, Session, RET_OK
         with self.lock:
@@ -497,6 +523,66 @@ async def python_indicator(request: PythonIndicatorRequest):
 
 class Setting(BaseModel):
     value: object
+
+
+def merge_moomoo_groups(workspace, remote_groups):
+    workspace = workspace if isinstance(workspace, dict) else {}
+    if not isinstance(workspace.get('markets'), dict):
+        workspace = {'activeMarket': 'US', 'markets': {'US': workspace, 'CN': {}}}
+    markets = workspace['markets']
+    summary = {'US': {'groups': 0, 'symbols': 0}, 'CN': {'groups': 0, 'symbols': 0},
+               'unsupported_symbols': 0}
+    for market in ('US', 'CN'):
+        current = markets.get(market)
+        if not isinstance(current, dict):
+            current = {}
+        groups = current.get('groups')
+        if not isinstance(groups, list):
+            groups = []
+        if not groups:
+            defaults = os.getenv('DEFAULT_SYMBOLS', 'US.SNDK,US.SNXX,US.SNDQ').split(',') if market == 'US' else []
+            groups = [{'id': 'featured', 'name': '精选', 'symbols': defaults}]
+        current['groups'] = groups
+        markets[market] = current
+    for remote in remote_groups:
+        valid = [s for s in remote['symbols'] if SYMBOL_RE.fullmatch(s)]
+        summary['unsupported_symbols'] += len(remote['symbols']) - len(valid)
+        for market, codes in (('US', [s for s in valid if s.startswith('US.')]),
+                              ('CN', [s for s in valid if s.startswith(('SH.', 'SZ.'))])):
+            if not codes:
+                continue
+            groups = markets[market]['groups']
+            group_id = 'moomoo-' + hashlib.sha256((remote['kind'] + ':' + remote['name']).encode()).hexdigest()[:16]
+            existing = next((g for g in groups if isinstance(g, dict) and g.get('id') == group_id), None)
+            if existing is None:
+                name = remote['name'][:24]
+                if any(isinstance(g, dict) and g.get('name') == name for g in groups):
+                    name = (remote['name'][:15] + ' · moomoo')[:24]
+                existing = {'id': group_id, 'name': name, 'symbols': []}
+                groups.append(existing)
+            existing['symbols'] = list(dict.fromkeys(codes))
+            summary[market]['groups'] += 1
+            summary[market]['symbols'] += len(existing['symbols'])
+    return workspace, summary
+
+
+@app.post('/api/watchlists/import-moomoo')
+async def import_moomoo_watchlists():
+    try:
+        remote = await asyncio.to_thread(bridge.user_watchlists)
+    except Exception as exc:
+        raise HTTPException(502, f'读取 moomoo 自选分组失败：{exc}')
+    with connect_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute("SELECT value FROM settings WHERE key='workspace'").fetchone()
+        raw = json.loads(row['value']) if row else {}
+        workspace, summary = merge_moomoo_groups(raw, remote)
+        payload = json.dumps(workspace, ensure_ascii=False)
+        if len(payload) > 100_000:
+            raise HTTPException(413, '自选分组超出工作区容量')
+        db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                   ('workspace', payload))
+    return {'value': workspace, 'summary': summary, 'remote_groups': len(remote)}
 
 
 @app.get('/api/settings/{key}')

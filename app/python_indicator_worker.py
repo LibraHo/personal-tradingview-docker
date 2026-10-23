@@ -5,11 +5,16 @@ import ast
 import json
 import math
 import re
+import statistics
 import sys
 
 MAX_CODE = 4000
 MAX_NODES = 500
 MAX_LINES = 8
+SAFE_MODULES = {
+    'math': {'sqrt', 'log', 'log10', 'exp', 'floor', 'ceil', 'fabs', 'isfinite', 'sin', 'cos', 'tan'},
+    'statistics': {'mean', 'fmean', 'median', 'pstdev', 'stdev'},
+}
 SAFE_CALLS = {'abs', 'min', 'max', 'sum', 'len', 'range', 'enumerate',
               'zip', 'round', 'float', 'int', 'list', 'SMA', 'EMA', 'REF',
               'HHV', 'LLV'}
@@ -22,6 +27,7 @@ ALLOWED = {
     ast.IfExp, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod,
     ast.Pow, ast.UAdd, ast.USub, ast.Not, ast.And, ast.Or, ast.Eq, ast.NotEq,
     ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Is, ast.IsNot,
+    ast.Import, ast.ImportFrom, ast.alias, ast.Attribute,
 }
 
 
@@ -32,12 +38,30 @@ def validate_code(source: str):
     nodes = list(ast.walk(tree))
     if len(nodes) > MAX_NODES:
         raise ValueError('Python 指标代码过于复杂')
-    callable_names = SAFE_CALLS | {node.name for node in nodes if isinstance(node, ast.FunctionDef)}
+    module_aliases = {}
+    imported_calls = set()
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in SAFE_MODULES:
+                    raise ValueError('只能导入 math 或 statistics')
+                module_aliases[alias.asname or alias.name] = alias.name
+        if isinstance(node, ast.ImportFrom):
+            if node.level or node.module not in SAFE_MODULES:
+                raise ValueError('只能从 math 或 statistics 导入函数')
+            for alias in node.names:
+                if alias.name not in SAFE_MODULES[node.module]:
+                    raise ValueError(f'不支持导入的函数：{alias.name}')
+                imported_calls.add(alias.asname or alias.name)
+    callable_names = SAFE_CALLS | imported_calls | {node.name for node in nodes if isinstance(node, ast.FunctionDef)}
+    call_attributes = {id(node.func) for node in nodes if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
     for node in nodes:
         if type(node) not in ALLOWED:
             raise ValueError(f'不支持的 Python 语法：{type(node).__name__}')
         if isinstance(node, ast.Name) and node.id.startswith('_'):
             raise ValueError('变量名不能以下划线开头')
+        if isinstance(node, ast.alias) and node.asname and node.asname.startswith('_'):
+            raise ValueError('导入别名不能以下划线开头')
         if isinstance(node, ast.FunctionDef):
             if node.name.startswith('_'):
                 raise ValueError('函数名不能以下划线开头')
@@ -45,10 +69,15 @@ def validate_code(source: str):
                 raise ValueError('不支持函数装饰器或类型注解')
         if isinstance(node, ast.arg) and (node.arg.startswith('_') or node.annotation):
             raise ValueError('参数名不能以下划线开头，也不能使用类型注解')
-        if isinstance(node, ast.Call) and not isinstance(node.func, ast.Name):
+        if isinstance(node, ast.Attribute):
+            if id(node) not in call_attributes or not isinstance(node.value, ast.Name) or node.attr not in SAFE_MODULES.get(module_aliases.get(node.value.id, ''), set()):
+                raise ValueError('只能调用 math 或 statistics 中允许的函数')
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in callable_names:
+                continue
+            if isinstance(node.func, ast.Attribute):
+                continue
             raise ValueError('只能调用内置计算函数或自己定义的函数')
-        if isinstance(node, ast.Call) and node.func.id not in callable_names:
-            raise ValueError(f'不支持的函数：{node.func.id}')
     return tree
 
 
@@ -153,7 +182,11 @@ def calculate(source, bars):
     tree = validate_code(source)
     if not bars or len(bars) > 5000:
         raise ValueError('请先加载 1–5000 根 K 线')
-    namespace = {'__builtins__': {}, 'abs': abs, 'min': min, 'max': max,
+    def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if level or name not in SAFE_MODULES:
+            raise ImportError('只能导入 math 或 statistics')
+        return {'math': math, 'statistics': statistics}[name]
+    namespace = {'__builtins__': {'__import__': safe_import}, 'abs': abs, 'min': min, 'max': max,
                  'sum': sum, 'len': len, 'range': range, 'enumerate': enumerate,
                  'zip': zip, 'round': round, 'float': float, 'int': int,
                  'list': list, 'SMA': sma, 'EMA': ema, 'REF': ref,

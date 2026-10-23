@@ -168,6 +168,7 @@ function App(){
   const [state,setState]=useState<WorkspaceV2>(initialV2),[ready,setReady]=useState(false),[active,setActive]=useState(0);
   const [newSymbol,setNewSymbol]=useState(''),[symbolError,setSymbolError]=useState('');
   const [newGroupName,setNewGroupName]=useState(''),[groupError,setGroupError]=useState('');
+  const [importingGroups,setImportingGroups]=useState(false),[importMessage,setImportMessage]=useState('');
   const [editingGroup,setEditingGroup]=useState(''),[groupDraft,setGroupDraft]=useState('');
   const [showIndicators,setShowIndicators]=useState(false),[newIndicator,setNewIndicator]=useState('EMA'),[refresh,setRefresh]=useState(0),[status,setStatus]=useState<any>({});
   const [templates,setTemplates]=useState<Record<string,Indicator[]>>({}),[templateName,setTemplateName]=useState('');
@@ -185,9 +186,13 @@ function App(){
     let cancelled=false;
     const load=()=>{
       if(document.visibilityState!=='visible')return;
-      fetch(`/api/quotes?symbols=${encodeURIComponent(quoteSymbols)}`)
-        .then(async r=>{if(!r.ok)throw Error((await r.json()).detail||'快照不可用');return r.json()})
-        .then(data=>{if(!cancelled){setQuotes(Object.fromEntries((data.quotes as StockQuote[]).map(q=>[q.symbol,q])));setQuotesStale(!!data.stale);setQuoteError('')}})
+      const chunks=selectedGroup.symbols.reduce<string[][]>((all,s,i)=>{if(i%100===0)all.push([]);all[all.length-1].push(s);return all},[]);
+      Promise.all(chunks.map(async chunk=>{
+        const r=await fetch(`/api/quotes?symbols=${encodeURIComponent(chunk.join(','))}`);
+        if(!r.ok)throw Error((await r.json()).detail||'快照不可用');
+        return r.json();
+      }))
+        .then(data=>{if(!cancelled){setQuotes(Object.fromEntries(data.flatMap(x=>x.quotes as StockQuote[]).map((q:StockQuote)=>[q.symbol,q])));setQuotesStale(data.some(x=>x.stale));setQuoteError('')}})
         .catch(e=>{if(!cancelled)setQuoteError(String(e.message||e))});
     };
     load();
@@ -211,6 +216,17 @@ function App(){
     return()=>clearTimeout(t);
   },[state,ready]);
   const updateMarket=(fn:(w:MarketWorkspace)=>MarketWorkspace)=>setState(old=>({...old,markets:{...old.markets,[old.activeMarket]:fn(old.markets[old.activeMarket])}}));
+  const importGroups=async()=>{
+    setImportingGroups(true);setImportMessage('');
+    try{
+      const r=await fetch('/api/watchlists/import-moomoo',{method:'POST'});
+      const data=await r.json();
+      if(!r.ok)throw Error(data.detail||'读取失败');
+      setState(restoreWorkspace(data.value));
+      setImportMessage(`已导入：美股 ${data.summary.US.groups} 组 / ${data.summary.US.symbols} 只，A 股 ${data.summary.CN.groups} 组 / ${data.summary.CN.symbols} 只`);
+    }catch(e:any){setImportMessage(String(e.message||e))}
+    finally{setImportingGroups(false)}
+  };
   const switchMarket=(next:Market)=>{setState(old=>({...old,activeMarket:next}));setActive(0);setNewSymbol('');setSymbolError('')};
   const selectGroup=(id:string)=>{
     updateMarket(w=>{const g=w.groups.find(x=>x.id===id);return g?{...w,selectedGroupId:id,tiles:w.tiles.map((t,i)=>g.symbols.length?{...t,symbol:g.symbols[i%g.symbols.length]}:t)}:w});
@@ -292,6 +308,8 @@ function App(){
         <button role="tab" aria-selected={market==='CN'} className={market==='CN'?'on':''} onClick={()=>switchMarket('CN')}>A 股</button>
       </div>
       <div className="side-group"><div className="group-label">自选分组 <span>{ws.groups.length}</span></div>
+        <button className="moomoo-import" onClick={importGroups} disabled={importingGroups} title="从 OpenD 读取 moomoo 自选分组及组内股票">{importingGroups?'正在读取 moomoo 分组…':'↻ 从 moomoo 导入分组'}</button>
+        {importMessage&&<div className="quote-notice" title={importMessage}>{importMessage}</div>}
         <div className="watch-groups">{ws.groups.map(g=><div className={`watch-group ${g.id===selectedGroup.id?'active':''}`} key={g.id}>
           {editingGroup===g.id?<input className="group-edit" aria-label="分组名称" value={groupDraft} autoFocus onChange={e=>setGroupDraft(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')renameGroup();if(e.key==='Escape')setEditingGroup('')}} onBlur={renameGroup}/>:
             <button className="group-select" onClick={()=>selectGroup(g.id)}><span>{g.id==='featured'?'★':'▦'}</span>{g.name}<small>{g.symbols.length}</small></button>}
@@ -326,7 +344,7 @@ function App(){
   <input placeholder="名称，如双均线差" value={customName} onChange={e=>setCustomName(e.target.value)}/>
   <textarea aria-label={customLanguage==='python'?'Python 指标代码':'指标公式'} value={customFormula} onChange={e=>setCustomFormula(e.target.value)} spellCheck={false}/>
   <div className="custom-options"><select value={customPane} onChange={e=>setCustomPane(e.target.value as 'main'|'separate')}><option value="separate">独立副图</option><option value="main">叠加主图</option></select><button onClick={addCustom}><Plus size={14}/> 添加</button></div>
-  <small>{customLanguage==='python'?'Python：使用 O/H/L/C/V、TIME、SESSION、TRADE_DATE 和 SMA、EMA、REF、HHV、LLV；把序列或多线字典赋给 result。为保护 NAS，不支持 import 或第三方包。':'简易公式：支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、ABS、MAX、MIN 和四则运算。'}</small>
+  <small>{customLanguage==='python'?'Python：使用 O/H/L/C/V、TIME、SESSION、TRADE_DATE 和 SMA、EMA、REF、HHV、LLV；支持 import math、import statistics 及其中常用函数；把序列或多线字典赋给 result。':'简易公式：支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、ABS、MAX、MIN 和四则运算。'}</small>
   {customError&&<p className="custom-error">{customError}</p>}
 </div><div className="template"><h3>指标模板</h3><div className="template-save"><input placeholder="模板名称" value={templateName} onChange={e=>setTemplateName(e.target.value)}/><button onClick={saveTemplate}><Save size={14}/> 保存</button></div>{Object.entries(templates).map(([name,value])=><button className="template-item" key={name} onClick={()=>updateMarket(w=>({...w,indicators:value}))}>{name} <span>{value.length} 项</span></button>)}</div></div>}
     </main></div>
