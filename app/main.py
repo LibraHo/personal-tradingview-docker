@@ -19,10 +19,10 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .indicators import calculate
-from .python_indicator_worker import validate_code
+from .python_indicator_worker import validate_code, validate_inputs
 
 ET = ZoneInfo('America/New_York')
 CN_TZ = ZoneInfo('Asia/Shanghai')
@@ -159,8 +159,8 @@ def frame_to_bars(frame, symbol):
     return result
 
 
-def run_python_indicator(code, bars):
-    payload = {'code': code, 'bars': [{field: bar[field] for field in
+def run_python_indicator(code, bars, inputs=None):
+    payload = {'code': code, 'inputs': validate_inputs(inputs if inputs is not None else {}), 'bars': [{field: bar[field] for field in
         ('time', 'open', 'high', 'low', 'close', 'volume', 'session', 'trade_date')} for bar in bars]}
     worker = Path(__file__).with_name('python_indicator_worker.py')
     def limit_resources():
@@ -532,14 +532,20 @@ class PythonIndicatorRequest(BaseModel):
     period: str = '5m'
     mode: str = 'all'
     code: str
+    inputs: dict = Field(default_factory=dict)
+
+
+def python_validation_error(exc):
+    return f'第 {exc.lineno} 行：{exc.msg}' if isinstance(exc, SyntaxError) else str(exc)
 
 
 @app.post('/api/python-indicator/validate')
 def validate_python_indicator(request: PythonIndicatorRequest):
     try:
         validate_code(request.code)
+        validate_inputs(request.inputs)
     except (SyntaxError, ValueError) as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(400, python_validation_error(exc))
     return {'ok': True}
 
 
@@ -548,15 +554,16 @@ async def python_indicator(request: PythonIndicatorRequest):
     try:
         key = validate(request.symbol, request.period, request.mode)
         validate_code(request.code)
+        validate_inputs(request.inputs)
     except (SyntaxError, ValueError) as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(400, python_validation_error(exc))
     days = DAILY_HISTORY_DAYS if key[1] == '1d' else DEFAULT_DAYS
     bars_data = await asyncio.to_thread(read_bars, key, days, 5000)
     if not bars_data:
         raise HTTPException(409, '请先加载该图表的 K 线')
     try:
         async with python_slots:
-            return await asyncio.to_thread(run_python_indicator, request.code, bars_data)
+            return await asyncio.to_thread(run_python_indicator, request.code, bars_data, request.inputs)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

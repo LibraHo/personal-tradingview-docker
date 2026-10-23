@@ -1,7 +1,7 @@
 import unittest
 
 from app.main import run_python_indicator
-from app.python_indicator_worker import calculate, validate_code
+from app.python_indicator_worker import calculate, validate_code, validate_inputs
 
 
 def sample_bars():
@@ -39,6 +39,19 @@ class PythonIndicatorTests(unittest.TestCase):
                      'import math\nresult=math.__dict__'):
             with self.subTest(code=code), self.assertRaises(ValueError):
                 validate_code(code)
+
+    def test_configurable_macd_periods(self):
+        code = 'fast = EMA(C, PARAMS["fast"])\nslow = EMA(C, PARAMS["slow"])\nmacd = fast - slow\nresult = {"macd": macd, "signal": EMA(macd, PARAMS["signal"])}'
+        output = calculate(code, sample_bars(), {'fast': 2, 'slow': 4, 'signal': 2})
+        self.assertNotEqual(output['values']['macd'][2], 0)
+        self.assertEqual(len(output['values']['signal']), 5)
+        changed = calculate(code, sample_bars(), {'fast': 3, 'slow': 4, 'signal': 2})
+        self.assertNotEqual(output['values']['macd'][2], changed['values']['macd'][2])
+
+    def test_rejects_unsafe_or_non_numeric_parameters(self):
+        for inputs in ({'x': float('inf')}, {'x': '5'}, {'__class__': 2}, {'x': True}):
+            with self.subTest(inputs=inputs), self.assertRaises(ValueError):
+                validate_inputs(inputs)
 
     def test_worker_process_returns_matching_series(self):
         output = run_python_indicator('result = C - O', sample_bars())

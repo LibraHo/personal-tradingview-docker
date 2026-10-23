@@ -11,6 +11,7 @@ import sys
 MAX_CODE = 4000
 MAX_NODES = 500
 MAX_LINES = 8
+MAX_INPUTS = 20
 SAFE_MODULES = {
     'math': {'sqrt', 'log', 'log10', 'exp', 'floor', 'ceil', 'fabs', 'isfinite', 'sin', 'cos', 'tan'},
     'statistics': {'mean', 'fmean', 'median', 'pstdev', 'stdev'},
@@ -79,6 +80,17 @@ def validate_code(source: str):
                 continue
             raise ValueError('只能调用内置计算函数或自己定义的函数')
     return tree
+
+
+def validate_inputs(inputs):
+    if not isinstance(inputs, dict) or len(inputs) > MAX_INPUTS:
+        raise ValueError('参数须为不超过 20 项的 JSON 对象')
+    for name, value in inputs.items():
+        if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,31}', name):
+            raise ValueError('参数名须以字母开头，只能使用字母、数字和下划线')
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or abs(value) > 1_000_000:
+            raise ValueError(f'参数 {name} 须为有限数字，绝对值不超过 100 万')
+    return inputs
 
 
 class Series:
@@ -178,8 +190,9 @@ def normalize(value, length):
     return result
 
 
-def calculate(source, bars):
+def calculate(source, bars, inputs=None):
     tree = validate_code(source)
+    inputs = validate_inputs(inputs if inputs is not None else {})
     if not bars or len(bars) > 5000:
         raise ValueError('请先加载 1–5000 根 K 线')
     def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -196,6 +209,7 @@ def calculate(source, bars):
     namespace['TIME'] = tuple(bar['time'] for bar in bars)
     namespace['SESSION'] = tuple(bar['session'] for bar in bars)
     namespace['TRADE_DATE'] = tuple(bar['trade_date'] for bar in bars)
+    namespace['PARAMS'] = inputs
     exec(compile(tree, '<python-indicator>', 'exec'), namespace, namespace)
     output = namespace.get('result')
     if output is None:
@@ -214,6 +228,6 @@ def calculate(source, bars):
 if __name__ == '__main__':
     try:
         request = json.load(sys.stdin)
-        print(json.dumps(calculate(request['code'], request['bars']), separators=(',', ':')))
+        print(json.dumps(calculate(request['code'], request['bars'], request.get('inputs', {})), separators=(',', ':')))
     except Exception as exc:
         print(json.dumps({'error': f'{type(exc).__name__}: {exc}'}, ensure_ascii=False))

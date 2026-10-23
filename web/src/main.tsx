@@ -14,7 +14,7 @@ const mergeBars=(older:Bar[],newer:Bar[])=>[...new Map([...older,...newer].map(b
 type TrendPoint={time:number;price:number};
 const periods:Period[]=['1m','5m','15m','30m','60m','1d'];const names=['EMA','SMA','VWAP','BBI','BOLL','ATR','MACD','DMI','RSI','VOLUME'];
 const chartSlots=[0,1,2,3];
-const pythonExample='fast = EMA(C, 12)\nslow = EMA(C, 26)\nresult = {"difference": fast - slow}';
+const pythonExample='fast = EMA(C, PARAMS["fast"])\nslow = EMA(C, PARAMS["slow"])\nmacd = fast - slow\nsignal = EMA(macd, PARAMS["signal"])\nresult = {"MACD": macd, "Signal": signal, "Histogram": macd - signal}';
 const appliesTo=(indicator:Indicator,index:number,period:Period)=>indicator.visible&&
   (!Array.isArray(indicator.charts)||indicator.charts.includes(index))&&
   (!Array.isArray(indicator.periods)||indicator.periods.includes(period));
@@ -31,11 +31,22 @@ function IndicatorScope({indicator,onChange}:{indicator:Indicator;onChange:(patc
 }
 
 function IndicatorSettings({indicator,onPatch,onDelete}:{indicator:Indicator;onPatch:(patch:Partial<Indicator>)=>void;onDelete:()=>void}){
-  let pythonCode='';
-  if(indicator.name==='PYTHON')try{pythonCode=String(JSON.parse(indicator.params).code||'')}catch{}
+  const [newInputName,setNewInputName]=useState(''),[validationError,setValidationError]=useState('');
+  let settings:any={code:'',inputs:{}};
+  if(indicator.name==='PYTHON')try{settings=JSON.parse(indicator.params)}catch{}
+  const pythonCode=String(settings.code||''),pythonInputs:Record<string,number>=settings.inputs&&typeof settings.inputs==='object'?settings.inputs:{};
+  const patchPython=(next:any)=>onPatch({params:JSON.stringify({...settings,...next})});
+  useEffect(()=>{if(indicator.name!=='PYTHON')return;
+    let cancelled=false;const timer=window.setTimeout(async()=>{
+      try{const r=await fetch('/api/python-indicator/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:pythonCode,inputs:pythonInputs})});const data=await r.json();if(!cancelled)setValidationError(r.ok?'':data.detail||'Python 代码检查失败')}
+      catch(e){if(!cancelled)setValidationError(String(e))}
+    },500);
+    return()=>{cancelled=true;clearTimeout(timer)};
+  },[indicator.name,indicator.params]);
+  const addInput=()=>{const name=newInputName.trim();if(!/^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(name)||name in pythonInputs){setValidationError('参数名须以字母开头，且不能重复');return}patchPython({inputs:{...pythonInputs,[name]:1}});setNewInputName('')};
   return <div className="indicator-card">
     <div className="indicator-row"><label><input type="checkbox" checked={indicator.visible} onChange={e=>onPatch({visible:e.target.checked})}/><strong>{indicator.title||indicator.name}</strong></label>{indicator.name==='PYTHON'?<span className="indicator-language">Python</span>:<input className="params" aria-label={`${indicator.title||indicator.name} 参数`} value={indicator.params} spellCheck={false} onChange={e=>onPatch({params:e.target.value})}/>}<button className="icon-button" title={`删除 ${indicator.title||indicator.name}`} onClick={onDelete}><Trash2 size={15}/></button></div>
-    {indicator.name==='PYTHON'&&<textarea className="python-code" aria-label={`${indicator.title||indicator.name} Python 代码`} value={pythonCode} spellCheck={false} onChange={e=>onPatch({params:JSON.stringify({code:e.target.value})})}/>}
+    {indicator.name==='PYTHON'&&<><textarea className="python-code" aria-label={`${indicator.title||indicator.name} Python 代码`} value={pythonCode} spellCheck={false} onChange={e=>patchPython({code:e.target.value})}/><div className="python-inputs"><strong>可调参数</strong>{Object.entries(pythonInputs).map(([name,value])=><label key={`${name}:${value}`}>{name}<input aria-label={`${indicator.title||indicator.name} ${name}`} type="number" step="any" defaultValue={value} onBlur={e=>{const next=Number(e.target.value);if(!e.target.value||!Number.isFinite(next)){e.target.value=String(value);setValidationError(`${name} 须为数字`);return}patchPython({inputs:{...pythonInputs,[name]:next}})}}/><button title={`删除参数 ${name}`} onClick={()=>{const inputs={...pythonInputs};delete inputs[name];patchPython({inputs})}}>×</button></label>)}<div className="python-add-input"><input aria-label="新增参数名" placeholder="新增参数名" value={newInputName} onChange={e=>setNewInputName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addInput()}/><button onClick={addInput}>添加参数</button></div><small>代码中用 PARAMS["fast"] 读取参数；修改数值后离开输入框即生效。</small></div>{validationError&&<div className="side-error">{validationError}</div>}</>}
     <IndicatorScope indicator={indicator} onChange={onPatch}/>
   </div>;
 }
@@ -49,7 +60,7 @@ const cnDay=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',month:'2-d
 const cnFull=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const chartGroup=new Map<number,{chart:IChartApi;candle:ISeriesApi<'Candlestick'>}>();
 let syncingCharts=false;
-function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw,trends,onTrend,version}:{index:number;tile:Tile;mode:Mode;indicators:Indicator[];active:boolean;onActivate:()=>void;drawings:number[];onDraw:(v:number[])=>void;trends:TrendPoint[][];onTrend:(v:TrendPoint[][])=>void;version:number}){
+function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw,trends,onTrend,version,stockName}:{index:number;tile:Tile;mode:Mode;indicators:Indicator[];active:boolean;onActivate:()=>void;drawings:number[];onDraw:(v:number[])=>void;trends:TrendPoint[][];onTrend:(v:TrendPoint[][])=>void;version:number;stockName?:string}){
  const box=useRef<HTMLDivElement>(null),chartRef=useRef<IChartApi|null>(null),candleRef=useRef<ISeriesApi<'Candlestick'>|null>(null),fittedKey=useRef('');
  const [bars,setBars]=useState<Bar[]>([]),[loadedKey,setLoadedKey]=useState(''),[error,setError]=useState(''),[formulaError,setFormulaError]=useState(''),[stale,setStale]=useState(false),[live,setLive]=useState(false),[draw,setDraw]=useState<'off'|'horizontal'|'trend'>('off'),[trendStart,setTrendStart]=useState<TrendPoint|null>(null);
  const [pythonResults,setPythonResults]=useState<Record<string,{time:number[];values:Record<string,(number|null)[]>}>>({}),[pythonError,setPythonError]=useState('');
@@ -60,6 +71,7 @@ function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw
  const currentKey=useRef(key);currentKey.current=key;
  const activeIndicators=useMemo(()=>indicators.filter(ind=>appliesTo(ind,index,tile.period)),[indicators,index,tile.period]);
  const isUS=tile.symbol.startsWith('US.');
+ const chartName=!isUS&&stockName&&/[\u3400-\u9fff]/.test(stockName)?stockName:tile.symbol.replace('US.','');
  const displayTime=isUS?{clock:etClock,day:etDay,full:etFull}:{clock:cnClock,day:cnDay,full:cnFull};
  useEffect(()=>{let stop=false,ws:WebSocket|null=null,timer:number|undefined,initialized=false,openedOnce=false;
   historyInteraction.current=false;olderBusy.current=false;setHistoryCursor(null);setHasMore(true);setHistoryError('');
@@ -100,8 +112,8 @@ function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw
    lastPythonRun.current.time=Date.now();
    const results=await Promise.all(pythonIndicators.map(async ind=>{
     try{
-     const code=String(JSON.parse(ind.params).code||'');
-     const response=await fetch('/api/python-indicator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:tile.symbol,period:tile.period,mode:tile.period==='1d'?'regular':mode,code}),signal:controller.signal});
+     const settings=JSON.parse(ind.params),code=String(settings.code||''),inputs=settings.inputs||{};
+     const response=await fetch('/api/python-indicator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:tile.symbol,period:tile.period,mode:tile.period==='1d'?'regular':mode,code,inputs}),signal:controller.signal});
      const data=await response.json();if(!response.ok)throw Error(data.detail||'Python 指标计算失败');
      return {id:ind.id,data};
     }catch(e){return {id:ind.id,error:String(e)}}
@@ -136,7 +148,7 @@ function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw
  },[filtered,activeIndicators,pythonResults,drawings,trends,key,loadedKey]);
  useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||draw==='off')return;const handler=(p:any)=>{if(!p.point||!p.time||typeof p.time!=='number')return;const price=candle.coordinateToPrice(p.point.y);if(price===null)return;if(draw==='horizontal'){onDraw([...drawings,Number(price)]);setDraw('off')}else{const point={time:Number(p.time),price:Number(price)};if(!trendStart)setTrendStart(point);else{onTrend([...trends,[trendStart,point]]);setTrendStart(null);setDraw('off')}}};chart.subscribeClick(handler);return()=>chart.unsubscribeClick(handler)},[draw,drawings,onDraw,trends,onTrend,trendStart]);
  const last=filtered.at(-1),previous=filtered.at(-2),change=last&&previous?(last.close-previous.close)/previous.close*100:0;
- return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div><strong>{tile.symbol.replace('US.','')}</strong><span className="market-tag">{isUS?"美股":"沪深 A 股"} · {tile.period.toUpperCase()}</span>{stale&&<span className="warning">缓存数据</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时推送已连接':'正在重连'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div><div className="chart-tools"><span>{draw==='trend'?(trendStart?'选择趋势线终点':'选择趋势线起点'):isUS?(mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div><button title="画水平线" onClick={()=>setDraw(draw==='horizontal'?'off':'horizontal')}>─</button><button title="画趋势线" onClick={()=>{setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>╱</button><button title="移除画线" onClick={()=>{onDraw([]);onTrend([])}}><Trash2 size={13}/></button></div></div>{(error||formulaError||pythonError)&&<div className="chart-error">{error||formulaError||pythonError}</div>}<div className="chart-canvas" ref={box} onPointerDown={()=>{historyInteraction.current=true}} onWheel={()=>{historyInteraction.current=true}}/><div className="chart-foot"><span>OPEN D · {filtered.length} 根 K 线</span><button className="older-button" disabled={!hasMore||loadingOlder||historyCursor===null} onClick={()=>void requestOlder(true)}>{loadingOlder?'加载中…':hasMore?'← 更早 K 线':'已到缓存范围'}</button><span>{historyError||`OHLC ${last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}`}</span></div></div>
+ return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div><strong>{chartName}</strong><span className="market-tag">{isUS?"美股":`${tile.symbol} · 沪深 A 股`} · {tile.period.toUpperCase()}</span>{stale&&<span className="warning">缓存数据</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时推送已连接':'正在重连'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div><div className="chart-tools"><span>{draw==='trend'?(trendStart?'选择趋势线终点':'选择趋势线起点'):isUS?(mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div><button title="画水平线" onClick={()=>setDraw(draw==='horizontal'?'off':'horizontal')}>─</button><button title="画趋势线" onClick={()=>{setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>╱</button><button title="移除画线" onClick={()=>{onDraw([]);onTrend([])}}><Trash2 size={13}/></button></div></div>{(error||formulaError||pythonError)&&<div className="chart-error">{error||formulaError||pythonError}</div>}<div className="chart-canvas" ref={box} onPointerDown={()=>{historyInteraction.current=true}} onWheel={()=>{historyInteraction.current=true}}/><div className="chart-foot"><span>OPEN D · {filtered.length} 根 K 线</span><button className="older-button" disabled={!hasMore||loadingOlder||historyCursor===null} onClick={()=>void requestOlder(true)}>{loadingOlder?'加载中…':hasMore?'← 更早 K 线':'已到缓存范围'}</button><span>{historyError||`OHLC ${last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}`}</span></div></div>
 }
 type Market = 'US' | 'CN';
 type WatchGroup = {id:string; name:string; symbols:string[]};
@@ -198,7 +210,7 @@ function App(){
   const [editingGroup,setEditingGroup]=useState(''),[groupDraft,setGroupDraft]=useState('');
   const [showIndicators,setShowIndicators]=useState(false),[newIndicator,setNewIndicator]=useState('EMA'),[refresh,setRefresh]=useState(0),[status,setStatus]=useState<any>({});
   const [templates,setTemplates]=useState<Record<string,Indicator[]>>({}),[templateName,setTemplateName]=useState('');
-  const [customName,setCustomName]=useState(''),[customFormula,setCustomFormula]=useState('EMA(C,12)-EMA(C,26)'),[customLanguage,setCustomLanguage]=useState<'formula'|'python'>('formula'),[customPane,setCustomPane]=useState<'main'|'separate'>('separate'),[customError,setCustomError]=useState('');
+  const [customName,setCustomName]=useState(''),[customFormula,setCustomFormula]=useState('EMA(C,12)-EMA(C,26)'),[customInputs,setCustomInputs]=useState('{"fast":12,"slow":26,"signal":9}'),[customLanguage,setCustomLanguage]=useState<'formula'|'python'>('formula'),[customPane,setCustomPane]=useState<'main'|'separate'>('separate'),[customError,setCustomError]=useState('');
   const [quotes,setQuotes]=useState<Record<string,StockQuote>>({}),[quotesStale,setQuotesStale]=useState(false),[quoteError,setQuoteError]=useState('');
   const market=state.activeMarket,ws=state.markets[market];
   const selectedGroup=ws.groups.find(g=>g.id===ws.selectedGroupId)||ws.groups[0];
@@ -306,11 +318,13 @@ function App(){
   const setTile=(patch:Partial<Tile>)=>updateMarket(w=>({...w,tiles:w.tiles.map((t,i)=>i===active?{...t,...patch}:t)}));
   const addCustom=async()=>{try{
     if(!customName.trim())throw Error('请填写指标名称');
+    let inputs:Record<string,number>={};
     if(customLanguage==='python'){
-      const response=await fetch('/api/python-indicator/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:customFormula})});
+      try{inputs=JSON.parse(customInputs)}catch{throw Error('参数应为 JSON 对象，例如 {"fast":12,"slow":26,"signal":9}')}
+      const response=await fetch('/api/python-indicator/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:customFormula,inputs})});
       if(!response.ok)throw Error((await response.json()).detail||'Python 代码不受支持');
     }else formula(customFormula);
-    updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:customLanguage==='python'?'PYTHON':'CUSTOM',title:customName.trim(),pane:customPane,params:JSON.stringify(customLanguage==='python'?{code:customFormula.trim()}:{formula:customFormula.trim()}),visible:true}]}));
+    updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:customLanguage==='python'?'PYTHON':'CUSTOM',title:customName.trim(),pane:customPane,params:JSON.stringify(customLanguage==='python'?{code:customFormula.trim(),inputs}:{formula:customFormula.trim()}),visible:true}]}));
     setCustomError('');setCustomName('');
   }catch(e){setCustomError(String(e))}};
   const saveTemplate=()=>{if(!templateName.trim())return;const next={...templates,[templateName.trim()]:ws.indicators};setTemplates(next);fetch('/api/settings/templates',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:next})});setTemplateName('')};
@@ -349,8 +363,8 @@ function App(){
         <div className="symbol-list">{selectedGroup.symbols.map(s=><div key={s} className={`symbol ${current?.symbol===s?'active':''}`}>
           <button className="stock-select" onClick={()=>setTile({symbol:s})} title={quotes[s]?.update_time?`OpenD 更新：${quotes[s].update_time}`:s}>
             <span className="symbol-icon">{s.split('.')[1].slice(0,1)}</span>
-            <span className="stock-main"><span className="stock-top"><strong>{s.split('.')[1]}</strong><b>{priceText(quotes[s]?.price??null,market)}</b></span>
-              <span className="stock-middle"><small>{quotes[s]?.name||s}</small><em className={quotes[s]?.change_percent==null?'flat':quotes[s].change_percent!>=0?'positive':'negative'}>{percent(quotes[s]?.change_percent??null)}</em></span>
+            <span className="stock-main"><span className="stock-top"><strong>{market==='CN'&&quotes[s]?.name&&/[\u3400-\u9fff]/.test(quotes[s].name)?quotes[s].name:s.split('.')[1]}</strong><b>{priceText(quotes[s]?.price??null,market)}</b></span>
+              <span className="stock-middle"><small>{market==='CN'?s:quotes[s]?.name||s}</small><em className={quotes[s]?.change_percent==null?'flat':quotes[s].change_percent!>=0?'positive':'negative'}>{percent(quotes[s]?.change_percent??null)}</em></span>
               {market==='US'&&<span className="stock-sessions">{quotes[s]?.after_price!=null&&quotes[s].after_price!>0&&<span>盘后 <em className={quotes[s].after_change_percent!=null&&quotes[s].after_change_percent!<0?'negative':'positive'}>{percent(quotes[s].after_change_percent)}</em></span>}{quotes[s]?.overnight_price!=null&&quotes[s].overnight_price!>0&&<span>夜盘 <em className={quotes[s].overnight_change_percent!=null&&quotes[s].overnight_change_percent!<0?'negative':'positive'}>{percent(quotes[s].overnight_change_percent)}</em></span>}</span>}
             </span>
           </button>
@@ -363,14 +377,15 @@ function App(){
     </aside><main>
       <div className="workspace-top"><div><div className="eyebrow">WORKSPACE / {market}</div><h1>{market==='US'?'美股':'A 股'}观察台</h1><p>{selectedGroup.name} · 多周期图表与技术指标</p></div><div className="workspace-actions"><button className="secondary" onClick={()=>setShowIndicators(x=>!x)}><Settings2 size={16}/> 指标管理</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>updateMarket(w=>({...w,layout:n}))}>{n}</button>)}</div></div></div>
       <div className="toolbar"><div className="toolbar-section"><span>周期</span>{periods.map(p=><button key={p} className={current?.period===p?'on':''} onClick={()=>setTile({period:p})}>{p}</button>)}</div><div className="toolbar-line"/><div className="toolbar-section"><span>时段</span>{market==='US'?<select value={ws.mode} onChange={e=>updateMarket(w=>({...w,mode:e.target.value as Mode}))}><option value="all">24H 全时段</option><option value="extended">盘前 + 常规 + 盘后</option><option value="regular">仅常规</option></select>:<span className="cn-session">沪深常规时段 · 北京时间</span>}</div><div className="toolbar-end">{ws.indicators.filter(i=>current&&appliesTo(i,active,current.period)).length} 个指标用于当前图</div></div>
-      {selectedGroup.symbols.length?<div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane key={`${market}-${i}-${tile.symbol}`} index={i} tile={tile} mode={ws.mode} indicators={ws.indicators} active={active===i} onActivate={()=>setActive(i)} drawings={ws.drawings[`${tile.symbol}:${tile.period}`]||[]} onDraw={v=>updateMarket(w=>({...w,drawings:{...w.drawings,[`${tile.symbol}:${tile.period}`]:v}}))} trends={ws.trends[`${tile.symbol}:${tile.period}`]||[]} onTrend={v=>updateMarket(w=>({...w,trends:{...w.trends,[`${tile.symbol}:${tile.period}`]:v}}))} version={refresh}/>)}</div>:
+      {selectedGroup.symbols.length?<div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane key={`${market}-${i}-${tile.symbol}`} index={i} tile={tile} mode={ws.mode} indicators={ws.indicators} active={active===i} onActivate={()=>setActive(i)} drawings={ws.drawings[`${tile.symbol}:${tile.period}`]||[]} onDraw={v=>updateMarket(w=>({...w,drawings:{...w.drawings,[`${tile.symbol}:${tile.period}`]:v}}))} trends={ws.trends[`${tile.symbol}:${tile.period}`]||[]} onTrend={v=>updateMarket(w=>({...w,trends:{...w.trends,[`${tile.symbol}:${tile.period}`]:v}}))} version={refresh} stockName={quotes[tile.symbol]?.name}/>)}</div>:
         <div className="empty-watchlist"><strong>{selectedGroup.name}还是空的</strong><p>在左侧输入股票代码，就能开始看盘。</p><small>{market==='US'?'示例：AAPL、US.SNDK':'示例：SH.600519、SZ.000001'}</small></div>}
       {showIndicators&&<div className="indicator-panel"><div className="panel-head"><div><div className="eyebrow">CUSTOMIZE / {market}</div><h2>指标管理</h2></div><button className="icon-button" onClick={()=>setShowIndicators(false)}>×</button></div><div className="add-indicator"><select value={newIndicator} onChange={e=>setNewIndicator(e.target.value)}>{names.map(n=><option key={n}>{n}</option>)}</select><button className="primary" onClick={()=>updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:newIndicator,params:'{}',visible:true}]}))}><Plus size={14}/> 添加指标</button></div><div className="indicator-list">{ws.indicators.map(ind=><IndicatorSettings key={ind.id} indicator={ind} onPatch={patch=>patchIndicator(ind.id,patch)} onDelete={()=>updateMarket(w=>({...w,indicators:w.indicators.filter(x=>x.id!==ind.id)}))}/>)}</div><div className="custom-editor"><h3>新建自定义指标</h3>
   <div className="custom-language" role="tablist" aria-label="自定义指标语言"><button role="tab" aria-selected={customLanguage==='formula'} className={customLanguage==='formula'?'chosen':''} onClick={()=>selectCustomLanguage('formula')}>简易公式</button><button role="tab" aria-selected={customLanguage==='python'} className={customLanguage==='python'?'chosen':''} onClick={()=>selectCustomLanguage('python')}>Python</button></div>
   <input placeholder="名称，如双均线差" value={customName} onChange={e=>setCustomName(e.target.value)}/>
   <textarea aria-label={customLanguage==='python'?'Python 指标代码':'指标公式'} value={customFormula} onChange={e=>setCustomFormula(e.target.value)} spellCheck={false}/>
+  {customLanguage==='python'&&<label className="custom-inputs-label">参数默认值（JSON）<input aria-label="Python 参数默认值" value={customInputs} onChange={e=>setCustomInputs(e.target.value)} spellCheck={false}/></label>}
   <div className="custom-options"><select value={customPane} onChange={e=>setCustomPane(e.target.value as 'main'|'separate')}><option value="separate">独立副图</option><option value="main">叠加主图</option></select><button onClick={addCustom}><Plus size={14}/> 添加</button></div>
-  <small>{customLanguage==='python'?'Python：使用 O/H/L/C/V、TIME、SESSION、TRADE_DATE 和 SMA、EMA、REF、HHV、LLV；支持 import math、import statistics 及其中常用函数；把序列或多线字典赋给 result。':'简易公式：支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、ABS、MAX、MIN 和四则运算。'}</small>
+  <small>{customLanguage==='python'?'Python：示例用 PARAMS["fast"] 等读取可调参数；支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、math 和 statistics。添加后可直接调整参数数值；语法错误显示在此，运行错误显示在图表。':'简易公式：支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、ABS、MAX、MIN 和四则运算。'}</small>
   {customError&&<p className="custom-error">{customError}</p>}
 </div><div className="template"><h3>指标模板</h3><div className="template-save"><input placeholder="模板名称" value={templateName} onChange={e=>setTemplateName(e.target.value)}/><button onClick={saveTemplate}><Save size={14}/> 保存</button></div>{Object.entries(templates).map(([name,value])=><button className="template-item" key={name} onClick={()=>updateMarket(w=>({...w,indicators:value}))}>{name} <span>{value.length} 项</span></button>)}</div></div>}
     </main></div>
