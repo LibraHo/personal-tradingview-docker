@@ -8,27 +8,30 @@ import './style.css';
 type Mode='all'|'extended'|'regular';type Period='1m'|'5m'|'15m'|'30m'|'60m'|'1d';
 type Tile={symbol:string;period:Period};
 type TrendPoint={time:number;price:number};
-type Workspace={symbols:string[];layout:number;mode:Mode;tiles:Tile[];indicators:Indicator[];drawings:Record<string,number[]>;trends:Record<string,TrendPoint[][]>};
-const initial:Workspace={symbols:['US.SNDK','US.SNXX','US.SNDQ'],layout:1,mode:'all',tiles:[{symbol:'US.SNDK',period:'5m'},{symbol:'US.SNXX',period:'15m'},{symbol:'US.SNDQ',period:'60m'},{symbol:'US.SNDK',period:'1m'}],indicators:[{id:'volume',name:'VOLUME',params:'{"period":20}',visible:true},{id:'vwap',name:'VWAP',params:'{"reset":"session"}',visible:true},{id:'macd',name:'MACD',params:'{"fast":12,"slow":26,"signal":9}',visible:true}],drawings:{},trends:{}};
 const periods:Period[]=['1m','5m','15m','30m','60m','1d'];const names=['EMA','SMA','VWAP','BBI','BOLL','ATR','MACD','DMI','RSI','VOLUME'];
 const palette=['#74a9ff','#ffc86d','#9e89fa','#65d6bb','#f58291','#d3dce9'];
 const toTime=(n:number)=>n as UTCTimestamp;
 const etClock=new Intl.DateTimeFormat('en-GB',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const etDay=new Intl.DateTimeFormat('en-GB',{timeZone:'America/New_York',month:'2-digit',day:'2-digit'});
 const etFull=new Intl.DateTimeFormat('en-GB',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+const cnClock=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+const cnDay=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit'});
+const cnFull=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const chartGroup=new Map<number,{chart:IChartApi;candle:ISeriesApi<'Candlestick'>}>();
 let syncingCharts=false;
 function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw,trends,onTrend,version}:{index:number;tile:Tile;mode:Mode;indicators:Indicator[];active:boolean;onActivate:()=>void;drawings:number[];onDraw:(v:number[])=>void;trends:TrendPoint[][];onTrend:(v:TrendPoint[][])=>void;version:number}){
  const box=useRef<HTMLDivElement>(null),chartRef=useRef<IChartApi|null>(null),candleRef=useRef<ISeriesApi<'Candlestick'>|null>(null),fittedKey=useRef('');
  const [bars,setBars]=useState<Bar[]>([]),[loadedKey,setLoadedKey]=useState(''),[error,setError]=useState(''),[formulaError,setFormulaError]=useState(''),[stale,setStale]=useState(false),[live,setLive]=useState(false),[draw,setDraw]=useState<'off'|'horizontal'|'trend'>('off'),[trendStart,setTrendStart]=useState<TrendPoint|null>(null);
  const key=`${tile.symbol}:${tile.period}:${mode}`;
+ const isUS=tile.symbol.startsWith('US.');
+ const displayTime=isUS?{clock:etClock,day:etDay,full:etFull}:{clock:cnClock,day:cnDay,full:cnFull};
  useEffect(()=>{let stop=false,ws:WebSocket|null=null,timer:number|undefined;
   const load=async()=>{try{const r=await fetch(`/api/bars?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${tile.period==='1d'?'regular':mode}`);const data=await r.json();if(!r.ok)throw Error(data.detail);if(!stop){setBars(data.bars);setLoadedKey(key);setStale(data.stale);setError(data.error||'')}}catch(e){if(!stop)setError(String(e))}};
   const open=()=>{if(stop)return;ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/stream?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${tile.period==='1d'?'regular':mode}`);ws.onopen=()=>setLive(true);ws.onmessage=e=>{const msg=JSON.parse(e.data);if(msg.type==='bar')setBars(old=>{const i=old.findIndex(x=>x.time===msg.bar.time);if(i>=0){const copy=[...old];copy[i]=msg.bar;return copy}return [...old,msg.bar].sort((a,b)=>a.time-b.time).slice(-10000)});if(msg.type==='error')setError(msg.message)};ws.onclose=()=>{setLive(false);if(!stop)timer=window.setTimeout(open,5000)}};
   load().then(open);return()=>{stop=true;clearTimeout(timer);ws?.close()}
  },[key,version]);
  const filtered=useMemo(()=>bars.filter(x=>mode==='all'||x.session!=='overnight').filter(x=>mode!=='regular'||x.session==='regular'),[bars,mode]);
- useEffect(()=>{if(!box.current)return;const chart=createChart(box.current,{autoSize:true,layout:{background:{color:'#0e1624'},textColor:'#9aa9be',fontFamily:'Inter, system-ui, sans-serif',fontSize:11,panes:{separatorColor:'#263449',enableResize:true}},grid:{vertLines:{color:'#1c283a'},horzLines:{color:'#1c283a'}},crosshair:{vertLine:{color:'#6c829d'},horzLine:{color:'#6c829d'}},rightPriceScale:{borderColor:'#263449'},localization:{timeFormatter:(time:Time)=>typeof time==='number'?etFull.format(time*1000):String(time)},timeScale:{borderColor:'#263449',timeVisible:true,secondsVisible:false,tickMarkFormatter:(time:Time,kind:TickMarkType)=>typeof time==='number'?(kind<=TickMarkType.DayOfMonth?etDay.format(time*1000):etClock.format(time*1000)):null},handleScroll:true,handleScale:true});chartRef.current=chart;const candle=chart.addSeries(CandlestickSeries,{upColor:'#45caa6',downColor:'#ed6b7d',borderVisible:false,wickUpColor:'#45caa6',wickDownColor:'#ed6b7d'});candleRef.current=candle;chartGroup.set(index,{chart,candle});
+ useEffect(()=>{if(!box.current)return;const chart=createChart(box.current,{autoSize:true,layout:{background:{color:'#0e1624'},textColor:'#9aa9be',fontFamily:'Inter, system-ui, sans-serif',fontSize:11,panes:{separatorColor:'#263449',enableResize:true}},grid:{vertLines:{color:'#1c283a'},horzLines:{color:'#1c283a'}},crosshair:{vertLine:{color:'#6c829d'},horzLine:{color:'#6c829d'}},rightPriceScale:{borderColor:'#263449'},localization:{timeFormatter:(time:Time)=>typeof time==='number'?displayTime.full.format(time*1000):String(time)},timeScale:{borderColor:'#263449',timeVisible:true,secondsVisible:false,tickMarkFormatter:(time:Time,kind:TickMarkType)=>typeof time==='number'?(kind<=TickMarkType.DayOfMonth?displayTime.day.format(time*1000):displayTime.clock.format(time*1000)):null},handleScroll:true,handleScale:true});chartRef.current=chart;const candle=chart.addSeries(CandlestickSeries,{upColor:'#45caa6',downColor:'#ed6b7d',borderVisible:false,wickUpColor:'#45caa6',wickDownColor:'#ed6b7d'});candleRef.current=candle;chartGroup.set(index,{chart,candle});
   const cross=(p:any)=>{if(syncingCharts)return;syncingCharts=true;for(const[id,target]of chartGroup){if(id===index)continue;if(p.time&&p.point){const source=p.seriesData.get(candle) as {close:number}|undefined;target.chart.setCrosshairPosition(source?.close||0,p.time,target.candle)}else target.chart.clearCrosshairPosition()}syncingCharts=false};
   const range=(r:any)=>{if(syncingCharts||!r)return;syncingCharts=true;for(const[id,target]of chartGroup){if(id!==index)try{target.chart.timeScale().setVisibleRange(r)}catch{}}syncingCharts=false};
   chart.subscribeCrosshairMove(cross);chart.timeScale().subscribeVisibleTimeRangeChange(range);
@@ -44,15 +47,179 @@ function ChartPane({index,tile,mode,indicators,active,onActivate,drawings,onDraw
  },[filtered,indicators,drawings,trends,key,loadedKey]);
  useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||draw==='off')return;const handler=(p:any)=>{if(!p.point||!p.time||typeof p.time!=='number')return;const price=candle.coordinateToPrice(p.point.y);if(price===null)return;if(draw==='horizontal'){onDraw([...drawings,Number(price)]);setDraw('off')}else{const point={time:Number(p.time),price:Number(price)};if(!trendStart)setTrendStart(point);else{onTrend([...trends,[trendStart,point]]);setTrendStart(null);setDraw('off')}}};chart.subscribeClick(handler);return()=>chart.unsubscribeClick(handler)},[draw,drawings,onDraw,trends,onTrend,trendStart]);
  const last=filtered.at(-1),previous=filtered.at(-2),change=last&&previous?(last.close-previous.close)/previous.close*100:0;
- return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div><strong>{tile.symbol.replace('US.','')}</strong><span className="market-tag">NASDAQ · {tile.period.toUpperCase()}</span>{stale&&<span className="warning">缓存数据</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时推送已连接':'正在重连'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div><div className="chart-tools"><span>{draw==='trend'?(trendStart?'选择趋势线终点':'选择趋势线起点'):mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'} · 美东时间</span><div><button title="画水平线" onClick={()=>setDraw(draw==='horizontal'?'off':'horizontal')}>─</button><button title="画趋势线" onClick={()=>{setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>╱</button><button title="移除画线" onClick={()=>{onDraw([]);onTrend([])}}><Trash2 size={13}/></button></div></div>{(error||formulaError)&&<div className="chart-error">{error||formulaError}</div>}<div className="chart-canvas" ref={box}/><div className="chart-foot"><span>OPEN D · {filtered.length} 根 K 线</span><span>OHLC {last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}</span></div></div>
+ return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div><strong>{tile.symbol.replace('US.','')}</strong><span className="market-tag">{isUS?"美股":"沪深 A 股"} · {tile.period.toUpperCase()}</span>{stale&&<span className="warning">缓存数据</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时推送已连接':'正在重连'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div><div className="chart-tools"><span>{draw==='trend'?(trendStart?'选择趋势线终点':'选择趋势线起点'):isUS?(mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div><button title="画水平线" onClick={()=>setDraw(draw==='horizontal'?'off':'horizontal')}>─</button><button title="画趋势线" onClick={()=>{setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>╱</button><button title="移除画线" onClick={()=>{onDraw([]);onTrend([])}}><Trash2 size={13}/></button></div></div>{(error||formulaError)&&<div className="chart-error">{error||formulaError}</div>}<div className="chart-canvas" ref={box}/><div className="chart-foot"><span>OPEN D · {filtered.length} 根 K 线</span><span>OHLC {last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}</span></div></div>
 }
-function App(){const[ws,setWs]=useState<Workspace>(initial),[ready,setReady]=useState(false),[active,setActive]=useState(0),[newSymbol,setNewSymbol]=useState(''),[showIndicators,setShowIndicators]=useState(false),[newIndicator,setNewIndicator]=useState('EMA'),[refresh,setRefresh]=useState(0),[status,setStatus]=useState<any>({}),[templates,setTemplates]=useState<Record<string,Indicator[]>>({}),[templateName,setTemplateName]=useState(''),[customName,setCustomName]=useState(''),[customFormula,setCustomFormula]=useState('EMA(C,12)-EMA(C,26)'),[customPane,setCustomPane]=useState<'main'|'separate'>('separate'),[customError,setCustomError]=useState('');
- useEffect(()=>{Promise.all([fetch('/api/settings/workspace').then(r=>r.json()),fetch('/api/settings/templates').then(r=>r.json())]).then(([a,b])=>{setWs({...initial,...a.value,tiles:(a.value.tiles?.length?a.value.tiles:initial.tiles).slice(0,4)});setTemplates(b.value||{});setReady(true)}).catch(()=>setReady(true));const t=setInterval(()=>fetch('/api/status').then(r=>r.json()).then(setStatus).catch(()=>{}),5000);return()=>clearInterval(t)},[]);
- useEffect(()=>{if(!ready)return;const t=setTimeout(()=>fetch('/api/settings/workspace',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:ws})}),700);return()=>clearTimeout(t)},[ws,ready]);
- const update=(fn:(w:Workspace)=>Workspace)=>setWs(fn);const current=ws.tiles[active];const addSymbol=()=>{const s=(newSymbol.toUpperCase().startsWith('US.')?newSymbol.toUpperCase():`US.${newSymbol.toUpperCase()}`).trim();if(!/^US\.[A-Z0-9.]{1,12}$/.test(s))return;update(w=>({...w,symbols:[...new Set([...w.symbols,s])]}));setNewSymbol('')};
- const setTile=(patch:Partial<Tile>)=>update(w=>({...w,tiles:w.tiles.map((t,i)=>i===active?{...t,...patch}:t)}));
- const addCustom=()=>{try{if(!customName.trim())throw Error('请填写指标名称');formula(customFormula);update(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:'CUSTOM',title:customName.trim(),pane:customPane,params:JSON.stringify({formula:customFormula.trim()}),visible:true}]}));setCustomError('');setCustomName('')}catch(e){setCustomError(String(e))}};
- const saveTemplate=()=>{if(!templateName.trim())return;const next={...templates,[templateName.trim()]:ws.indicators};setTemplates(next);fetch('/api/settings/templates',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:next})});setTemplateName('')};
- return <div className="shell"><header><div className="brand"><div className="brand-mark"><Activity size={20}/></div><div><strong>NAS MARKET</strong><small>私人美股行情终端</small></div></div><div className="header-center"><span className="pulse"/> 美股 24/5 观察台 <span className="header-divider"/> <span>美东时区</span></div><div className="header-right"><span className="connection">{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:<><span className="dot red"/> OpenD 待连接</>}</span><button className="icon-button" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div></header><div className="app-body"><aside><div className="side-title">工作区 <Settings2 size={14}/></div><div className="side-group"><span className="group-label">我的自选 <span>{ws.symbols.length}</span></span>{ws.symbols.map(s=><div key={s} className={`symbol ${current?.symbol===s?'active':''}`}><button onClick={()=>setTile({symbol:s})}><span className="symbol-icon">{s.replace('US.','').slice(0,1)}</span><span><strong>{s.replace('US.','')}</strong><small>US EQUITY</small></span></button><button className="remove" title="移除自选" onClick={()=>update(w=>({...w,symbols:w.symbols.filter(x=>x!==s)}))}><Minus size={13}/></button></div>)}<div className="add-symbol"><input value={newSymbol} onChange={e=>setNewSymbol(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSymbol()} placeholder="添加美股代码"/><button onClick={addSymbol}><Plus size={16}/></button></div></div><div className="side-bottom"><div className="resource"><span>实时订阅</span><strong>{status.active_streams||0} / {status.max_streams||32}</strong></div><p>行情由本机 OpenD 提供。交易权限未接入。</p></div></aside><main><div className="workspace-top"><div><div className="eyebrow">WORKSPACE / OVERVIEW</div><h1>市场观察台</h1><p>多周期图表、技术指标与美股全时段行情</p></div><div className="workspace-actions"><button className="secondary" onClick={()=>setShowIndicators(x=>!x)}><Settings2 size={16}/> 指标管理</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>update(w=>({...w,layout:n}))}>{n}</button>)}</div></div></div><div className="toolbar"><div className="toolbar-section"><span>周期</span>{periods.map(p=><button key={p} className={current?.period===p?'on':''} onClick={()=>setTile({period:p})}>{p}</button>)}</div><div className="toolbar-line"/><div className="toolbar-section"><span>时段</span><select value={ws.mode} onChange={e=>update(w=>({...w,mode:e.target.value as Mode}))}><option value="all">24H 全时段</option><option value="extended">盘前 + 常规 + 盘后</option><option value="regular">仅常规</option></select></div><div className="toolbar-end">{ws.indicators.filter(i=>i.visible).length} 个指标已启用</div></div><div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane key={i} index={i} tile={tile} mode={ws.mode} indicators={ws.indicators} active={active===i} onActivate={()=>setActive(i)} drawings={ws.drawings[`${tile.symbol}:${tile.period}`]||[]} onDraw={v=>update(w=>({...w,drawings:{...w.drawings,[`${tile.symbol}:${tile.period}`]:v}}))} trends={ws.trends?.[`${tile.symbol}:${tile.period}`]||[]} onTrend={v=>update(w=>({...w,trends:{...w.trends,[`${tile.symbol}:${tile.period}`]:v}}))} version={refresh}/>)}</div>{showIndicators&&<div className="indicator-panel"><div className="panel-head"><div><div className="eyebrow">CUSTOMIZE</div><h2>指标管理</h2></div><button className="icon-button" onClick={()=>setShowIndicators(false)}>×</button></div><div className="add-indicator"><select value={newIndicator} onChange={e=>setNewIndicator(e.target.value)}>{names.map(n=><option key={n}>{n}</option>)}</select><button className="primary" onClick={()=>update(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:newIndicator,params:'{}',visible:true}]}))}><Plus size={14}/> 添加指标</button></div><div className="indicator-list">{ws.indicators.map(ind=><div className="indicator-row" key={ind.id}><label><input type="checkbox" checked={ind.visible} onChange={e=>update(w=>({...w,indicators:w.indicators.map(x=>x.id===ind.id?{...x,visible:e.target.checked}:x)}))}/><strong>{ind.title||ind.name}</strong></label><input className="params" value={ind.params} spellCheck={false} onChange={e=>update(w=>({...w,indicators:w.indicators.map(x=>x.id===ind.id?{...x,params:e.target.value}:x)}))}/><button className="icon-button" onClick={()=>update(w=>({...w,indicators:w.indicators.filter(x=>x.id!==ind.id)}))}><Trash2 size={15}/></button></div>)}</div><div className="custom-editor"><h3>新建自定义指标</h3><input placeholder="名称，如双均线差" value={customName} onChange={e=>setCustomName(e.target.value)}/><textarea aria-label="指标公式" value={customFormula} onChange={e=>setCustomFormula(e.target.value)} spellCheck={false}/><div className="custom-options"><select value={customPane} onChange={e=>setCustomPane(e.target.value as 'main'|'separate')}><option value="separate">独立副图</option><option value="main">叠加主图</option></select><button onClick={addCustom}><Plus size={14}/> 添加</button></div><small>支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、ABS、MAX、MIN 和四则运算。例：EMA(C,12)-EMA(C,26)</small>{customError&&<p className="custom-error">{customError}</p>}</div><div className="template"><h3>指标模板</h3><div className="template-save"><input placeholder="模板名称" value={templateName} onChange={e=>setTemplateName(e.target.value)}/><button onClick={saveTemplate}><Save size={14}/> 保存</button></div>{Object.entries(templates).map(([name,value])=><button className="template-item" key={name} onClick={()=>update(w=>({...w,indicators:value}))}>{name} <span>{value.length} 项</span></button>)}</div></div>}</main></div></div>
+type Market = 'US' | 'CN';
+type WatchGroup = {id:string; name:string; symbols:string[]};
+type MarketWorkspace = {
+  groups:WatchGroup[]; selectedGroupId:string; layout:number; mode:Mode; tiles:Tile[];
+  indicators:Indicator[]; drawings:Record<string,number[]>; trends:Record<string,TrendPoint[][]>;
+};
+type WorkspaceV2 = {activeMarket:Market; markets:Record<Market,MarketWorkspace>};
+
+const baseIndicators:Indicator[] = [
+  {id:'volume',name:'VOLUME',params:'{"period":20}',visible:true},
+  {id:'vwap',name:'VWAP',params:'{"reset":"session"}',visible:true},
+  {id:'macd',name:'MACD',params:'{"fast":12,"slow":26,"signal":9}',visible:true},
+];
+const freshMarket = (market:Market):MarketWorkspace => ({
+  groups:[{id:'featured',name:'精选',symbols:market==='US'?['US.SNDK','US.SNXX','US.SNDQ']:[]}],
+  selectedGroupId:'featured',layout:1,mode:market==='US'?'all':'regular',
+  tiles:market==='US'?
+    [{symbol:'US.SNDK',period:'5m'},{symbol:'US.SNXX',period:'15m'},{symbol:'US.SNDQ',period:'60m'},{symbol:'US.SNDK',period:'1m'}]:
+    [{symbol:'SH.600519',period:'5m'},{symbol:'SZ.000001',period:'15m'},{symbol:'SH.600519',period:'60m'},{symbol:'SZ.000001',period:'1m'}],
+  indicators:baseIndicators.map(x=>({...x})),drawings:{},trends:{},
+});
+const initialV2:WorkspaceV2={activeMarket:'US',markets:{US:freshMarket('US'),CN:freshMarket('CN')}};
+const belongs=(symbol:string,market:Market)=>market==='US'?symbol.startsWith('US.'):/^(SH|SZ)\./.test(symbol);
+
+function restoreMarket(raw:any,market:Market):MarketWorkspace {
+  const base=freshMarket(market);
+  const legacySymbols=Array.isArray(raw?.symbols)?raw.symbols.filter((s:unknown)=>typeof s==='string'&&belongs(s,market)):null;
+  const supplied=Array.isArray(raw?.groups)?raw.groups.filter((g:any)=>g&&typeof g.id==='string'&&typeof g.name==='string').map((g:any)=>({
+    id:g.id,name:g.id==='featured'?'精选':g.name.slice(0,24),
+    symbols:Array.isArray(g.symbols)?[...new Set<string>(g.symbols.filter((s:unknown)=>typeof s==='string'&&belongs(s,market)))]:[],
+  })):[];
+  const groups:WatchGroup[]=supplied.length?supplied:[{id:'featured',name:'精选',symbols:legacySymbols||base.groups[0].symbols}];
+  if(!groups.some(g=>g.id==='featured'))groups.unshift({id:'featured',name:'精选',symbols:legacySymbols||[]});
+  const tiles=Array.isArray(raw?.tiles)?raw.tiles.filter((t:any)=>t&&typeof t.symbol==='string'&&belongs(t.symbol,market)&&periods.includes(t.period)).slice(0,4):[];
+  return {
+    ...base,groups,selectedGroupId:groups.some(g=>g.id===raw?.selectedGroupId)?raw.selectedGroupId:'featured',
+    layout:[1,2,4].includes(raw?.layout)?raw.layout:1,
+    mode:market==='CN'?'regular':(['all','extended','regular'].includes(raw?.mode)?raw.mode:base.mode),
+    tiles:tiles.length?tiles:base.tiles,
+    indicators:Array.isArray(raw?.indicators)?raw.indicators:base.indicators,
+    drawings:raw?.drawings&&typeof raw.drawings==='object'?raw.drawings:{},
+    trends:raw?.trends&&typeof raw.trends==='object'?raw.trends:{},
+  };
+}
+function restoreWorkspace(raw:any):WorkspaceV2 {
+  return {
+    activeMarket:raw?.activeMarket==='CN'?'CN':'US',
+    markets:{US:restoreMarket(raw?.markets?.US||raw,'US'),CN:restoreMarket(raw?.markets?.CN,'CN')},
+  };
+}
+
+function App(){
+  const [state,setState]=useState<WorkspaceV2>(initialV2),[ready,setReady]=useState(false),[active,setActive]=useState(0);
+  const [newSymbol,setNewSymbol]=useState(''),[symbolError,setSymbolError]=useState('');
+  const [newGroupName,setNewGroupName]=useState(''),[groupError,setGroupError]=useState('');
+  const [editingGroup,setEditingGroup]=useState(''),[groupDraft,setGroupDraft]=useState('');
+  const [showIndicators,setShowIndicators]=useState(false),[newIndicator,setNewIndicator]=useState('EMA'),[refresh,setRefresh]=useState(0),[status,setStatus]=useState<any>({});
+  const [templates,setTemplates]=useState<Record<string,Indicator[]>>({}),[templateName,setTemplateName]=useState('');
+  const [customName,setCustomName]=useState(''),[customFormula,setCustomFormula]=useState('EMA(C,12)-EMA(C,26)'),[customPane,setCustomPane]=useState<'main'|'separate'>('separate'),[customError,setCustomError]=useState('');
+  const market=state.activeMarket,ws=state.markets[market];
+  const selectedGroup=ws.groups.find(g=>g.id===ws.selectedGroupId)||ws.groups[0];
+  const featured=ws.groups.find(g=>g.id==='featured')!;
+  const current=ws.tiles[active]||ws.tiles[0];
+
+  useEffect(()=>{
+    Promise.all([fetch('/api/settings/workspace').then(r=>r.json()),fetch('/api/settings/templates').then(r=>r.json())])
+      .then(([a,b])=>{setState(restoreWorkspace(a.value));setTemplates(b.value||{});setReady(true)})
+      .catch(()=>setReady(true));
+    const t=setInterval(()=>fetch('/api/status').then(r=>r.json()).then(setStatus).catch(()=>{}),5000);
+    return()=>clearInterval(t);
+  },[]);
+  useEffect(()=>{
+    if(!ready)return;
+    const t=setTimeout(()=>fetch('/api/settings/workspace',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:state})}),700);
+    return()=>clearTimeout(t);
+  },[state,ready]);
+  const updateMarket=(fn:(w:MarketWorkspace)=>MarketWorkspace)=>setState(old=>({...old,markets:{...old.markets,[old.activeMarket]:fn(old.markets[old.activeMarket])}}));
+  const switchMarket=(next:Market)=>{setState(old=>({...old,activeMarket:next}));setActive(0);setNewSymbol('');setSymbolError('')};
+  const selectGroup=(id:string)=>{
+    updateMarket(w=>{const g=w.groups.find(x=>x.id===id);return g?{...w,selectedGroupId:id,tiles:w.tiles.map((t,i)=>g.symbols.length?{...t,symbol:g.symbols[i%g.symbols.length]}:t)}:w});
+    setActive(0);
+  };
+  const normalizeSymbol=(input:string)=>{
+    let s=input.trim().toUpperCase();
+    if(market==='US')s=s.startsWith('US.')?s:`US.${s}`;
+    else if(/^\d{6}$/.test(s))s= /^[569]/.test(s)?`SH.${s}`:`SZ.${s}`;
+    return belongs(s,market)&&(market==='US'?/^US\.[A-Z0-9.]{1,12}$/.test(s):/^(SH|SZ)\.\d{6}$/.test(s))?s:null;
+  };
+  const addSymbol=()=>{
+    const s=normalizeSymbol(newSymbol);
+    if(!s){setSymbolError(market==='US'?'请输入 AAPL 或 US.AAPL':'请输入 SH.600519 或 SZ.000001');return}
+    updateMarket(w=>({...w,
+      groups:w.groups.map(g=>g.id===w.selectedGroupId?{...g,symbols:[...new Set([...g.symbols,s])]}:g),
+      tiles:w.tiles.map((t,i)=>i===active||!w.groups.find(g=>g.id===w.selectedGroupId)?.symbols.length?{...t,symbol:s}:t),
+    }));
+    setNewSymbol('');setSymbolError('');
+  };
+  const removeSymbol=(symbol:string)=>updateMarket(w=>{
+    const group=w.groups.find(g=>g.id===w.selectedGroupId),remaining=(group?.symbols||[]).filter(s=>s!==symbol);
+    return {...w,groups:w.groups.map(g=>g.id===w.selectedGroupId?{...g,symbols:remaining}:g),
+      tiles:w.tiles.map(t=>t.symbol===symbol&&remaining[0]?{...t,symbol:remaining[0]}:t)};
+  });
+  const toggleFeatured=(symbol:string)=>updateMarket(w=>{
+    const g=w.groups.find(x=>x.id==='featured')!;
+    const remaining=g.symbols.filter(s=>s!==symbol);
+    return {...w,groups:w.groups.map(x=>x.id==='featured'?{...x,symbols:g.symbols.includes(symbol)?remaining:[...g.symbols,symbol]}:x),
+      tiles:w.selectedGroupId==='featured'&&g.symbols.includes(symbol)?w.tiles.map(t=>t.symbol===symbol&&remaining[0]?{...t,symbol:remaining[0]}:t):w.tiles};
+  });
+  const addGroup=()=>{
+    const name=newGroupName.trim().slice(0,24);
+    if(!name||ws.groups.some(g=>g.name.toLowerCase()===name.toLowerCase())){setGroupError('请输入不重复的分组名称');return}
+    const id=`g-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+    updateMarket(w=>({...w,groups:[...w.groups,{id,name,symbols:[]}],selectedGroupId:id}));
+    setActive(0);setNewGroupName('');setGroupError('');
+  };
+  const renameGroup=()=>{
+    const name=groupDraft.trim().slice(0,24);
+    if(!name||ws.groups.some(g=>g.id!==editingGroup&&g.name.toLowerCase()===name.toLowerCase())){setGroupError('请输入不重复的分组名称');return}
+    updateMarket(w=>({...w,groups:w.groups.map(g=>g.id===editingGroup?{...g,name}:g)}));
+    setEditingGroup('');setGroupError('');
+  };
+  const deleteGroup=(id:string)=>{
+    if(id==='featured'||!window.confirm('删除这个分组？分组内的股票不会从其他分组移除。'))return;
+    updateMarket(w=>{const featuredSymbols=w.groups.find(g=>g.id==='featured')?.symbols||[];return {...w,groups:w.groups.filter(g=>g.id!==id),selectedGroupId:w.selectedGroupId===id?'featured':w.selectedGroupId,
+      tiles:w.selectedGroupId===id&&featuredSymbols.length?w.tiles.map((t,i)=>({...t,symbol:featuredSymbols[i%featuredSymbols.length]})):w.tiles}});
+    setActive(0);
+  };
+  const setTile=(patch:Partial<Tile>)=>updateMarket(w=>({...w,tiles:w.tiles.map((t,i)=>i===active?{...t,...patch}:t)}));
+  const addCustom=()=>{try{
+    if(!customName.trim())throw Error('请填写指标名称');formula(customFormula);
+    updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:'CUSTOM',title:customName.trim(),pane:customPane,params:JSON.stringify({formula:customFormula.trim()}),visible:true}]}));
+    setCustomError('');setCustomName('');
+  }catch(e){setCustomError(String(e))}};
+  const saveTemplate=()=>{if(!templateName.trim())return;const next={...templates,[templateName.trim()]:ws.indicators};setTemplates(next);fetch('/api/settings/templates',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:next})});setTemplateName('')};
+
+  return <div className="shell">
+    <header><div className="brand"><div className="brand-mark"><Activity size={20}/></div><div><strong>NAS MARKET</strong><small>私人多市场看盘终端</small></div></div>
+      <div className="header-center"><span className="pulse"/> {market==='US'?'美股 24/5 · 美东时间':'A 股 · 北京时间'} <span className="header-divider"/> <span>{selectedGroup.name}</span></div>
+      <div className="header-right"><span className="connection">{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:<><span className="dot red"/> OpenD 待连接</>}</span><button className="icon-button" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
+    </header>
+    <div className="app-body"><aside>
+      <div className="side-title">工作区 <Settings2 size={14}/></div>
+      <div className="market-tabs" role="tablist" aria-label="市场">
+        <button role="tab" aria-selected={market==='US'} className={market==='US'?'on':''} onClick={()=>switchMarket('US')}>美股</button>
+        <button role="tab" aria-selected={market==='CN'} className={market==='CN'?'on':''} onClick={()=>switchMarket('CN')}>A 股</button>
+      </div>
+      <div className="side-group"><div className="group-label">自选分组 <span>{ws.groups.length}</span></div>
+        <div className="watch-groups">{ws.groups.map(g=><div className={`watch-group ${g.id===selectedGroup.id?'active':''}`} key={g.id}>
+          {editingGroup===g.id?<input className="group-edit" aria-label="分组名称" value={groupDraft} autoFocus onChange={e=>setGroupDraft(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')renameGroup();if(e.key==='Escape')setEditingGroup('')}} onBlur={renameGroup}/>:
+            <button className="group-select" onClick={()=>selectGroup(g.id)}><span>{g.id==='featured'?'★':'▦'}</span>{g.name}<small>{g.symbols.length}</small></button>}
+          {g.id!=='featured'&&<div className="group-actions"><button title="重命名分组" onClick={()=>{setEditingGroup(g.id);setGroupDraft(g.name)}}>✎</button><button title="删除分组" onClick={()=>deleteGroup(g.id)}>×</button></div>}
+        </div>)}</div>
+        <div className="add-group"><input aria-label="新分组名称" value={newGroupName} onChange={e=>setNewGroupName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addGroup()} placeholder="新建分组"/><button title="创建分组" onClick={addGroup}><Plus size={15}/></button></div>
+        {groupError&&<div className="side-error">{groupError}</div>}
+        <div className="group-label selected-label">{selectedGroup.name} <span>{selectedGroup.symbols.length}</span></div>
+        <div className="symbol-list">{selectedGroup.symbols.map(s=><div key={s} className={`symbol ${current?.symbol===s?'active':''}`}>
+          <button onClick={()=>setTile({symbol:s})}><span className="symbol-icon">{s.split('.')[1].slice(0,1)}</span><span><strong>{s.split('.')[1]}</strong><small>{s.startsWith('US.')?'US EQUITY':s.startsWith('SH.')?'上海 · A 股':'深圳 · A 股'}</small></span></button>
+          <button className={`favorite ${featured.symbols.includes(s)?'on':''}`} title={featured.symbols.includes(s)?'从精选移除':'加入精选'} onClick={()=>toggleFeatured(s)}>★</button>
+          <button className="remove" title="从当前分组移除" onClick={()=>removeSymbol(s)}><Minus size={13}/></button>
+        </div>)}</div>
+        <div className="add-symbol"><input aria-label="添加股票代码" value={newSymbol} onChange={e=>setNewSymbol(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSymbol()} placeholder={market==='US'?'添加美股代码，如 AAPL':'添加 A 股，如 SH.600519'}/><button title="加入当前分组" onClick={addSymbol}><Plus size={16}/></button></div>
+        {symbolError&&<div className="side-error">{symbolError}</div>}
+      </div>
+      <div className="side-bottom"><div className="resource"><span>实时订阅</span><strong>{status.active_streams||0} / {status.max_streams||32}</strong></div><p>行情由本机 OpenD 提供。交易权限未接入。</p></div>
+    </aside><main>
+      <div className="workspace-top"><div><div className="eyebrow">WORKSPACE / {market}</div><h1>{market==='US'?'美股':'A 股'}观察台</h1><p>{selectedGroup.name} · 多周期图表与技术指标</p></div><div className="workspace-actions"><button className="secondary" onClick={()=>setShowIndicators(x=>!x)}><Settings2 size={16}/> 指标管理</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>updateMarket(w=>({...w,layout:n}))}>{n}</button>)}</div></div></div>
+      <div className="toolbar"><div className="toolbar-section"><span>周期</span>{periods.map(p=><button key={p} className={current?.period===p?'on':''} onClick={()=>setTile({period:p})}>{p}</button>)}</div><div className="toolbar-line"/><div className="toolbar-section"><span>时段</span>{market==='US'?<select value={ws.mode} onChange={e=>updateMarket(w=>({...w,mode:e.target.value as Mode}))}><option value="all">24H 全时段</option><option value="extended">盘前 + 常规 + 盘后</option><option value="regular">仅常规</option></select>:<span className="cn-session">沪深常规时段 · 北京时间</span>}</div><div className="toolbar-end">{ws.indicators.filter(i=>i.visible).length} 个指标已启用</div></div>
+      {selectedGroup.symbols.length?<div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane key={`${market}-${i}-${tile.symbol}`} index={i} tile={tile} mode={ws.mode} indicators={ws.indicators} active={active===i} onActivate={()=>setActive(i)} drawings={ws.drawings[`${tile.symbol}:${tile.period}`]||[]} onDraw={v=>updateMarket(w=>({...w,drawings:{...w.drawings,[`${tile.symbol}:${tile.period}`]:v}}))} trends={ws.trends[`${tile.symbol}:${tile.period}`]||[]} onTrend={v=>updateMarket(w=>({...w,trends:{...w.trends,[`${tile.symbol}:${tile.period}`]:v}}))} version={refresh}/>)}</div>:
+        <div className="empty-watchlist"><strong>{selectedGroup.name}还是空的</strong><p>在左侧输入股票代码，就能开始看盘。</p><small>{market==='US'?'示例：AAPL、US.SNDK':'示例：SH.600519、SZ.000001'}</small></div>}
+      {showIndicators&&<div className="indicator-panel"><div className="panel-head"><div><div className="eyebrow">CUSTOMIZE / {market}</div><h2>指标管理</h2></div><button className="icon-button" onClick={()=>setShowIndicators(false)}>×</button></div><div className="add-indicator"><select value={newIndicator} onChange={e=>setNewIndicator(e.target.value)}>{names.map(n=><option key={n}>{n}</option>)}</select><button className="primary" onClick={()=>updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:newIndicator,params:'{}',visible:true}]}))}><Plus size={14}/> 添加指标</button></div><div className="indicator-list">{ws.indicators.map(ind=><div className="indicator-row" key={ind.id}><label><input type="checkbox" checked={ind.visible} onChange={e=>updateMarket(w=>({...w,indicators:w.indicators.map(x=>x.id===ind.id?{...x,visible:e.target.checked}:x)}))}/><strong>{ind.title||ind.name}</strong></label><input className="params" value={ind.params} spellCheck={false} onChange={e=>updateMarket(w=>({...w,indicators:w.indicators.map(x=>x.id===ind.id?{...x,params:e.target.value}:x)}))}/><button className="icon-button" onClick={()=>updateMarket(w=>({...w,indicators:w.indicators.filter(x=>x.id!==ind.id)}))}><Trash2 size={15}/></button></div>)}</div><div className="custom-editor"><h3>新建自定义指标</h3><input placeholder="名称，如双均线差" value={customName} onChange={e=>setCustomName(e.target.value)}/><textarea aria-label="指标公式" value={customFormula} onChange={e=>setCustomFormula(e.target.value)} spellCheck={false}/><div className="custom-options"><select value={customPane} onChange={e=>setCustomPane(e.target.value as 'main'|'separate')}><option value="separate">独立副图</option><option value="main">叠加主图</option></select><button onClick={addCustom}><Plus size={14}/> 添加</button></div><small>支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、ABS、MAX、MIN 和四则运算。例：EMA(C,12)-EMA(C,26)</small>{customError&&<p className="custom-error">{customError}</p>}</div><div className="template"><h3>指标模板</h3><div className="template-save"><input placeholder="模板名称" value={templateName} onChange={e=>setTemplateName(e.target.value)}/><button onClick={saveTemplate}><Save size={14}/> 保存</button></div>{Object.entries(templates).map(([name,value])=><button className="template-item" key={name} onClick={()=>updateMarket(w=>({...w,indicators:value}))}>{name} <span>{value.length} 项</span></button>)}</div></div>}
+    </main></div>
+  </div>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

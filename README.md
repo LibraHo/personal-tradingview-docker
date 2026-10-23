@@ -1,19 +1,20 @@
 # NAS Market
 
-轻量级、只读的美股网页看盘终端。唯一行情源是已有的 moomoo OpenD；服务不连接交易接口，也不提供模拟行情。Web 端使用 Lightweight Charts 5、React；服务端使用 FastAPI、WebSocket 与 SQLite。
+轻量级、只读的美股与 A 股网页看盘终端。当前实时行情源是已有的 moomoo OpenD；服务不连接交易接口，也不提供模拟行情。Web 端使用 Lightweight Charts 5、React；服务端使用 FastAPI、WebSocket 与 SQLite。
 
 ## 官方能力与边界
 
 | 项目 | 结论 |
 | --- | --- |
 | 全时段历史 K 线 | `request_history_kline(..., session=Session.ALL)`；仅美股、60 分钟及以下，OpenD 至少 9.2.4207。日线仅提供常规时段视图。 |
+| A 股历史与实时 K 线 | 使用 `SH.600519`、`SZ.000001` 格式，按北京时间解析；请求使用 `Session.NONE`。A 股不使用美股的 `Session.ALL`；行情权限取决于 OpenD 登录账号。 |
 | 全时段实时 K 线 | `subscribe(..., session=Session.ALL)`；仅支持 K 线、分时与逐笔等相应订阅类型。隔夜行情需美股 LV1 或更高权限。 |
 | 单独隔夜 K 线 | `Session.OVERNIGHT` 不能用于历史 K 线或实时订阅；本项目从 `ALL` 数据中按美东时间筛选。 |
 | 权限 | OpenAPI 行情权限可能与 moomoo App 不同。若权限不足，接口返回真实错误。某些证券可能没有隔夜交易或对应数据。 |
 | 额度 | 订阅每只股票每种数据类型占 1 个额度；官方列出的基础订阅额度为 100，具体账号可能不同。历史 K 线配额按过去 7 天请求过的不同股票计算，不按周期重复计数。 |
 | 频率 | 官方建议请求间隔至少 0.5 秒；服务对历史分页延迟 0.52 秒，缓存避免重复查询。 |
 
-文档：[订阅](https://openapi.moomoo.com/moomoo-api-doc/en/quote/sub.html)、[历史 K 线](https://openapi.moomoo.com/moomoo-api-doc/en/quote/request-history-kline.html)、[实时回调](https://openapi.moomoo.com/moomoo-api-doc/en/quote/update-kl.html)、[权限与额度](https://openapi.moomoo.com/moomoo-api-doc/en/intro/authority.html)、[时段定义](https://openapi.moomoo.com/moomoo-api-doc/en/quote/quote.html)。
+文档：[订阅](https://openapi.moomoo.com/moomoo-api-doc/en/quote/sub.html)、[历史 K 线](https://openapi.moomoo.com/moomoo-api-doc/en/quote/request-history-kline.html)、[实时回调](https://openapi.moomoo.com/moomoo-api-doc/en/quote/update-kl.html)、[权限与额度](https://openapi.moomoo.com/moomoo-api-doc/en/intro/authority.html)、[股票代码与时段](https://openapi.moomoo.com/moomoo-api-doc/en/qa/quote.html)。A 股 OpenAPI 行情权限可能因账户和 OpenD 登录地区而不可用，网页会显示真实错误。
 
 ## 部署
 
@@ -30,7 +31,9 @@ Compose 默认使用 `Dockerfile.nas`，复用本机已有的 `moomoo-opend:loca
 ## 功能与交互
 
 - 自选股快速切换、1/2/4 图、每图独立周期；选中图后顶部周期按钮作用于该图。
+- 美股和 A 股为两个独立工作区，各自保存图表布局、周期、指标、自选分组和“精选”组。可创建、重命名、删除分组，在当前分组添加或移除股票；星标可快速加入或移出精选。旧版美股自选会迁入美股精选组。
 - 1m、5m、15m、30m、60m、日线；全时段、盘前+盘中+盘后、常规时段筛选。
+- A 股支持同样的 K 线周期，但只显示常规交易时段；时间轴使用北京时间。美股继续使用美东时间和原有时段选择。
 - 日线默认读取最近 730 天，可通过 `DAILY_HISTORY_DAYS` 调整；分钟线默认读取最近 5 天，可通过 `HISTORY_DAYS` 调整。历史范围由 OpenD 权限、股票上市日期及可提供的数据决定。
 - MACD、VWAP、BBI、ATR、DMI/ADX、EMA、SMA、BOLL、RSI、成交量与均量；指标无限数量，参数用 JSON 编辑，模板存 SQLite。例：MACD `{"fast":12,"slow":26,"signal":9}`，VWAP `{"reset":"session"}` 或 `day` / `never`。
 - 可画水平价格线和两点趋势线并持久化。多图可同步时间轴与十字光标；不同股票价格轴不共用尺度，十字光标的横向价格值仅作参考。现版本应视为首个可用版本，而非与 TradingView 功能完全对等。
@@ -41,12 +44,17 @@ Compose 默认使用 `Dockerfile.nas`，复用本机已有的 `moomoo-opend:loca
 | 接口 | 用途 |
 | --- | --- |
 | `GET /api/bars?symbol=US.SNDK&period=5m&mode=all&days=5` | 历史数据与缓存状态；日线使用 `period=1d&mode=regular`，省略 `days` 时默认 730 天 |
+| `GET /api/bars?symbol=SH.600519&period=5m&mode=regular` | A 股历史 K 线；深市使用 `SZ.000001` 格式 |
 | `GET /api/indicators?symbol=US.SNDK&period=5m&mode=all&name=MACD&params={...}` | 服务端指标计算 |
 | `WS /api/stream?symbol=US.SNDK&period=5m&mode=all` | 实时 K 线与连接心跳 |
 | `GET /api/status` | OpenD 状态、订阅数量 |
 | `GET/PUT /api/settings/workspace`、`templates` | 保存布局、自选与模板 |
 
-`bars` 表以 `(symbol, period, mode, time)` 为主键；时间是 UTC Unix 秒，显示与时段判断用美东时间。隔夜 20:00 至次日 04:00 归入次交易日。VWAP 默认按 `trade_date + session` 重置；MACD/EMA 默认连续跨时段计算，但先按选择的时段过滤数据，切换时段后重算。无交易时段没有补零 K 线。DST 由 IANA `America/New_York` 处理。
+`bars` 表以 `(symbol, period, mode, time)` 为主键；时间是 UTC Unix 秒。美股按美东时间解析，隔夜 20:00 至次日 04:00 归入次交易日；A 股按北京时间解析，VWAP 默认按交易日重置，午间休市不另起一日。MACD/EMA 默认连续跨时段计算，但先按选择的时段过滤数据，切换时段后重算。无交易时段没有补零 K 线。时区转换由 IANA 数据处理。
+
+## 备用数据源
+
+目前 OpenD 不可用时，网页可显示本地 SQLite 的最近缓存并标注“缓存数据”；不会把其他供应商数据悄悄混入指标。可选的免费历史数据候选有 [yfinance](https://ranaroussi.github.io/yfinance/)（美股等，非 Yahoo 官方 SDK；盘中历史有时间范围限制）和 [AKShare](https://github.com/akfamily/akshare)（A 股历史与近期分钟线，依赖第三方网页接口）。它们适合以后做**显式标注来源的历史补充**，都不能保证替代 OpenD 的美股 24/5 实时推送。需要稳定、合规的实时备份时，应按实际行情权限评估有许可的服务。
 
 ## 资源预算
 

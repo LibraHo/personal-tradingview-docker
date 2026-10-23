@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from .indicators import calculate
 
 ET = ZoneInfo('America/New_York')
+CN_TZ = ZoneInfo('Asia/Shanghai')
 DB = os.getenv('DB_PATH', '/data/market.sqlite3')
 HOST = os.getenv('OPEND_HOST', 'host.docker.internal')
 PORT = int(os.getenv('OPEND_PORT', '11111'))
@@ -29,7 +30,7 @@ DEFAULT_DAYS = int(os.getenv('HISTORY_DAYS', '5'))
 RETENTION_DAYS = max(1, int(os.getenv('CACHE_RETENTION_DAYS', '30')))
 DAILY_HISTORY_DAYS = max(1, int(os.getenv('DAILY_HISTORY_DAYS', '730')))
 DAILY_RETENTION_DAYS = max(DAILY_HISTORY_DAYS, int(os.getenv('DAILY_CACHE_RETENTION_DAYS', '1825')))
-SYMBOL_RE = re.compile(r'^US\.[A-Z0-9.]{1,12}$')
+SYMBOL_RE = re.compile(r'^(?:US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.[0-9]{6})$')
 PERIODS = {'1m': 'K_1M', '5m': 'K_5M', '15m': 'K_15M', '30m': 'K_30M', '60m': 'K_60M', '1d': 'K_DAY'}
 MODES = {'all': 'ALL', 'extended': 'ETH', 'regular': 'RTH'}
 listeners: dict[tuple[str, str, str], set[asyncio.Queue]] = {}
@@ -79,15 +80,18 @@ def prune_cache():
 def validate(symbol, period, mode):
     symbol = symbol.upper()
     if not SYMBOL_RE.fullmatch(symbol):
-        raise ValueError('股票代码应为 US.AAPL 格式')
+        raise ValueError('股票代码应为 US.AAPL、SH.600519 或 SZ.000001 格式')
     if period not in PERIODS or mode not in MODES:
         raise ValueError('不支持的周期或时段')
-    if period == '1d' and mode != 'regular':
-        raise ValueError('日线不支持分时段；请选择常规时段')
+    if (period == '1d' or not symbol.startswith('US.')) and mode != 'regular':
+        raise ValueError('A 股和日线请选择常规时段')
     return symbol, period, mode
 
 
-def session_fields(ts):
+def session_fields(ts, symbol='US.AAPL'):
+    if not symbol.startswith('US.'):
+        day = str(datetime.fromtimestamp(ts, CN_TZ).date())
+        return 'regular', day, day
     dt = datetime.fromtimestamp(ts, ET)
     minute = dt.hour * 60 + dt.minute
     if minute < 240 or minute >= 1200:
@@ -104,7 +108,7 @@ def session_fields(ts):
 
 def row_to_bar(row):
     d = dict(row)
-    d['session'], d['calendar_date'], d['trade_date'] = session_fields(d['time'])
+    d['session'], d['calendar_date'], d['trade_date'] = session_fields(d['time'], d['symbol'])
     if d['period'] == '1d':
         d['session'] = 'regular'
     d['session_date'] = d['trade_date'] + ':' + d['session']
@@ -129,10 +133,11 @@ def read_bars(key, days, limit):
     return [row_to_bar(r) for r in reversed(rows)]
 
 
-def frame_to_bars(frame):
+def frame_to_bars(frame, symbol):
     result = []
+    zone = ET if symbol.startswith('US.') else CN_TZ
     for record in frame.to_dict('records'):
-        dt = datetime.strptime(str(record['time_key']), '%Y-%m-%d %H:%M:%S').replace(tzinfo=ET)
+        dt = datetime.strptime(str(record['time_key']), '%Y-%m-%d %H:%M:%S').replace(tzinfo=zone)
         result.append({'time': int(dt.timestamp()), 'open': float(record['open']), 'high': float(record['high']),
                        'low': float(record['low']), 'close': float(record['close']),
                        'volume': float(record.get('volume') or 0), 'turnover': float(record.get('turnover') or 0)})
@@ -175,7 +180,7 @@ class Bridge:
                         symbol = str(record['code'])
                         for key in list(bridge.active):
                             if key[:2] == (symbol, period):
-                                bars = frame_to_bars(data[data['code'] == symbol])
+                                bars = frame_to_bars(data[data['code'] == symbol], symbol)
                                 loop.call_soon_threadsafe(asyncio.create_task, publish(key, bars))
                 return ret, data
         self.ctx = OpenQuoteContext(host=HOST, port=PORT, is_encrypt=bool(rsa_file))
@@ -198,17 +203,17 @@ class Bridge:
         with self.lock:
             try:
                 ctx = self.ensure()
-                end = datetime.now(ET).date()
+                end = datetime.now(ET if key[0].startswith('US.') else CN_TZ).date()
                 start = end - timedelta(days=days)
                 kwargs = dict(code=key[0], start=str(start), end=str(end), ktype=getattr(KLType, PERIODS[key[1]]),
-                              autype=AuType.NONE, max_count=1000, session=Session.NONE if key[1] == '1d' else getattr(Session, MODES[key[2]]))
+                              autype=AuType.NONE, max_count=1000, session=Session.NONE if key[1] == '1d' or not key[0].startswith('US.') else getattr(Session, MODES[key[2]]))
                 all_bars, page = [], None
                 while True:
                     self.rate_limit()
                     ret, data, page = ctx.request_history_kline(**kwargs, page_req_key=page)
                     if ret != RET_OK:
                         raise RuntimeError(str(data))
-                    all_bars.extend(frame_to_bars(data))
+                    all_bars.extend(frame_to_bars(data, key[0]))
                     if page is None:
                         break
                 save_bars(key, all_bars)
@@ -228,7 +233,8 @@ class Bridge:
             try:
                 ctx = self.ensure()
                 self.rate_limit()
-                ret, error = ctx.subscribe([key[0]], [getattr(SubType, PERIODS[key[1]])], session=getattr(Session, MODES[key[2]]), subscribe_push=True)
+                session = Session.NONE if not key[0].startswith('US.') or key[1] == '1d' else getattr(Session, MODES[key[2]])
+                ret, error = ctx.subscribe([key[0]], [getattr(SubType, PERIODS[key[1]])], session=session, subscribe_push=True)
                 if ret != RET_OK:
                     raise RuntimeError(str(error))
                 self.active[key] = time.monotonic()
@@ -266,8 +272,8 @@ bridge = Bridge()
 
 async def publish(key, bars):
     if key[2] != 'all':
-        bars = [b for b in bars if session_fields(b['time'])[0] == 'regular' or
-                (key[2] == 'extended' and session_fields(b['time'])[0] in ('pre', 'post'))]
+        bars = [b for b in bars if session_fields(b['time'], key[0])[0] == 'regular' or
+                (key[2] == 'extended' and session_fields(b['time'], key[0])[0] in ('pre', 'post'))]
     await asyncio.to_thread(save_bars, key, bars)
     for bar in bars:
         item = {'type': 'bar', 'bar': row_to_bar(dict(symbol=key[0], period=key[1], mode=key[2], **bar))}

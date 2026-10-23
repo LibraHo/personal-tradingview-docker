@@ -39,6 +39,19 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(market.session_fields(before), ('overnight', '2026-10-21', '2026-10-22'))
         self.assertEqual(market.session_fields(after), ('overnight', '2026-10-22', '2026-10-22'))
 
+    def test_a_share_uses_beijing_time_and_regular_session(self):
+        self.assertEqual(market.validate('sh.600519', '5m', 'regular'), ('SH.600519', '5m', 'regular'))
+        with self.assertRaises(ValueError):
+            market.validate('SH.600519', '5m', 'all')
+        frame = types.SimpleNamespace(to_dict=lambda kind: [{
+            'time_key': '2026-10-22 09:35:00', 'open': 1, 'high': 2,
+            'low': 1, 'close': 2, 'volume': 100, 'turnover': 200,
+        }])
+        bar = market.frame_to_bars(frame, 'SH.600519')[0]
+        self.assertEqual(datetime.fromtimestamp(bar['time'], market.CN_TZ).hour, 9)
+        self.assertEqual(market.session_fields(bar['time'], 'SH.600519'),
+                         ('regular', '2026-10-22', '2026-10-22'))
+
     def test_daily_cache_is_retained_longer_than_intraday(self):
         old = int((datetime.now(market.ET) - timedelta(days=60)).timestamp())
         daily = ('US.SNXX', '1d', 'regular')
