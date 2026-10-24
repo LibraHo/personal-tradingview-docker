@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -82,6 +83,52 @@ class TradeApiTests(unittest.TestCase):
         r = self.client.post('/api/trade/logout', headers=self.headers, json={})
         self.assertEqual(r.status_code,200)
         self.assertEqual(self.client.get('/api/trade/accounts').status_code,401)
+
+    def test_chart_gateway_auth_allowlist_and_no_credentials_forwarded(self):
+        self.assertEqual(self.client.get('/api/market/status').status_code, 401)
+        self.setup_account()
+        reply = MagicMock()
+        reply.__enter__.return_value = reply
+        reply.status = 200
+        reply.read.return_value = b'{"connected":true}'
+        with patch('app.chart_gateway.urllib.request.urlopen', return_value=reply) as forward:
+            r = self.client.get('/api/market/status')
+            self.assertEqual(r.status_code, 200)
+            req = forward.call_args.args[0]
+            self.assertEqual(req.full_url, 'http://market:8000/api/status')
+            self.assertNotIn('Cookie', req.headers)
+            self.assertNotIn('X-csrf-token', req.headers)
+            self.assertEqual(self.client.get('/api/market/trade/commit').status_code, 404)
+            self.assertEqual(forward.call_count, 1)
+        self.assertEqual(self.client.put('/api/market/settings/workspace', headers=self.origin, json={'value':{}}).status_code, 403)
+        self.assertFalse(self.broker.rows)
+
+    def test_chart_websocket_rejects_missing_session(self):
+        from starlette.websockets import WebSocketDisconnect
+        with self.assertRaises(WebSocketDisconnect):
+            with self.client.websocket_connect('/api/market/stream?symbol=US.SNDK', headers={'Origin':'https://testserver'}):
+                pass
+
+    def test_chart_websocket_forwards_readonly_stream(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+        self.setup_account()
+
+        class Source:
+            async def __aiter__(self):
+                yield '{"type":"status","connected":true}'
+                await asyncio.sleep(30)
+
+        @asynccontextmanager
+        async def connect(url, **kwargs):
+            self.assertTrue(url.startswith('ws://market:8000/api/stream?'))
+            yield Source()
+
+        with patch('websockets.legacy.client.connect', connect):
+            with self.client.websocket_connect('wss://testserver/api/market/stream?symbol=US.SNDK',
+                                                headers={'Origin':'https://testserver'}) as ws:
+                self.assertTrue(ws.receive_json()['connected'])
+        self.assertFalse(self.broker.rows)
 
 
 if __name__ == '__main__':

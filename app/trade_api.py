@@ -292,6 +292,9 @@ def create_app(data_dir=None, broker=None):
     async def save_presets(body: dict):
         return await rpc('preferences', body)
 
+    from .chart_gateway import register_chart_gateway
+    register_chart_gateway(app, sessions, COOKIE)
+
     static = Path(__file__).parent / 'static'
     if (static / 'assets').exists():
         app.mount('/assets', StaticFiles(directory=static / 'assets'), name='assets')

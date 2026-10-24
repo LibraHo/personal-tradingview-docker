@@ -12,7 +12,7 @@ const money=(v:any)=>v==null?'—':new Intl.NumberFormat('en-US',{style:'currenc
 const roundPrice=(v:number)=>Number(v.toFixed(v>=1?2:4));
 const clock=(v:number)=>new Date(v*1000).toLocaleTimeString('zh-CN',{hour12:false});
 
-export default function TradeTerminal(){
+export default function TradeTerminal({chartSymbol,embedded=false,onAuthenticated,onSessionEnd}:{chartSymbol?:string;embedded?:boolean;onAuthenticated?:(csrf:string)=>void;onSessionEnd?:()=>void}={}){
  const initialIntent=new URLSearchParams(location.search).get('intent');
  const intent=['buy','close','stop'].includes(initialIntent||'')?initialIntent:'overview';
  const [shortcut,setShortcut]=useState<'close'|'stop'|null>(null),[closeKind,setCloseKind]=useState('NORMAL'),[closePrice,setClosePrice]=useState(''),[closeSession,setCloseSession]=useState('RTH');
@@ -84,7 +84,8 @@ export default function TradeTerminal(){
   return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',visibility)};
  },[account,accounts,auth?.authenticated]);
  useEffect(()=>{if(!canTrade)setQuick(false)},[canTrade]);
- useEffect(()=>{setQuote(null);setPreview(null);setShortcut(null)},[symbol]);
+ useEffect(()=>{setQuote(null);setPreview(null);setShortcut(null);setQuick(false);setLimit('');setTrigger('');setEditing(null)},[symbol]);
+ useEffect(()=>{if(chartSymbol)setSymbol(chartSymbol)},[chartSymbol]);
  const readQuote=()=>perform(async()=>{
   const code=symbol.toUpperCase().startsWith('US.')?symbol.toUpperCase():'US.'+symbol.toUpperCase();
   if(code!==symbol)setSymbol(code);
@@ -93,7 +94,7 @@ export default function TradeTerminal(){
  });
  const login=()=>perform(async()=>{
   const a=await api(auth?.setup_required?'setup':'login',{password,setup_code:setup||undefined});
-  setPassword('');setSetup('');csrf.current=a.csrf;setAuth(a);
+  setPassword('');setSetup('');csrf.current=a.csrf;setAuth(a);onAuthenticated?.(a.csrf);
  });
  const execute=async(p:Preview)=>{
   const operation_id=crypto.randomUUID();setPreview(null);
@@ -140,7 +141,7 @@ export default function TradeTerminal(){
   if(quantities.length>6||stops.length>5||quantities.some(n=>!Number.isInteger(n)||n<1||n>state.max_shares)||stops.some(n=>!Number.isFinite(n)||n<=0||n>=100))throw Error('股数须为有效整股，止损比例须介于 0 和 100；最多 6 个股数和 5 个比例');
   const saved=await api('presets',{quantities,stops,templates:templateDraft},'PUT');setPrefs(saved);setPrefsOpen(false);setNotice('快捷设置已保存到 NAS');
  });
- const logout=()=>perform(async()=>{const r=await api('logout',{});setAuth({authenticated:false});setQuick(false);setState({});setNotice(r.message)});
+ const logout=()=>perform(async()=>{const r=await api('logout',{});setAuth({authenticated:false});setQuick(false);setState({});setNotice(r.message);onSessionEnd?.()});
 
  if(!auth?.authenticated)return <div className="trade-terminal trade-login"><div className="trade-login-card">
   <div className="trade-brand"><ShieldCheck size={25}/><span>NAS MARKET <b>TRADE</b></span></div>
@@ -154,21 +155,22 @@ export default function TradeTerminal(){
   <small>使用 HTTPS 加密连接。交易密码只在实盘解锁时输入，不保存到 NAS。</small>
  </div></div>;
 
- return <div className="trade-terminal">
+ return <div className={`trade-terminal ${embedded?"trade-embedded":""}`}>
   <header className="trade-header"><div className="trade-brand"><ShieldCheck size={24}/><span>NAS MARKET <b>TRADE</b></span></div>
-   <div className="trade-header-actions"><a href={`${location.protocol}//${location.hostname}:8088`} onClick={e=>{e.preventDefault();window.open(`http://${location.hostname}:8088`,'_blank','noopener')}}><ArrowLeft size={15}/> 看盘</a><button onClick={()=>void refresh()} disabled={busy}><RefreshCw size={15}/> 刷新</button><button onClick={()=>void logout()} disabled={busy}><LogOut size={15}/> 退出</button></div></header>
+   <div className="trade-header-actions"><a href="/chart"><ArrowLeft size={15}/> 看盘</a><button onClick={()=>void refresh()} disabled={busy}><RefreshCw size={15}/> 刷新</button><button onClick={()=>void logout()} disabled={busy}><LogOut size={15}/> 退出</button></div></header>
   <div className="trade-shell"><section className="trade-intro"><div><div className="trade-eyebrow">US EQUITIES · EXECUTION DESK</div><h1>美股交易台</h1><p>持仓、订单和快捷操作，在一个页面完成。</p></div><div className={`trade-env ${env==='REAL'?'real':'paper'}`}>{acc?(env==='REAL'?'实盘账户':'模拟账户'):'请选择账户'}<small>{env==='REAL'?(unlocked?`已解锁 · ${Math.max(0,Math.ceil((state.unlock.expires-now)/60))} 分钟`:'交易已锁定'):'不使用真实资金'}</small></div></section>
    {error&&<div role="alert" className="trade-error">{error}<button onClick={()=>setError('')}>×</button></div>}
    {notice&&<div role="status" className="trade-notice">{notice}</div>}
    {blocked&&<div className="trade-error">存在结果待核对的操作，已暂停此账号的新操作。请查看“操作流水”。</div>}
    <section className="trade-card trade-current-actions"><div><span className="trade-eyebrow">{intent==='overview'?'当前股票':'来自看盘快捷入口'}</span><h2>{symbol} · {intent==='close'?'平仓':intent==='stop'?'设置止损':intent==='buy'?'买入':'快捷交易'}</h2><p className="trade-small">{currentPosition?`持仓 ${currentPosition.qty} 股 / 可卖 ${currentPosition.can_sell_qty} 股`:'当前账户没有该股票持仓'} · {acc?(env==='REAL'?'实盘':'模拟')+' 尾号 '+account.slice(-4):'请先选择账户'}</p></div><div className="trade-row-actions"><button className="trade-buy" onClick={()=>{setEditing(null);setKind('NORMAL');document.getElementById('trade-ticket')?.scrollIntoView({behavior:'smooth',block:'start'})}}>买入面板</button><button className="trade-sell" disabled={!canTrade||busy||blocked||!currentPosition} onClick={()=>openShortcut('close')}>平仓</button><button disabled={!unlocked||busy||blocked||!currentPosition} onClick={()=>openShortcut('stop')}>设置止损</button></div><small>从看盘入口打开不会自动下单。平仓只针对上方股票，不会清空其他持仓。</small></section>
+   {embedded&&<section className="trade-card chart-direct-actions"><h2>看盘快捷下单</h2><p className="trade-small">{symbol} · {qty} 股 · {orderNames[kind]} · {session} · {tif} · {quick?'直接提交':'先预览'}<br/>限价 {limit||'未填写'} · 止损默认 2.5%（RTH / GTC）</p><div className="trade-row-actions"><button className="trade-buy" disabled={!canTrade||busy||blocked||!['NORMAL','MARKET'].includes(kind)} onClick={()=>order('BUY')}>买入 {qty} 股</button><button className="trade-sell" disabled={!canTrade||busy||blocked||!currentPosition||!['NORMAL','MARKET'].includes(kind)} onClick={()=>requestOrder({action:'PLACE',code:symbol,side:'SELL',order_type:kind,qty:Number(currentPosition.qty),price:Number(limit),session,time_in_force:'DAY',close_position:true})}>全部平仓</button><button disabled={!unlocked||busy||blocked||!currentPosition} onClick={()=>templateStop(currentPosition,{percent:2.5,mode:'STOP',tolerance:0})}>成本 -2.5% 止损</button></div><div className="trade-row-actions">{prefs.templates.map((t,i)=><button key={i} disabled={busy||!unlocked||blocked||!Number(limit)} onClick={()=>templateBuy(t)} title={`${t.qty} 股 · RTH / DAY · ${t.percent}% 止损`}>{t.name}<small>{t.qty} 股 / {t.percent}%</small></button>)}<button onClick={()=>{setTemplateDraft(prefs.templates.map(t=>({...t})));setPrefsOpen(true)}}>自定义快捷方式</button></div><small>买入和平仓沿用下方数量、价格及交易时段；命名买入方案固定 RTH / DAY。实盘锁定时不能提交。</small></section>}
    <div className="trade-top-grid"><section className="trade-card trade-account"><h2>账户与权限</h2>
     <label>交易账户<select aria-label="交易账户" value={account} onChange={e=>setAccount(e.target.value)} disabled={busy}><option value="">选择账户</option>{accounts.map(a=><option key={a.acc_id} value={a.acc_id}>{a.trd_env==='REAL'?'实盘':'模拟'} · 尾号 {a.acc_id.slice(-4)} · {a.acc_type}</option>)}</select></label>
     {!accounts.length&&<p className="trade-muted">未读取到美股账户。请检查 OpenD 登录及券商配置。<button onClick={()=>void perform(loadAccounts)}>重新读取</button></p>}
     <div className="trade-balance"><span>账户净资产 · USD</span><strong>{money(funds.total_assets)}</strong></div><div className="trade-metrics"><div><span>现金</span><b>{money(funds.cash)}</b></div><div><span>证券市值</span><b>{money(funds.market_val)}</b></div></div>
     <div className="trade-limit">单笔上限 {money(state.max_notional)} / {state.max_shares||'—'} 股<br/>第一版：整股、现金买入、卖出已有多头持仓</div>
     {env==='REAL'&&<button className={unlocked?'trade-secondary':'trade-primary'} disabled={busy||!account} onClick={()=>unlocked?void perform(async()=>{await api('lock',{});setState({...state,unlock:null});setQuick(false);setNotice('交易已锁定；券商已接受的订单继续按其规则有效')}):setUnlockOpen(true)}><LockKeyhole size={16}/>{unlocked?'立即锁定交易':'解锁实盘 · 15 分钟'}</button>}
-    <label className={`trade-quick ${quick?'armed':''}`}><input type="checkbox" checked={quick} disabled={!canTrade||busy||blocked} onChange={e=>setQuick(e.target.checked)}/><span>快捷模式<small>开启后，买卖与止损按钮直接提交；切换账户或隐藏页面后关闭。</small></span></label>
+    <label className={`trade-quick ${quick?'armed':''}`}><input type="checkbox" checked={quick} disabled={!canTrade||busy||blocked} onChange={e=>setQuick(e.target.checked)}/><span>快捷模式<small>开启后，买卖与止损按钮直接提交；切换股票、账户或隐藏页面后关闭。</small></span></label>
    </section>
    <section id="trade-ticket" className="trade-card trade-ticket"><div className="trade-card-title"><h2>{editing?'修改已有订单':'下单面板'}</h2>{editing?<button onClick={()=>setEditing(null)}>取消编辑</button>:<span className="trade-pill">{quick?'快捷直达':'提交前预览'}</span>}</div>
     <div className="trade-ticket-grid"><label>股票代码<div className="trade-inline"><input aria-label="交易股票" value={symbol} onChange={e=>setSymbol(e.target.value.toUpperCase())} disabled={!!editing}/><button onClick={()=>void readQuote()} disabled={busy}>行情</button></div></label><label>订单类型<select aria-label="订单类型" value={kind} disabled={!!editing} onChange={e=>{setKind(e.target.value);if(e.target.value!=='NORMAL')setSession('RTH')}}>{Object.entries(orderNames).filter(([k])=>env==='REAL'||['NORMAL','MARKET'].includes(k)).map(([k,n])=><option key={k} value={k}>{n}</option>)}</select></label></div>
