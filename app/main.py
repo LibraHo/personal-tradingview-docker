@@ -23,6 +23,18 @@ from pydantic import BaseModel, Field
 
 from .indicators import calculate
 from .python_indicator_worker import validate_code, validate_inputs
+from .depth import DepthFeed
+
+depth_feed = DepthFeed()
+
+
+async def depth_maintenance():
+    while True:
+        await asyncio.sleep(10)
+        try:
+            await asyncio.to_thread(depth_feed.cleanup)
+        except Exception:
+            pass
 
 ET = ZoneInfo('America/New_York')
 CN_TZ = ZoneInfo('Asia/Shanghai')
@@ -424,8 +436,11 @@ async def lifespan(app):
     init_db()
     loop = asyncio.get_running_loop()
     task = asyncio.create_task(maintenance())
+    depth_task = asyncio.create_task(depth_maintenance())
     yield
     task.cancel()
+    depth_task.cancel()
+    await asyncio.to_thread(depth_feed.close)
     if bridge.ctx:
         await asyncio.to_thread(bridge.ctx.close)
 
@@ -452,6 +467,19 @@ def status():
 def trading_config():
     url = os.getenv('TRADING_URL', '')
     return {'url': url if url.startswith('https://') else None}
+
+
+@app.get('/api/depth')
+def depth(symbol: str):
+    symbol = symbol.upper()
+    if not re.fullmatch(r'US\.[A-Z][A-Z0-9.]{0,11}', symbol):
+        raise HTTPException(400, '盘口密集线目前只支持美股')
+    try:
+        return depth_feed.read(symbol)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        raise HTTPException(503, '盘口连接异常，请检查 OpenD；旧盘口线已停用')
 
 
 @app.get('/api/quotes')
