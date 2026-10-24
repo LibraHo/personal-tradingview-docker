@@ -54,6 +54,9 @@ class FakeBroker:
                    order_type=order['order_type'], order_status='SUBMITTED', session=order['session'],
                    time_in_force=order['time_in_force'], remark=remark)
         self.rows.append(row)
+        for key in ('aux_price', 'trail_value', 'trail_type', 'trail_spread'):
+            if key in order:
+                row[key] = order[key]
         if self.fail:
             raise ConnectionError('response lost after acceptance')
         return [row]

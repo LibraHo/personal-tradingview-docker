@@ -14,6 +14,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from .protection import ProtectionMixin, stop_config, stop_prices
 
 
 class TradeError(Exception):
@@ -193,7 +194,7 @@ class OpenDBroker:
         self.ctx = self.quote_ctx = None
 
 
-class TradeEngine:
+class TradeEngine(ProtectionMixin):
     """All methods run on one dedicated thread; SQLite is also a crash journal."""
     def __init__(self, path, broker=None):
         self.broker = broker or OpenDBroker()
@@ -213,6 +214,7 @@ class TradeEngine:
                        'kind TEXT, payload TEXT, state TEXT, result TEXT, created REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT)')
             db.execute("UPDATE operations SET state='UNKNOWN' WHERE state='SENDING'")
+        self.init_protection()
 
     @contextmanager
     def db(self):
@@ -254,6 +256,7 @@ class TradeEngine:
         return {'expires': self.grant['expires']}
 
     def lock(self):
+        self.pause_protections('交易已锁定，后续成交不会自动挂止损；请核对未成交买单并手动处理或解锁后恢复')
         had_grant = self.grant is not None
         self.grant = None
         self.previews.clear()
@@ -273,6 +276,7 @@ class TradeEngine:
         if self.grant and self.grant['expires'] <= time.time():
             self.lock()
         self.previews = {k: v for k, v in self.previews.items() if v['expires'] > time.time()}
+        self.protection_tick()
         if not self.grant and time.time() - self.last_activity > 120:
             self.broker.close()
             self.account_cache = (0, [])
@@ -287,7 +291,8 @@ class TradeEngine:
     def snapshot(self, acc, env):
         self.account(acc, env)
         return {'positions': self.broker.positions(acc, env), 'orders': self.broker.orders(acc, env),
-                'funds': self.broker.funds(acc, env), 'as_of': time.time()}
+                'funds': self.broker.funds(acc, env), 'as_of': time.time(),
+                'protections': [{k:v for k,v in p.items() if k != 'owner'} for p in self.protections(acc, env)]}
 
     def quote(self, code):
         self.last_activity = time.time()
@@ -363,6 +368,13 @@ class TradeEngine:
         out['estimate'] = round(out['reference_price'] * out['qty'], 2)
         if out['estimate'] > self.max_notional:
             raise TradeError(f'单笔估算金额超过 ${self.max_notional:g} 上限')
+        if data.get('protection') is not None:
+            if env != 'REAL' or side != 'BUY' or kind not in {'NORMAL', 'MARKET'} or session != 'RTH' or tif != 'DAY':
+                raise TradeError('成交后自动止损仅支持实盘、常规时段、当日有效的买入单')
+            if q.get('market_state') != 'AFTERNOON':
+                raise TradeError('请在美股常规交易时段提交带自动止损的买单')
+            out['protection'] = stop_config(data['protection'])
+            stop_prices(out['reference_price'], out['protection'])
         return out
 
     def check_capacity(self, order, existing=None):
@@ -418,6 +430,8 @@ class TradeEngine:
                     'order_type': existing['order_type'], 'session': session,
                     'time_in_force': existing.get('time_in_force', 'DAY')})
                 order['order_id'] = str(existing['order_id'])
+                if 'protection' in order:
+                    raise TradeError('已有订单不能通过改单追加自动止损方案')
         if kind != 'CANCEL':
             self.check_capacity(order, existing)
         token = secrets.token_urlsafe(24)
@@ -491,6 +505,7 @@ class TradeEngine:
         with self.db() as db:
             db.execute('INSERT INTO operations VALUES (?,?,?,?,?,?,?)',
                        (op_id, owner, kind, json.dumps(order), 'SENDING', None, time.time()))
+            self.create_protection(op_id, owner, order, db)
         self.previews.pop(preview_id, None)
         try:
             result = self.broker.place(order, 'NMT:' + op_id) if kind == 'PLACE' else self.broker.modify(order, kind == 'CANCEL')
@@ -539,6 +554,24 @@ class TradeEngine:
         return self.operation(op_id)
 
     def preferences(self, value=None):
+        if value is not None:
+            if not isinstance(value.get('quantities'), list) or not isinstance(value.get('stops'), list):
+                raise TradeError('快捷设置格式不正确')
+            quantities = [float(number(n, '快捷股数')) for n in value['quantities']]
+            stops = [float(number(n, '止损比例')) for n in value['stops']]
+            if not 1 <= len(quantities) <= 6 or not 1 <= len(stops) <= 5 or any(n != int(n) or n > self.max_shares for n in quantities) or any(n >= 100 for n in stops):
+                raise TradeError('快捷数量或比例超出范围')
+            templates = value.get('templates', [])
+            if not isinstance(templates, list) or len(templates) > 8:
+                raise TradeError('最多保存八个命名方案')
+            validated = []
+            for item in templates:
+                config = stop_config(item)
+                qty = number(item.get('qty'), '方案股数')
+                if qty != int(qty) or qty > self.max_shares:
+                    raise TradeError('方案股数须为允许范围内的整股')
+                validated.append({**config, 'qty': int(qty)})
+            value = dict(quantities=quantities, stops=stops, templates=validated)
         with self.db() as db:
             if value is not None:
                 encoded = json.dumps(value)
@@ -546,4 +579,6 @@ class TradeEngine:
                     raise TradeError('快捷设置过大')
                 db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?)', ('presets', encoded))
             row = db.execute('SELECT value FROM preferences WHERE key=?', ('presets',)).fetchone()
-        return json.loads(row[0]) if row else {'quantities': [10, 50, 100], 'stops': [1, 2, 3]}
+        result = json.loads(row[0]) if row else {'quantities': [10, 50, 100], 'stops': [1, 2.5, 3]}
+        result.setdefault('templates', [dict(name='开盘 10 股 · 2.5% 止损', qty=10, percent=2.5, mode='STOP', tolerance=0)])
+        return result

@@ -284,6 +284,10 @@ def create_app(data_dir=None, broker=None):
     async def presets():
         return await rpc('preferences')
 
+    @app.post('/api/trade/protection/resume')
+    async def resume_protection(body: dict, request: Request):
+        return await rpc('resume_protection', request.state.owner, str(body.get('id', '')))
+
     @app.put('/api/trade/presets')
     async def save_presets(body: dict):
         return await rpc('preferences', body)
