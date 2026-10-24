@@ -211,6 +211,8 @@ function restoreWorkspace(raw:any):WorkspaceV2 {
 }
 
 function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
+  const [manageGroups,setManageGroups]=useState(false);
+  const groupRail=useRef<HTMLDivElement>(null);
   const [tradeDock,setTradeDock]=useState(secureChart&&new URLSearchParams(location.search).has('symbol'));
   const [dockSymbol,setDockSymbol]=useState(new URLSearchParams(location.search).get('symbol')||'US.SNDK');
   const [depthSettingsOpen,setDepthSettingsOpen]=useState(false);
@@ -359,25 +361,26 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
       <div className="header-right"><button className="mobile-watch-toggle" aria-expanded={mobileWatchOpen} onClick={()=>setMobileWatchOpen(v=>!v)}>自选</button><button className="secondary" onClick={()=>setDepthSettingsOpen(true)} aria-label="设置"><Settings2 size={16}/> 设置</button><span className="connection">{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:status.last_error?<><span className="dot red"/> OpenD 连接异常</>:<><span className="dot idle"/> OpenD 按需连接</>}</span><button className="icon-button" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
     </header>
     <div className="app-body"><aside className={mobileWatchOpen?'mobile-open':''}>
-      <div className="side-title">工作区 <Settings2 size={14}/></div>
+      <div className="side-title"><span>自选行情</span><span className="side-title-caption">WATCHLIST</span></div>
       <div className="market-tabs" role="tablist" aria-label="市场">
         <button role="tab" aria-selected={market==='US'} className={market==='US'?'on':''} onClick={()=>switchMarket('US')}>美股</button>
         <button role="tab" aria-selected={market==='CN'} className={market==='CN'?'on':''} onClick={()=>switchMarket('CN')}>A 股</button>
       </div>
-      <div className="side-group"><div className="group-label">自选分组 <span>{ws.groups.length}</span></div>
-        <button className="moomoo-import" onClick={importGroups} disabled={importingGroups} title="从 OpenD 读取 moomoo 自选分组及组内股票">{importingGroups?'正在读取 moomoo 分组…':'↻ 从 moomoo 导入分组'}</button>
-        {importMessage&&<div className="quote-notice" title={importMessage}>{importMessage}</div>}
-        <div className="watch-groups">{ws.groups.map(g=><div className={`watch-group ${g.id===selectedGroup.id?'active':''}`} key={g.id}>
-          {editingGroup===g.id?<input className="group-edit" aria-label="分组名称" value={groupDraft} autoFocus onChange={e=>setGroupDraft(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')renameGroup();if(e.key==='Escape')setEditingGroup('')}} onBlur={renameGroup}/>:
-            <button className="group-select" onClick={()=>selectGroup(g.id)}><span>{g.id==='featured'?'★':'▦'}</span>{g.name}<small>{g.symbols.length}</small></button>}
-          {g.id!=='featured'&&<div className="group-actions"><button title="重命名分组" onClick={()=>{setEditingGroup(g.id);setGroupDraft(g.name)}}>✎</button><button title="删除分组" onClick={()=>deleteGroup(g.id)}>×</button></div>}
-        </div>)}</div>
-        <div className="add-group"><input aria-label="新分组名称" value={newGroupName} onChange={e=>setNewGroupName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addGroup()} placeholder="新建分组"/><button title="创建分组" onClick={addGroup}><Plus size={15}/></button></div>
-        {groupError&&<div className="side-error">{groupError}</div>}
+      <div className="side-group">
+        <div className="group-heading"><span>我的分组 <small>{ws.groups.length}</small></span><div><button aria-label="向左滚动分组" onClick={()=>groupRail.current?.scrollBy({left:-200,behavior:'smooth'})}>‹</button><button aria-label="向右滚动分组" onClick={()=>groupRail.current?.scrollBy({left:200,behavior:'smooth'})}>›</button><button className={manageGroups?'active':''} aria-expanded={manageGroups} onClick={()=>setManageGroups(v=>!v)}>管理</button></div></div>
+        <div className="watch-groups" ref={groupRail} role="tablist" aria-label="自选分组">{ws.groups.map(g=><button key={g.id} role="tab" aria-selected={g.id===selectedGroup.id} className={`group-chip ${g.id===selectedGroup.id?'active':''}`} title={g.name} onClick={e=>{selectGroup(g.id);setEditingGroup('');e.currentTarget.scrollIntoView({block:'nearest',inline:'nearest',behavior:'smooth'})}}>{g.id==='featured'&&<span className="group-star">★</span>}<span>{g.name.replace(/^(美股|A股|A 股)\s*[|｜]\s*/, '')}</span><small>{g.symbols.length}</small></button>)}</div>
+        {manageGroups&&<div className="group-manager">
+          <div className="group-manager-current"><span>{selectedGroup.name}</span>{selectedGroup.id!=='featured'&&<div><button onClick={()=>{setEditingGroup(selectedGroup.id);setGroupDraft(selectedGroup.name)}}>重命名</button><button onClick={()=>deleteGroup(selectedGroup.id)}>删除</button></div>}</div>
+          {editingGroup===selectedGroup.id&&<input className="group-edit" aria-label="分组名称" value={groupDraft} autoFocus onChange={e=>setGroupDraft(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')renameGroup();if(e.key==='Escape')setEditingGroup('')}} onBlur={renameGroup}/>}
+          <div className="add-group"><input aria-label="新分组名称" value={newGroupName} onChange={e=>setNewGroupName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addGroup()} placeholder="新建分组"/><button title="创建分组" onClick={addGroup}><Plus size={15}/></button></div>
+          <button className="moomoo-import" onClick={importGroups} disabled={importingGroups}>{importingGroups?'正在同步…':'从 moomoo 同步分组'}</button>
+          {importMessage&&<div className="quote-notice" title={importMessage}>{importMessage}</div>}
+          {groupError&&<div className="side-error">{groupError}</div>}
+        </div>}
         <div className="group-label selected-label">股票 · {selectedGroup.name} <span>{selectedGroup.symbols.length}</span></div>
         {quoteError&&<div className="quote-notice" title={quoteError}>报价暂不可用，图表仍可查看</div>}
         {quotesStale&&<div className="quote-notice">报价为上次缓存数据</div>}
-        <div className="symbol-list">{selectedGroup.symbols.map(s=><div key={s} className={`symbol ${current?.symbol===s?'active':''}`}>
+        <div className="symbol-list" role="region" aria-label="自选股票列表" tabIndex={0}>{selectedGroup.symbols.map(s=><div key={s} className={`symbol ${current?.symbol===s?'active':''}`}>
           <button className="stock-select" onClick={()=>{setTile({symbol:s});setMobileWatchOpen(false)}} title={quotes[s]?.update_time?`OpenD 更新：${quotes[s].update_time}`:s}>
             <span className="symbol-icon">{s.split('.')[1].slice(0,1)}</span>
             <span className="stock-main"><span className="stock-top"><strong>{market==='CN'&&(stockNames[s]||quotes[s]?.name)&&/[\u3400-\u9fff]/.test(stockNames[s]||quotes[s].name)?stockNames[s]||quotes[s].name:s.split('.')[1]}</strong><b>{priceText(quotes[s]?.price??null,market)}</b></span>
