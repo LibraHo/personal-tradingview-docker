@@ -325,6 +325,10 @@ class TradeEngine(ProtectionMixin):
             raise TradeError('第一版条件单仅用于卖出已有多头持仓')
         out = dict(acc_id=acc, env=env, code=code, side=side, order_type=kind, qty=int(qty),
                    session=session, time_in_force=tif, price=0)
+        if data.get('close_position'):
+            if side != 'SELL' or kind not in {'NORMAL', 'MARKET'}:
+                raise TradeError('平仓仅支持卖出限价单或市价单')
+            out['close_position'] = True
         q = self.quote(code)
         current = float(number(q.get('last_price'), '行情价格'))
         if kind == 'MARKET':
@@ -391,6 +395,15 @@ class TradeEngine(ProtectionMixin):
             if not pos or float(pos.get('qty') or 0) <= 0 or pos.get('position_side') == 'SHORT':
                 raise TradeError('没有可卖出的多头持仓；第一版不允许做空')
             available = float(pos.get('can_sell_qty') or 0)
+            if order.get('close_position'):
+                if existing or float(pos['qty']) != order['qty']:
+                    raise TradeError('持仓数量已变化或含碎股，请重新打开平仓面板')
+                if available < float(pos['qty']):
+                    raise TradeError('已有卖单或止损占用持仓，不能完整平仓；请先在订单中处理并确认撤单完成')
+                pending_buys = [r for r in self.broker.orders(acc, env) if r.get('code') == order['code']
+                                and r.get('trd_side') == 'BUY' and r.get('order_status') in ACTIVE]
+                if pending_buys:
+                    raise TradeError('该股仍有未结束的买单，可能继续增加持仓；请先撤销并确认买单结束')
             if existing:
                 available += max(0, float(existing['qty']) - float(existing.get('dealt_qty', 0)))
             if remaining > available or (order['qty'] if existing else remaining) > float(cap.get('max_position_sell') or 0):

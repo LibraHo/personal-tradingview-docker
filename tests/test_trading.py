@@ -95,6 +95,30 @@ class TradingTests(unittest.TestCase):
         self.assertEqual(len(self.broker.rows), 1)
         self.assertEqual(first['state'], 'ACCEPTED')
 
+    def test_close_position_rejects_partial_quantity_and_reserved_shares(self):
+        close = {**self.order, 'side': 'SELL', 'qty': 100, 'close_position': True}
+        with self.assertRaisesRegex(TradeError, '持仓数量'):
+            self.engine.preview('a', {**close, 'qty': 50})
+        self.broker.available = 50
+        with self.assertRaisesRegex(TradeError, '不能完整平仓'):
+            self.engine.preview('a', close)
+
+    def test_close_position_rechecks_pending_buy_before_submission(self):
+        close = {**self.order, 'side': 'SELL', 'qty': 100, 'close_position': True}
+        p = self.engine.preview('a', close)
+        self.broker.rows.append(dict(code='US.SNDK', trd_side='BUY', order_status='SUBMITTED'))
+        with self.assertRaisesRegex(TradeError, '未结束的买单'):
+            self.engine.commit('a', p['preview_id'], str(uuid.uuid4()))
+        self.assertFalse(self.broker.calls)
+
+    def test_full_close_keeps_explicit_limit_and_quantity(self):
+        close = {**self.order, 'side': 'SELL', 'qty': 100, 'price': 99.5, 'close_position': True}
+        p = self.engine.preview('a', close)
+        r = self.engine.commit('a', p['preview_id'], str(uuid.uuid4()))
+        self.assertEqual(r['state'], 'ACCEPTED')
+        self.assertEqual(self.broker.calls[-1][1]['qty'], 100)
+        self.assertEqual(self.broker.calls[-1][1]['price'], 99.5)
+
     def test_real_requires_account_bound_unexpired_grant(self):
         real = {**self.order, 'acc_id': '987654321987654321', 'env': 'REAL'}
         with self.assertRaisesRegex(TradeError, '锁定'):
