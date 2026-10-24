@@ -1,6 +1,6 @@
 # NAS Market
 
-轻量级、只读的美股与 A 股网页看盘终端。当前实时行情源是已有的 moomoo OpenD；服务不连接交易接口，也不提供模拟行情。Web 端使用 Lightweight Charts 5、React；服务端使用 FastAPI、WebSocket 与 SQLite。
+轻量级美股与 A 股网页看盘终端，复用已有的 moomoo OpenD。默认看盘服务保持只读；可选的独立 HTTPS 美股交易台支持持仓、快捷买卖、止损和撤改单，详见 [交易平台部署与使用](TRADING.md)。Web 端使用 Lightweight Charts 5、React；服务端使用 FastAPI、WebSocket 与 SQLite。生产环境直接使用 OpenD 接口，不提供伪造行情。
 
 ## 官方能力与边界
 

@@ -448,6 +448,12 @@ def status():
             'active_streams': len(bridge.active), 'max_streams': MAX_STREAMS}
 
 
+@app.get('/api/trading-config')
+def trading_config():
+    url = os.getenv('TRADING_URL', '')
+    return {'url': url if url.startswith('https://') else None}
+
+
 @app.get('/api/quotes')
 async def quotes(symbols: str):
     codes = [s.strip().upper() for s in symbols.split(',') if s.strip()]

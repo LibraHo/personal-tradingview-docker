@@ -5,6 +5,7 @@ import{Activity,Plus,Settings2,Trash2,Save,LayoutGrid,Wifi,WifiOff,RotateCw,Minu
 import{type Bar,type Indicator,compute}from'./indicators';
 import{formula}from'./formula';
 import './style.css';
+import TradeTerminal from './TradeTerminal';
 type Mode='all'|'extended'|'regular';type Period='1m'|'5m'|'15m'|'30m'|'60m'|'1d';
 type Tile={symbol:string;period:Period};
 type StockQuote={symbol:string;name:string;price:number|null;change_percent:number|null;pre_price:number|null;pre_change_percent:number|null;after_price:number|null;after_change_percent:number|null;overnight_price:number|null;overnight_change_percent:number|null;update_time:string};
@@ -203,6 +204,9 @@ function restoreWorkspace(raw:any):WorkspaceV2 {
 }
 
 function App(){
+  const [tradingUrl,setTradingUrl]=useState(`https://${location.hostname}:8443/trade`);
+  useEffect(()=>{fetch('/api/trading-config').then(r=>r.json()).then(c=>{if(c.url?.startsWith('https://'))setTradingUrl(c.url)}).catch(()=>{})},[]);
+  const openTrading=(symbol:string)=>{const url=new URL(tradingUrl);url.searchParams.set('symbol',symbol);window.open(url.toString(),'_blank','noopener')};
   const [state,setState]=useState<WorkspaceV2>(initialV2),[ready,setReady]=useState(false),[active,setActive]=useState(0);
   const [newSymbol,setNewSymbol]=useState(''),[symbolError,setSymbolError]=useState('');
   const [newGroupName,setNewGroupName]=useState(''),[groupError,setGroupError]=useState('');
@@ -373,9 +377,9 @@ function App(){
         <div className="add-symbol"><input aria-label="添加股票代码" value={newSymbol} onChange={e=>setNewSymbol(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSymbol()} placeholder={market==='US'?'添加美股代码，如 AAPL':'添加 A 股，如 SH.600519'}/><button title="加入当前分组" onClick={addSymbol}><Plus size={16}/></button></div>
         {symbolError&&<div className="side-error">{symbolError}</div>}
       </div>
-      <div className="side-bottom"><div className="resource"><span>实时订阅</span><strong>{status.active_streams||0} / {status.max_streams||32}</strong></div><p>行情由本机 OpenD 提供。交易权限未接入。</p></div>
+      <div className="side-bottom"><div className="resource"><span>实时订阅</span><strong>{status.active_streams||0} / {status.max_streams||32}</strong></div><p>行情由本机 OpenD 提供。美股交易使用独立 HTTPS 入口。</p></div>
     </aside><main>
-      <div className="workspace-top"><div><div className="eyebrow">WORKSPACE / {market}</div><h1>{market==='US'?'美股':'A 股'}观察台</h1><p>{selectedGroup.name} · 多周期图表与技术指标</p></div><div className="workspace-actions"><button className="secondary" onClick={()=>setShowIndicators(x=>!x)}><Settings2 size={16}/> 指标管理</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>updateMarket(w=>({...w,layout:n}))}>{n}</button>)}</div></div></div>
+      <div className="workspace-top"><div><div className="eyebrow">WORKSPACE / {market}</div><h1>{market==='US'?'美股':'A 股'}观察台</h1><p>{selectedGroup.name} · 多周期图表与技术指标</p></div><div className="workspace-actions">{market==='US'&&<button className="secondary" onClick={()=>openTrading(current?.symbol||'US.SNDK')}>交易台 ↗</button>}<button className="secondary" onClick={()=>setShowIndicators(x=>!x)}><Settings2 size={16}/> 指标管理</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>updateMarket(w=>({...w,layout:n}))}>{n}</button>)}</div></div></div>
       <div className="toolbar"><div className="toolbar-section"><span>周期</span>{periods.map(p=><button key={p} className={current?.period===p?'on':''} onClick={()=>setTile({period:p})}>{p}</button>)}</div><div className="toolbar-line"/><div className="toolbar-section"><span>时段</span>{market==='US'?<select value={ws.mode} onChange={e=>updateMarket(w=>({...w,mode:e.target.value as Mode}))}><option value="all">24H 全时段</option><option value="extended">盘前 + 常规 + 盘后</option><option value="regular">仅常规</option></select>:<span className="cn-session">沪深常规时段 · 北京时间</span>}</div><div className="toolbar-end">{ws.indicators.filter(i=>current&&appliesTo(i,active,current.period)).length} 个指标用于当前图</div></div>
       {selectedGroup.symbols.length?<div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane key={`${market}-${i}-${tile.symbol}`} index={i} tile={tile} mode={ws.mode} indicators={ws.indicators} active={active===i} onActivate={()=>setActive(i)} drawings={ws.drawings[`${tile.symbol}:${tile.period}`]||[]} onDraw={v=>updateMarket(w=>({...w,drawings:{...w.drawings,[`${tile.symbol}:${tile.period}`]:v}}))} trends={ws.trends[`${tile.symbol}:${tile.period}`]||[]} onTrend={v=>updateMarket(w=>({...w,trends:{...w.trends,[`${tile.symbol}:${tile.period}`]:v}}))} version={refresh} stockName={quotes[tile.symbol]?.name}/>)}</div>:
         <div className="empty-watchlist"><strong>{selectedGroup.name}还是空的</strong><p>在左侧输入股票代码，就能开始看盘。</p><small>{market==='US'?'示例：AAPL、US.SNDK':'示例：SH.600519、SZ.000001'}</small></div>}
@@ -391,7 +395,4 @@ function App(){
     </main></div>
   </div>;
 }
-createRoot(document.getElementById('root')!).render(<App/>);
-
-
-
+createRoot(document.getElementById('root')!).render(location.pathname.startsWith('/trade')?<TradeTerminal/>:<App/>);

@@ -2,6 +2,8 @@
 *.sqlite3
 *.sqlite3-*
 /data/
+/trade-data/
+/trade-tls/
 node_modules/
 dist/
 __pycache__/

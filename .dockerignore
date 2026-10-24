@@ -3,3 +3,8 @@ web/node_modules
 web/dist
 .env
 *.sqlite3
+*.sqlite3-*
+trade-data
+trade-tls
+__pycache__
+tests/__pycache__
