@@ -6,7 +6,7 @@
 docker compose -f docker-compose.yml -f docker-compose.trade.yml up -d --build market
 ```
 
-合并后已验证双端口健康、密码及全部缓存/策略数据保留。实时 OpenD 连接目前握手超时，TCP 端口可达；NAS 重启后需要检查 OpenD 登录状态，当前实时行情未恢复，不能把健康检查视为行情成功。
+合并后已验证双端口健康、密码及全部缓存/策略数据保留。2026-10-26 用户完成 OpenD 交互登录后，已确认 qot_logined/trd_logined 为 true，SNDK 实时订阅成功。修复看盘和盘口连接在登录前无限等待的问题：使用 SDK 异步握手，默认 8 秒超时后关闭旧连接并允许重试。
 
 合并部署细节及旧部署迁移见 [COMBINED-DEPLOYMENT.md](docs/COMBINED-DEPLOYMENT.md)。下文保留历史部署记录，不作为当前启动指令。
 

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from .indicators import calculate
 from .python_indicator_worker import validate_code, validate_inputs
 from .depth import DepthFeed
+from .opend_connection import connect_quote_context
 
 depth_feed = DepthFeed()
 
@@ -299,7 +300,7 @@ class Bridge:
                                 bars = frame_to_bars(data[data['code'] == symbol], symbol)
                                 loop.call_soon_threadsafe(asyncio.create_task, publish(key, bars))
                 return ret, data
-        self.ctx = OpenQuoteContext(host=HOST, port=PORT, is_encrypt=bool(rsa_file))
+        self.ctx = connect_quote_context(OpenQuoteContext,host=HOST,port=PORT,is_encrypt=bool(rsa_file))
         self.ctx.set_handler(Handler())
         self.last_error = None
         return self.ctx

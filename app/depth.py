@@ -36,7 +36,8 @@ class DepthFeed:
             if rsa:
                 mm.SysConfig.enable_proto_encrypt(True)
                 mm.SysConfig.set_init_rsa_file(rsa)
-            self.ctx = mm.OpenQuoteContext(host=os.getenv('OPEND_HOST', 'host.docker.internal'),
+            from .opend_connection import connect_quote_context
+            self.ctx = connect_quote_context(mm.OpenQuoteContext,host=os.getenv('OPEND_HOST', 'host.docker.internal'),
                 port=int(os.getenv('OPEND_PORT', '11111')), is_encrypt=bool(rsa))
         return self.ctx
 
