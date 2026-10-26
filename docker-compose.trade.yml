@@ -1,25 +1,21 @@
-# Start together with the normal compose file; OpenD is reused, never restarted.
+# Enable HTTPS trading inside the existing market container. OpenD stays external.
 services:
-  trading:
-    build:
-      context: .
-      dockerfile: Dockerfile.nas
-    restart: unless-stopped
-    env_file: .env
+  market:
+    init: true
     environment:
       TRADING_DATA_DIR: /trade-data
-    entrypoint: ["python3", "-m", "uvicorn", "app.trade_api:app", "--host", "0.0.0.0", "--port", "8443", "--workers", "1", "--no-proxy-headers", "--ssl-keyfile", "/tls/key.pem", "--ssl-certfile", "/tls/cert.pem", "--no-access-log"]
-    networks: [opend]
+      MARKET_INTERNAL_URL: http://127.0.0.1:8000
+    entrypoint: ["python3", "-m", "app.launch"]
     ports:
       - "${TRADING_BIND:-127.0.0.1}:${TRADING_PORT:-8443}:8443"
     volumes:
       - ./trade-data:/trade-data
       - ./trade-tls:/tls:ro
-      - ${OPEND_RSA_SOURCE}:/run/secrets/opend_rsa.pem:ro
-    mem_limit: 320m
-    cpus: 1.0
+    mem_limit: 640m
+    cpus: 1.5
+    stop_grace_period: 35s
     healthcheck:
-      test: ["CMD", "python3", "-c", "import ssl,urllib.request; urllib.request.urlopen('https://127.0.0.1:8443/health', context=ssl._create_unverified_context(), timeout=3)"]
+      test: ["CMD", "python3", "-m", "app.health"]
       interval: 30s
-      timeout: 5s
+      timeout: 8s
       retries: 3

@@ -93,3 +93,7 @@ result = {"MACD": diff, "Signal": signal, "Histogram": diff - signal}
 ## 验收
 
 本机：`python -m unittest discover -s tests -v`，`cd web && npm ci && npm run build`。真实 OpenD 验收需在 NAS 上对有行情权限的股票检查：历史全时段跨 20:00/04:00 数据、实时重复 K 线覆盖、关闭 OpenD 后重启并观察 `/api/status` 与图表恢复。没有真实 OpenD 时无法声称这些集成场景已经通过。
+
+## 看盘与交易合并部署
+
+准备好原交易证书及 trade-data 后，执行 `docker compose -f docker-compose.yml -f docker-compose.trade.yml up -d --build market`。只运行一个应用容器，保留 HTTP 8088 看盘、HTTPS 8443 看盘交易两个入口。OpenD 仍使用现有容器。具体迁移、备份及回滚见 [合并部署说明](docs/COMBINED-DEPLOYMENT.md)。
