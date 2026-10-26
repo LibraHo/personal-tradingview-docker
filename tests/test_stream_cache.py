@@ -154,6 +154,32 @@ class PushTests(unittest.IsolatedAsyncioTestCase):
             bridge.subscribe(('US.SNDK', '1m', 'all'))
             self.assertIn(('US.SNDK', '1m', 'all'), bridge.active)
 
+    async def test_shared_chart_and_strategy_modes_keep_subscription(self):
+        import time
+        fake=types.SimpleNamespace(SubType=types.SimpleNamespace(K_1M=1),
+                                   Session=types.SimpleNamespace(ALL=3,RTH=1),RET_OK=0)
+        class Context:
+            subscriptions=0
+            removed=0
+            def subscribe(self,*args,**kwargs):self.subscriptions+=1;return 0,None
+            def unsubscribe(self,*args,**kwargs):self.removed+=1;return 0,None
+        ctx=Context();bridge=market.Bridge();bridge.ctx=ctx
+        all_key=('US.SNDK','1m','all');regular=('US.SNDK','1m','regular')
+        with patch.dict(sys.modules,{'moomoo':fake}),patch.object(bridge,'rate_limit'):
+            bridge.subscribe(all_key);bridge.subscribe(regular)
+            self.assertEqual(ctx.subscriptions,1)
+            bridge.active[all_key]=time.monotonic()-70
+            bridge.active[regular]=time.monotonic()-70
+            market.listeners[regular]={asyncio.Queue(maxsize=1)}
+            try:
+                bridge.unsubscribe_unused()
+                self.assertEqual(ctx.removed,0)
+                self.assertIn(regular,bridge.active)
+                market.listeners.pop(regular)
+                bridge.unsubscribe_unused()
+                self.assertEqual(ctx.removed,1)
+            finally:market.listeners.pop(regular,None)
+
 
 if __name__ == '__main__':
     unittest.main()

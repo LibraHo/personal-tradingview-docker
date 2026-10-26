@@ -478,7 +478,7 @@ class TradeEngine(ProtectionMixin):
             time.sleep(.05)
         self.rates.append(time.monotonic())
 
-    def commit(self, owner, preview_id, op_id):
+    def commit(self, owner, preview_id, op_id, strategy_arm=None):
         if not re.fullmatch(r'[a-f0-9-]{32,36}', op_id):
             raise TradeError('操作编号无效')
         previous = self.operation(op_id)
@@ -514,7 +514,11 @@ class TradeEngine(ProtectionMixin):
         self.authorize(owner, order['acc_id'], order['env'])
         if preview['expires'] <= time.time():
             raise TradeError('校验耗时较长，预览已过期，请重新预览')
+        if strategy_arm is not None and (strategy_arm.get('cancelled') or strategy_arm['expires']<=time.time()):
+            raise TradeError('策略授权已取消或到期，未提交')
         self.rate()
+        if strategy_arm is not None and (strategy_arm.get('cancelled') or strategy_arm['expires']<=time.time()):
+            raise TradeError('策略授权已取消或到期，未提交')
         with self.db() as db:
             db.execute('INSERT INTO operations VALUES (?,?,?,?,?,?,?)',
                        (op_id, owner, kind, json.dumps(order), 'SENDING', None, time.time()))
@@ -565,6 +569,14 @@ class TradeEngine(ProtectionMixin):
         with self.db() as db:
             db.execute("UPDATE operations SET state='MANUALLY_REVIEWED' WHERE id=?", (op_id,))
         return self.operation(op_id)
+
+    def strategy_authorize(self, owner, acc, env):
+        self.authorize(owner, acc, env)
+        return {'expires': self.grant['expires'] if env == 'REAL' else time.time()+600}
+
+    def strategy_execute(self, owner, config, side, signal, arm):
+        from .strategy_execution import execute_strategy
+        return execute_strategy(self, owner, config, side, signal, arm)
 
     def preferences(self, value=None):
         if value is not None:

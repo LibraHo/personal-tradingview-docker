@@ -16,7 +16,7 @@ def register_chart_gateway(app, sessions, cookie):
     allowed = {
         'GET': {'status', 'cache/status', 'trading-config', 'depth', 'symbols/names',
                 'quotes', 'bars', 'bars/older', 'indicators'},
-        'POST': {'quote/retry', 'python-indicator/validate', 'python-indicator', 'watchlists/import-moomoo'},
+        'POST': {'quote/retry', 'python-indicator/validate', 'python-indicator', 'watchlists/import-moomoo', 'strategy/evaluate'},
     }
 
     @app.api_route('/api/market/{path:path}', methods=['GET', 'POST', 'PUT'])

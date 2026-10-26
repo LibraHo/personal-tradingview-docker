@@ -3,7 +3,8 @@ import os
 import tempfile
 import unittest
 import uuid
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -128,6 +129,86 @@ class TradeApiTests(unittest.TestCase):
             with self.client.websocket_connect('wss://testserver/api/market/stream?symbol=US.SNDK',
                                                 headers={'Origin':'https://testserver'}) as ws:
                 self.assertTrue(ws.receive_json()['connected'])
+        self.assertFalse(self.broker.rows)
+
+    def strategy_fixture(self):
+        from test_strategies import config
+        cfg=config();cfg['execution']['flat_only']=False
+        self.setup_account()
+        stamp=int(time.time())-600
+        result={'bar_time':stamp,'bar_end':stamp+300,'buy':False,'sell':False,'close':100,'stale':False,'live':True}
+        mock=AsyncMock(return_value=result)
+        patched=patch('app.strategy_api.market_evaluate',mock);patched.start();self.addCleanup(patched.stop)
+        saved=self.client.post('/api/trade/strategies/save',headers=self.headers,json=cfg)
+        self.assertEqual(saved.status_code,200,saved.text)
+        sid=saved.json()['id']
+        started=self.client.post('/api/trade/strategies/start',headers=self.headers,json={'id':sid,'enabled':True})
+        self.assertEqual(started.status_code,200,started.text)
+        return sid,mock,result
+
+    def test_strategy_signal_only_then_armed_executes_once(self):
+        sid,mock,result=self.strategy_fixture()
+        next_result={**result,'bar_time':result['bar_time']+300,'bar_end':int(time.time()),'buy':True}
+        mock.return_value=next_result
+        self.client.portal.call(self.app.state.strategy_poll_once)
+        self.assertFalse(self.broker.rows)
+        arm=self.client.post('/api/trade/strategies/arm',headers=self.headers,json={
+            'id':sid,'acc_id':'123456789123456789','env':'SIMULATE','confirm':'ARM STRATEGY'})
+        self.assertEqual(arm.status_code,200,arm.text)
+        self.assertFalse(self.broker.rows)
+        mock.return_value={**next_result,'bar_time':next_result['bar_time']+300,'bar_end':int(time.time())}
+        self.client.portal.call(self.app.state.strategy_poll_once)
+        self.client.portal.call(self.app.state.strategy_poll_once)
+        self.assertEqual(len(self.broker.rows),1)
+        self.assertIsNone(self.app.state.strategies.get(sid)['arm'])
+
+    def test_strategy_real_arm_requires_unlock_and_stop_cancels_arm(self):
+        sid,_,_=self.strategy_fixture()
+        armed=self.client.post('/api/trade/strategies/arm',headers=self.headers,json={
+            'id':sid,'acc_id':'987654321987654321','env':'REAL','confirm':'ARM STRATEGY'})
+        self.assertEqual(armed.status_code,400)
+        self.assertFalse(self.broker.rows)
+        self.client.post('/api/trade/strategies/arm',headers=self.headers,json={
+            'id':sid,'acc_id':'123456789123456789','env':'SIMULATE','confirm':'ARM STRATEGY'})
+        pending_arm=self.app.state.strategies.arms[sid]
+        self.client.post('/api/trade/strategies/start',headers=self.headers,json={'id':sid,'enabled':False})
+        self.assertTrue(pending_arm['cancelled'])
+
+    def test_strategy_unknown_order_is_not_retried(self):
+        sid,mock,result=self.strategy_fixture()
+        self.client.post('/api/trade/strategies/arm',headers=self.headers,json={
+            'id':sid,'acc_id':'123456789123456789','env':'SIMULATE','confirm':'ARM STRATEGY'})
+        self.broker.fail=True
+        mock.return_value={**result,'bar_time':result['bar_time']+300,'bar_end':int(time.time()),'buy':True}
+        self.client.portal.call(self.app.state.strategy_poll_once)
+        self.client.portal.call(self.app.state.strategy_poll_once)
+        self.assertEqual(len(self.broker.rows),1)
+        self.assertIsNone(self.app.state.strategies.get(sid)['arm'])
+        events=self.app.state.strategies.events(sid)
+        self.assertTrue(any(e['kind']=='ORDER' and e['detail']['state']=='UNKNOWN' for e in events))
+
+    def test_strategy_gap_and_conflicting_signals_never_trade(self):
+        sid,mock,result=self.strategy_fixture()
+        mock.return_value={**result,'bar_time':result['bar_time']+900,'bar_end':int(time.time()),'buy':True}
+        self.client.portal.call(self.app.state.strategy_poll_once)
+        self.assertEqual(self.app.state.strategies.events(sid)[0]['kind'],'SKIPPED')
+        mock.return_value={**result,'bar_time':result['bar_time']+1200,'bar_end':int(time.time()),'buy':True,'sell':True}
+        self.client.portal.call(self.app.state.strategy_poll_once)
+        self.assertEqual(self.app.state.strategies.events(sid)[0]['kind'],'CONFLICT')
+        self.assertFalse(self.broker.rows)
+
+    def test_strategy_stale_quote_and_revoked_arm_do_not_place(self):
+        from test_strategies import config
+        cfg=config();cfg['execution']['flat_only']=False
+        owner='test-only';acc='123456789123456789'
+        arm={'acc_id':acc,'env':'SIMULATE','expires':time.time()+600}
+        self.broker.timestamp='2000-01-01 00:00:00'
+        with self.assertRaisesRegex(Exception,'15 秒'):
+            self.app.state.engine.strategy_execute(owner,cfg,'BUY',{'close':100},arm)
+        self.broker.timestamp=__import__('datetime').datetime.now(__import__('zoneinfo').ZoneInfo('America/New_York')).strftime('%Y-%m-%d %H:%M:%S')
+        self.app.state.engine.quote_cache.clear()
+        with self.assertRaisesRegex(Exception,'授权已取消'):
+            self.app.state.engine.strategy_execute(owner,cfg,'BUY',{'close':100},{**arm,'cancelled':True})
         self.assertFalse(self.broker.rows)
 
 

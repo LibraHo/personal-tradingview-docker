@@ -55,6 +55,7 @@ last_fetch: dict[tuple[str, str, str], float] = {}
 fetched_days: dict[tuple[str, str, str], int] = {}
 fetch_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
 python_slots = asyncio.Semaphore(1)
+strategy_leases = {}
 loop = None
 
 
@@ -245,6 +246,7 @@ class Bridge:
         self.last_activity = time.monotonic()
         self.snapshot_cache: dict[tuple[str, ...], tuple[float, list[dict]]] = {}
         self.permission_errors = {}
+        self.live_sessions = {}
 
     @staticmethod
     def permission_market(symbol):
@@ -311,6 +313,7 @@ class Bridge:
                 pass
         self.ctx = None
         self.active.clear()
+        self.live_sessions.clear()
 
     def history(self, key, days, end_date=None):
         from moomoo import KLType, AuType, Session, RET_OK
@@ -441,6 +444,12 @@ class Bridge:
                 return
             if len(self.active) >= MAX_STREAMS:
                 raise RuntimeError('实时订阅已达到本服务配置的上限')
+            rank={'regular':0,'extended':1,'all':2}
+            prior=self.live_sessions.get(key[:2])
+            if prior is not None and rank[prior]>=rank[key[2]]:
+                self.active[key]=time.monotonic()
+                self.last_activity=time.monotonic()
+                return
             try:
                 ctx = self.ensure()
                 self.rate_limit()
@@ -449,6 +458,7 @@ class Bridge:
                 if ret != RET_OK:
                     self.raise_quote_error(key[0], error)
                 self.active[key] = time.monotonic()
+                self.live_sessions[key[:2]]=key[2]
                 self.last_activity = time.monotonic()
             except QuotePermissionError:
                 raise
@@ -462,6 +472,9 @@ class Bridge:
             for key, start in list(self.active.items()):
                 if listeners.get(key) or time.monotonic()-start < 65:
                     continue
+                if any(other!=key and other[:2]==key[:2] for other in self.active):
+                    self.active.pop(key,None)
+                    continue
                 try:
                     self.rate_limit()
                     ret, error = self.ctx.unsubscribe([key[0]], [getattr(SubType, PERIODS[key[1]])])
@@ -471,6 +484,7 @@ class Bridge:
                     self.reset(exc)
                     break
                 self.active.pop(key, None)
+                self.live_sessions.pop(key[:2],None)
                 self.last_activity = time.monotonic()
 
     def close_if_idle(self):
@@ -501,6 +515,10 @@ async def maintenance():
     while True:
         await asyncio.sleep(20)
         try:
+            for key,(queue,until) in list(strategy_leases.items()):
+                if until < time.monotonic():
+                    listeners.get(key,set()).discard(queue)
+                    strategy_leases.pop(key,None)
             if time.monotonic() - previous_prune > 86400:
                 await asyncio.to_thread(prune_cache)
                 previous_prune = time.monotonic()
@@ -739,6 +757,45 @@ async def python_indicator(request: PythonIndicatorRequest):
 
 class Setting(BaseModel):
     value: object
+
+
+class StrategyEvaluation(BaseModel):
+    config: dict
+    lease: bool = False
+
+
+@app.post('/api/strategy/evaluate')
+async def strategy_evaluate(request: StrategyEvaluation):
+    from .strategy_rules import validate_strategy, evaluate
+    try:
+        config=validate_strategy(request.config)
+        key=validate(config['symbol'],config['period'],config['mode'])
+        if request.lease:
+            if key not in strategy_leases and len(strategy_leases)>=8:
+                raise ValueError('策略行情最多使用 8 组股票/周期订阅')
+            q=strategy_leases.get(key,(asyncio.Queue(maxsize=1),0))[0]
+            listeners.setdefault(key,set()).add(q)
+            strategy_leases[key]=(q,time.monotonic()+75)
+            try:
+                await asyncio.to_thread(bridge.subscribe,key)
+            except Exception:
+                listeners.get(key,set()).discard(q);strategy_leases.pop(key,None)
+                raise
+        response=await bars(key[0],key[1],key[2],RETENTION_DAYS,limit=5000)
+        def compute():
+            return evaluate(config,response['bars'],python_runner=run_python_indicator)
+        async with python_slots:
+            result=await asyncio.to_thread(compute)
+        result['stale']=response['stale']
+        result['evaluated_at']=time.time()
+        result['live']=key in bridge.active
+        return result
+    except (ValueError,SyntaxError,TypeError) as exc:
+        raise HTTPException(400,python_validation_error(exc))
+    except QuotePermissionError as exc:
+        raise HTTPException(403,str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503,str(exc))
 
 
 def merge_moomoo_groups(workspace, remote_groups):

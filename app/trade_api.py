@@ -102,8 +102,11 @@ def create_app(data_dir=None, broker=None):
     @asynccontextmanager
     async def lifespan(app):
         task = asyncio.create_task(maintenance())
+        strategy_task = asyncio.create_task(strategy_poll())
         yield
         task.cancel()
+        strategy_task.cancel()
+        await asyncio.gather(task,strategy_task,return_exceptions=True)
         try:
             await rpc('lock')
         except Exception:
@@ -218,12 +221,14 @@ def create_app(data_dir=None, broker=None):
                 raise HTTPException(403, '平台密码不正确')
             # Clear any previous real grant before replacing the login session.
             await rpc('lock')
+            app.state.strategies.disarm_all()
             attempts.clear()
             return login_response()
 
     @app.post('/api/trade/logout')
     async def logout(request: Request):
         sessions.pop(request.state.owner, None)
+        app.state.strategies.disarm_all()
         try:
             await rpc('lock')
             note = '已退出并锁定交易'
@@ -257,6 +262,7 @@ def create_app(data_dir=None, broker=None):
 
     @app.post('/api/trade/lock')
     async def lock():
+        app.state.strategies.disarm_all()
         return await rpc('lock')
 
     @app.post('/api/trade/preview')
@@ -294,6 +300,9 @@ def create_app(data_dir=None, broker=None):
 
     from .chart_gateway import register_chart_gateway
     register_chart_gateway(app, sessions, COOKIE)
+
+    from .strategy_api import register_strategy_api
+    strategy_poll=register_strategy_api(app,root,sessions,rpc)
 
     static = Path(__file__).parent / 'static'
     if (static / 'assets').exists():
