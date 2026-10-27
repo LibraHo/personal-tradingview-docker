@@ -49,7 +49,22 @@ RETENTION_DAYS = max(1, int(os.getenv('CACHE_RETENTION_DAYS', '30')))
 DAILY_HISTORY_DAYS = max(1, int(os.getenv('DAILY_HISTORY_DAYS', '730')))
 DAILY_RETENTION_DAYS = max(DAILY_HISTORY_DAYS, int(os.getenv('DAILY_CACHE_RETENTION_DAYS', '1825')))
 SYMBOL_RE = re.compile(r'^(?:US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.[0-9]{6})$')
-PERIODS = {'1m': 'K_1M', '5m': 'K_5M', '15m': 'K_15M', '30m': 'K_30M', '60m': 'K_60M', '1d': 'K_DAY'}
+PERIODS = {'1m': 'K_1M', '5m': 'K_5M', '15m': 'K_15M', '30m': 'K_30M', '60m': 'K_60M', '1d': 'K_DAY', '1w': 'K_WEEK', '1mo': 'K_MON'}
+LONG_PERIODS = {'1d','1w','1mo'}
+WEEKLY_HISTORY_DAYS = max(1,int(os.getenv('WEEKLY_HISTORY_DAYS','1825')))
+MONTHLY_HISTORY_DAYS = max(1,int(os.getenv('MONTHLY_HISTORY_DAYS','3650')))
+LONG_RETENTION_DAYS = max(DAILY_RETENTION_DAYS,WEEKLY_HISTORY_DAYS,MONTHLY_HISTORY_DAYS,int(os.getenv('LONG_CACHE_RETENTION_DAYS','3650')))
+
+def default_history_days(period):
+    return {'1d':DAILY_HISTORY_DAYS,'1w':WEEKLY_HISTORY_DAYS,'1mo':MONTHLY_HISTORY_DAYS}.get(period,DEFAULT_DAYS)
+
+def retention_days(period):
+    return LONG_RETENTION_DAYS if period in {'1w','1mo'} else DAILY_RETENTION_DAYS if period=='1d' else RETENTION_DAYS
+
+def period_from_push(value):
+    label=str(value).replace('K_','').lower()
+    return label if label in PERIODS else {'day':'1d','week':'1w','mon':'1mo'}.get(label)
+
 MODES = {'all': 'ALL', 'extended': 'ETH', 'regular': 'RTH'}
 listeners: dict[tuple[str, str, str], set[asyncio.Queue]] = {}
 last_fetch: dict[tuple[str, str, str], float] = {}
@@ -100,7 +115,9 @@ def prune_cache():
     intraday_cutoff = int((now - timedelta(days=RETENTION_DAYS)).timestamp())
     daily_cutoff = int((now - timedelta(days=DAILY_RETENTION_DAYS)).timestamp())
     with connect_db() as db:
-        db.execute("DELETE FROM bars WHERE period != '1d' AND time < ?", (intraday_cutoff,))
+        db.execute("DELETE FROM bars WHERE period NOT IN ('1d','1w','1mo') AND time < ?", (intraday_cutoff,))
+        long_cutoff=int((now-timedelta(days=LONG_RETENTION_DAYS)).timestamp())
+        db.execute("DELETE FROM bars WHERE period IN ('1w','1mo') AND time < ?", (long_cutoff,))
         db.execute("DELETE FROM bars WHERE period = '1d' AND time < ?", (daily_cutoff,))
 
 
@@ -110,8 +127,8 @@ def validate(symbol, period, mode):
         raise ValueError('股票代码应为 US.AAPL、SH.600519 或 SZ.000001 格式')
     if period not in PERIODS or mode not in MODES:
         raise ValueError('不支持的周期或时段')
-    if (period == '1d' or not symbol.startswith('US.')) and mode != 'regular':
-        raise ValueError('A 股和日线请选择常规时段')
+    if (period in LONG_PERIODS or not symbol.startswith('US.')) and mode != 'regular':
+        raise ValueError('A 股和日 / 周 / 月线请选择常规时段')
     return symbol, period, mode
 
 
@@ -136,7 +153,7 @@ def session_fields(ts, symbol='US.AAPL'):
 def row_to_bar(row):
     d = dict(row)
     d['session'], d['calendar_date'], d['trade_date'] = session_fields(d['time'], d['symbol'])
-    if d['period'] == '1d':
+    if d['period'] in LONG_PERIODS:
         d['session'] = 'regular'
     d['session_date'] = d['trade_date'] + ':' + d['session']
     return d
@@ -188,7 +205,7 @@ def save_sync_state(key, days):
 
 
 def read_bars_before(key, before, limit):
-    retention = DAILY_RETENTION_DAYS if key[1] == '1d' else RETENTION_DAYS
+    retention = retention_days(key[1])
     cutoff = int((datetime.now(ET) - timedelta(days=retention)).timestamp())
     with connect_db() as db:
         rows = db.execute('SELECT * FROM bars WHERE symbol=? AND period=? AND mode=? AND time<? AND time>=? ORDER BY time DESC LIMIT ?',
@@ -290,14 +307,13 @@ class Bridge:
                 ret, data = super().on_recv_rsp(rsp_pb)
                 if ret == RET_OK and loop:
                     for record in data.to_dict('records'):
-                        label = str(record.get('k_type', '')).replace('K_', '').lower()
-                        period = label if label in PERIODS else {'day': '1d'}.get(label)
+                        period = period_from_push(record.get('k_type',''))
                         if not period:
                             continue
                         symbol = str(record['code'])
                         for key in list(bridge.active):
                             if key[:2] == (symbol, period):
-                                bars = frame_to_bars(data[data['code'] == symbol], symbol)
+                                bars = frame_to_bars(data[(data['code'] == symbol) & (data['k_type'] == record['k_type'])], symbol)
                                 loop.call_soon_threadsafe(asyncio.create_task, publish(key, bars))
                 return ret, data
         self.ctx = connect_quote_context(OpenQuoteContext,host=HOST,port=PORT,is_encrypt=bool(rsa_file))
@@ -325,7 +341,7 @@ class Bridge:
                 end = end_date or datetime.now(ET if key[0].startswith('US.') else CN_TZ).date()
                 start = end - timedelta(days=days)
                 kwargs = dict(code=key[0], start=str(start), end=str(end), ktype=getattr(KLType, PERIODS[key[1]]),
-                              autype=AuType.NONE, max_count=1000, session=Session.NONE if key[1] == '1d' or not key[0].startswith('US.') else getattr(Session, MODES[key[2]]))
+                              autype=AuType.NONE, max_count=1000, session=Session.NONE if key[1] in LONG_PERIODS or not key[0].startswith('US.') else getattr(Session, MODES[key[2]]))
                 all_bars, page = [], None
                 while True:
                     self.rate_limit()
@@ -454,7 +470,7 @@ class Bridge:
             try:
                 ctx = self.ensure()
                 self.rate_limit()
-                session = Session.NONE if not key[0].startswith('US.') or key[1] == '1d' else getattr(Session, MODES[key[2]])
+                session = Session.NONE if not key[0].startswith('US.') or key[1] in LONG_PERIODS else getattr(Session, MODES[key[2]])
                 ret, error = ctx.subscribe([key[0]], [getattr(SubType, PERIODS[key[1]])], session=session, subscribe_push=True)
                 if ret != RET_OK:
                     self.raise_quote_error(key[0], error)
@@ -533,7 +549,7 @@ async def maintenance():
                     if reconnect:
                         await asyncio.to_thread(bridge.subscribe, key)
                     if reconnect or time.monotonic() - last_fetch.get(key, 0) > max(REFRESH, 600):
-                        days = DAILY_HISTORY_DAYS if key[1] == '1d' else DEFAULT_DAYS
+                        days = default_history_days(key[1])
                         known, success, latest = await asyncio.to_thread(sync_state, key)
                         span = refresh_span(key, days, known, latest, success)
                         await asyncio.to_thread(bridge.history, key, span)
@@ -600,7 +616,7 @@ def cache_status(symbol: str | None = None):
                           'FROM bars WHERE symbol=? GROUP BY symbol,period,mode', (symbol.upper(),)).fetchall() if symbol else []
     size = sum(p.stat().st_size for p in [Path(DB), Path(DB+'-wal')] if p.exists())
     return {'storage': 'NAS SQLite', 'total_bars': total, 'bytes': size,
-            'intraday_retention_days': RETENTION_DAYS, 'daily_retention_days': DAILY_RETENTION_DAYS,
+            'intraday_retention_days': RETENTION_DAYS, 'daily_retention_days': DAILY_RETENTION_DAYS, 'long_retention_days': LONG_RETENTION_DAYS,
             'series': [dict(row) for row in rows]}
 
 
@@ -650,8 +666,8 @@ async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | N
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     if days is None:
-        days = DAILY_HISTORY_DAYS if period == '1d' else DEFAULT_DAYS
-    days = min(max(days, 1), DAILY_RETENTION_DAYS if period == '1d' else RETENTION_DAYS)
+        days = default_history_days(period)
+    days = min(max(days, 1), retention_days(period))
     limit = min(max(limit, 1), 10000)
     lock = fetch_locks.setdefault(key, asyncio.Lock())
     async with lock:
@@ -683,7 +699,7 @@ async def older_bars(symbol: str, period: str, mode: str, before: int, limit: in
     if before <= 0 or before > int(time.time()) + 86400:
         raise HTTPException(400, '无效的历史时间')
     limit = min(max(limit, 1), 2000)
-    retention = DAILY_RETENTION_DAYS if period == '1d' else RETENTION_DAYS
+    retention = retention_days(period)
     cutoff = int((datetime.now(ET) - timedelta(days=retention)).timestamp())
     if before <= cutoff:
         return {'bars': [], 'next_before': before, 'has_more': False}
@@ -694,7 +710,7 @@ async def older_bars(symbol: str, period: str, mode: str, before: int, limit: in
             return {'bars': cached, 'next_before': cached[0]['time'], 'has_more': cached[0]['time'] > cutoff}
         zone = ET if key[0].startswith('US.') else CN_TZ
         end_date = datetime.fromtimestamp(before, zone).date()
-        window_days = 365 if period == '1d' else 3 if period == '1m' else 10 if period == '5m' else 21 if period == '15m' else 35
+        window_days = 1825 if period == '1mo' else 730 if period == '1w' else 365 if period == '1d' else 3 if period == '1m' else 10 if period == '5m' else 21 if period == '15m' else 35
         start_date = end_date - timedelta(days=window_days)
         try:
             await asyncio.to_thread(bridge.history, key, window_days, end_date)
@@ -745,7 +761,7 @@ async def python_indicator(request: PythonIndicatorRequest):
         validate_inputs(request.inputs)
     except (SyntaxError, ValueError) as exc:
         raise HTTPException(400, python_validation_error(exc))
-    days = DAILY_HISTORY_DAYS if key[1] == '1d' else DEFAULT_DAYS
+    days = default_history_days(key[1])
     bars_data = await asyncio.to_thread(read_bars, key, days, 5000)
     if not bars_data:
         raise HTTPException(409, '请先加载该图表的 K 线')

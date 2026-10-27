@@ -10,7 +10,7 @@ const names=['VWAP','BBI','EMA','SMA','MACD','RSI','BOLL','ATR','DMI','VOLUME','
 const lines:Record<string,string[]>={VWAP:['main'],BBI:['main'],EMA:['main'],SMA:['main'],MACD:['macd','signal','hist'],RSI:['main'],BOLL:['mid','upper','lower'],ATR:['main','stop_long','stop_short'],DMI:['plus_di','minus_di','adx'],VOLUME:['volume','average']};
 const ops:Record<string,string>={cross_above:'上穿',cross_below:'下穿',gt:'大于',gte:'大于等于',lt:'小于',lte:'小于等于',eq:'等于'};
 const clock=(v:number)=>new Date(v*1000).toLocaleString('zh-CN',{hour12:false});
-const initial=(symbol:string,period:string,mode:string):Config=>({name:'我的指标策略',symbol,period:period==='1d'?'60m':period,mode,cross_session:false,
+const initial=(symbol:string,period:string,mode:string):Config=>({name:'我的指标策略',symbol,period:['1d','1w','1mo'].includes(period)?'60m':period,mode,cross_session:false,
  sources:[{id:'vwap',name:'VWAP',params:{reset:'session'}},{id:'bbi',name:'BBI',params:{periods:[3,6,12,24]}}],
  buy:{join:'all',conditions:[{left:'vwap:main',op:'cross_above',right:'bbi:main'}]},sell:{join:'all',conditions:[{left:'vwap:main',op:'cross_below',right:'bbi:main'}]},
  execution:{qty:10,sell_percent:100,session:'RTH',offset_percent:0.1,max_deviation:1,flat_only:true,max_executions:1}});
