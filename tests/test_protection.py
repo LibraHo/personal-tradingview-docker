@@ -142,7 +142,7 @@ class ProtectionTests(unittest.TestCase):
         self.assertEqual(len(self.broker.rows), 2)
 
     def test_named_presets_validation_and_persistence(self):
-        value = dict(quantities=[10], stops=[2.5], templates=[{**self.config, 'qty': 10}])
+        value = dict(quantities=[10], stops=[2.5], templates=[{**self.config, 'qty': 10}], option_quantities=[1,2,5])
         self.assertEqual(self.engine.preferences(value), value)
         self.assertEqual(TradeEngine(self.path, self.broker).preferences(), value)
         with self.assertRaises(TradeError):

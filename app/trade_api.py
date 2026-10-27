@@ -254,6 +254,10 @@ def create_app(data_dir=None, broker=None):
     async def quote(code: str):
         return await rpc('quote', code)
 
+    @app.get('/api/trade/options')
+    async def options(code: str, expiry: str = ''):
+        return await rpc('option_chain', code.upper(), expiry)
+
     @app.post('/api/trade/unlock')
     async def unlock(body: Unlock, request: Request):
         if body.confirm != 'UNLOCK REAL':

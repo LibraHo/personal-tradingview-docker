@@ -32,7 +32,9 @@ class BrokerUncertain(Exception):
 ACTIVE = {'UNSUBMITTED', 'WAITING_SUBMIT', 'SUBMITTING', 'SUBMITTED', 'FILLED_PART',
           'CANCELLING_PART', 'CANCELLING_ALL', 'DISABLED'}
 TYPES = {'NORMAL', 'MARKET', 'STOP', 'STOP_LIMIT', 'TRAILING_STOP', 'TRAILING_STOP_LIMIT'}
-SYMBOL = re.compile(r'^US\.[A-Z][A-Z0-9.]{0,11}$')
+STOCK_SYMBOL = re.compile(r'^US\.[A-Z][A-Z0-9.]{0,11}$')
+OPTION_SYMBOL = re.compile(r'^US\.[A-Z][A-Z0-9.]{0,11}\d{6}[CP]\d{1,10}$')
+SYMBOL = re.compile(r'^US\.(?:[A-Z][A-Z0-9.]{0,11}|[A-Z][A-Z0-9.]{0,11}\d{6}[CP]\d{1,10})$')
 
 
 def number(value, name, positive=True):
@@ -83,6 +85,7 @@ class OpenDBroker:
         self.quote_ctx = None
         self.generation = 0
         self.security_types = {}
+        self.option_metadata = {}
 
     def ensure(self):
         if self.ctx is None:
@@ -137,27 +140,67 @@ class OpenDBroker:
             # Never reflect SDK errors from credential-bearing requests.
             raise TradeError('交易解锁/锁定失败，请检查密码、账号状态及券商令牌限制')
 
-    def quote(self, symbol):
-        if not SYMBOL.fullmatch(symbol):
-            raise TradeError('第一版仅支持美股股票/ETF 代码')
+    def ensure_quote(self):
         if self.quote_ctx is None:
             import moomoo as mm
+            from .opend_connection import connect_quote_context
             self.ensure()
-            self.quote_ctx = mm.OpenQuoteContext(host=os.getenv('OPEND_HOST', 'moomoo-opend'),
+            self.quote_ctx = connect_quote_context(mm.OpenQuoteContext, host=os.getenv('OPEND_HOST', 'moomoo-opend'),
                 port=int(os.getenv('OPEND_PORT', '11111')), is_encrypt=bool(os.getenv('OPEND_RSA_FILE')))
+        return self.quote_ctx
+
+    def option_chain(self, symbol, expiry=''):
+        if not STOCK_SYMBOL.fullmatch(symbol) or OPTION_SYMBOL.fullmatch(symbol):
+            raise TradeError('请输入美股正股或 ETF 代码')
+        ctx = self.ensure_quote()
+        if not expiry:
+            rows = self.unpack(ctx.get_option_expiration_date(symbol))
+            return {'expirations': sorted({r['strike_time'] for r in rows}), 'contracts': []}
+        try:
+            datetime.strptime(expiry, '%Y-%m-%d')
+        except ValueError:
+            raise TradeError('到期日格式应为 YYYY-MM-DD')
+        stamp, rows = self.option_metadata.get((symbol, expiry), (0, None))
+        if time.time()-stamp > 300:
+            rows = self.unpack(ctx.get_option_chain(symbol, start=expiry, end=expiry))
+            if len(self.option_metadata) >= 32:
+                self.option_metadata.clear()
+            self.option_metadata[(symbol, expiry)] = (time.time(), rows)
+        keys = ('code', 'name', 'option_type', 'strike_price', 'strike_time', 'lot_size', 'option_standard_type')
+        return {'expirations': [expiry], 'contracts': [{k:r.get(k) for k in keys} for r in rows]}
+
+    def quote(self, symbol):
+        if not SYMBOL.fullmatch(symbol):
+            raise TradeError('请输入美股股票、ETF 或期权合约代码')
+        self.ensure_quote()
         rows = self.unpack(self.quote_ctx.get_market_snapshot([symbol]))
         if not rows:
             raise TradeError('没有行情数据')
         r = rows[0]
-        if symbol not in self.security_types:
+        if r.get('option_valid'):
+            self.security_types[symbol] = 'OPTION'
+            owner = str(r.get('stock_owner') or '')
+            if not STOCK_SYMBOL.fullmatch(owner):
+                raise TradeError('无法确认期权标的')
+            if owner not in self.security_types:
+                basic = self.unpack(self.quote_ctx.get_stock_basicinfo(market='US', code_list=[owner]))
+                self.security_types[owner] = basic[0].get('stock_type') if basic else None
+            if self.security_types[owner] not in {'STOCK', 'ETF'}:
+                raise TradeError('当前仅开放股票和 ETF 期权，不支持指数期权')
+            chain = self.option_chain(owner, str(r.get('strike_time') or ''))
+            contract = next((c for c in chain['contracts'] if c['code'] == symbol), {})
+            r['option_standard_type'] = contract.get('option_standard_type')
+        elif symbol not in self.security_types:
             basic = self.unpack(self.quote_ctx.get_stock_basicinfo(market='US', code_list=[symbol]))
             self.security_types[symbol] = basic[0].get('stock_type') if basic else None
-        if self.security_types[symbol] not in {'STOCK', 'ETF'}:
-            raise TradeError('第一版仅支持美股股票和 ETF，不支持期权或其他证券')
+        if self.security_types[symbol] not in {'STOCK', 'ETF', 'OPTION'}:
+            raise TradeError('仅支持美股股票、ETF 和标准股票/ETF 单腿期权')
         r['stock_type'] = self.security_types[symbol]
         states = self.unpack(self.quote_ctx.get_market_state([symbol]))
         r['market_state'] = states[0].get('market_state') if states else None
-        return {k: r.get(k) for k in ('code', 'name', 'last_price', 'update_time', 'stock_type', 'market_state')}
+        return {k: r.get(k) for k in ('code', 'name', 'last_price', 'update_time', 'stock_type', 'market_state',
+            'option_valid', 'lot_size', 'option_contract_size', 'option_contract_multiplier',
+            'option_type', 'stock_owner', 'strike_time', 'option_strike_price', 'bid_price', 'ask_price', 'option_standard_type')}
 
     def place(self, order, remark):
         kwargs = dict(price=order.get('price', 0), qty=order['qty'], code=order['code'],
@@ -209,6 +252,7 @@ class TradeEngine(ProtectionMixin):
         self.last_activity = time.time()
         self.account_cache = (0, [])
         self.quote_cache = {}
+        self.option_chain_cache = {}
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, owner TEXT, '
                        'kind TEXT, payload TEXT, state TEXT, result TEXT, created REAL)')
@@ -302,12 +346,23 @@ class TradeEngine(ProtectionMixin):
             self.quote_cache[code] = (time.time(), q)
         return q
 
+    def option_chain(self, code, expiry=''):
+        self.last_activity = time.time()
+        key = (code, expiry)
+        stamp, result = self.option_chain_cache.get(key, (0, None))
+        if time.time()-stamp > 300:
+            result = self.broker.option_chain(code, expiry)
+            if len(self.option_chain_cache) >= 32:
+                self.option_chain_cache.clear()
+            self.option_chain_cache[key] = (time.time(), result)
+        return result
+
     def normalize(self, data):
         acc, env = str(data.get('acc_id', '')), data.get('env')
         self.account(acc, env)
         code = str(data.get('code', '')).upper()
         if not SYMBOL.fullmatch(code):
-            raise TradeError('第一版仅支持美股股票/ETF 代码')
+            raise TradeError('请输入有效的美股股票、ETF 或期权合约代码')
         side, kind = data.get('side'), data.get('order_type')
         if side not in {'BUY', 'SELL'} or kind not in TYPES:
             raise TradeError('不支持此买卖方向或订单类型')
@@ -330,6 +385,28 @@ class TradeEngine(ProtectionMixin):
                 raise TradeError('平仓仅支持卖出限价单或市价单')
             out['close_position'] = True
         q = self.quote(code)
+        is_option = q.get('stock_type') == 'OPTION' or bool(OPTION_SYMBOL.fullmatch(code))
+        multiplier = 1
+        if is_option:
+            if kind != 'NORMAL' or session != 'RTH' or tif != 'DAY' or data.get('protection') is not None:
+                raise TradeError('期权目前仅开放 RTH / DAY 单腿限价买入及卖出已有多头；暂不支持自动止损')
+            if q.get('stock_type') != 'OPTION' or not q.get('option_valid'):
+                raise TradeError('无法确认期权合约信息')
+            if q.get('option_standard_type') != 'STANDARD':
+                raise TradeError('无法确认标准合约，暂不开放调整合约')
+            # Fail closed for adjusted, index or unknown deliverables. No assumed x100.
+            if any(number(q.get(k), '期权合约乘数') != 100 for k in
+                   ('option_contract_size', 'option_contract_multiplier', 'lot_size')):
+                raise TradeError('仅开放标准 100 股交割的股票/ETF 期权；合约乘数不匹配')
+            try:
+                expired = datetime.strptime(q['strike_time'], '%Y-%m-%d').date() < datetime.now(ZoneInfo('America/New_York')).date()
+            except (KeyError, TypeError, ValueError):
+                raise TradeError('无法确认期权到期日')
+            if expired:
+                raise TradeError('期权合约已到期')
+            multiplier = 100
+            out.update(security_type='OPTION', multiplier=multiplier, option_type=q.get('option_type'),
+                       expiry=q['strike_time'], strike_price=q.get('option_strike_price'), underlying=q.get('stock_owner'))
         current = float(number(q.get('last_price'), '行情价格'))
         if kind == 'MARKET':
             if q.get('market_state') != 'AFTERNOON':
@@ -369,7 +446,7 @@ class TradeEngine(ProtectionMixin):
                 if Decimal(str(out['trail_spread'])) != Decimal(str(out['trail_spread'])).quantize(Decimal('.001')):
                     raise TradeError('限价偏移最多三位小数')
         out['reference_price'] = out['price'] if kind == 'NORMAL' else current
-        out['estimate'] = round(out['reference_price'] * out['qty'], 2)
+        out['estimate'] = round(out['reference_price'] * out['qty'] * multiplier, 2)
         if out['estimate'] > self.max_notional:
             raise TradeError(f'单笔估算金额超过 ${self.max_notional:g} 上限')
         if data.get('protection') is not None:
@@ -596,7 +673,13 @@ class TradeEngine(ProtectionMixin):
                 if qty != int(qty) or qty > self.max_shares:
                     raise TradeError('方案股数须为允许范围内的整股')
                 validated.append({**config, 'qty': int(qty)})
-            value = dict(quantities=quantities, stops=stops, templates=validated)
+            option_quantities = value.get('option_quantities', self.preferences().get('option_quantities', [1, 2, 5]))
+            if not isinstance(option_quantities, list) or not 1 <= len(option_quantities) <= 6:
+                raise TradeError('期权快捷数量须为 1 至 6 个正整数')
+            option_quantities = [float(number(n, '期权张数')) for n in option_quantities]
+            if any(n != int(n) or n > min(self.max_shares, 100) for n in option_quantities):
+                raise TradeError('期权快捷张数超出允许范围')
+            value = dict(quantities=quantities, stops=stops, templates=validated, option_quantities=option_quantities)
         with self.db() as db:
             if value is not None:
                 encoded = json.dumps(value)
@@ -605,5 +688,6 @@ class TradeEngine(ProtectionMixin):
                 db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?)', ('presets', encoded))
             row = db.execute('SELECT value FROM preferences WHERE key=?', ('presets',)).fetchone()
         result = json.loads(row[0]) if row else {'quantities': [10, 50, 100], 'stops': [1, 2.5, 3]}
+        result.setdefault('option_quantities', [1, 2, 5])
         result.setdefault('templates', [dict(name='开盘 10 股 · 2.5% 止损', qty=10, percent=2.5, mode='STOP', tolerance=0)])
         return result
