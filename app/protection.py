@@ -17,15 +17,21 @@ def stop_config(raw):
         raise TradeError('方案名称须为 1–40 字，止损比例须在 0 和 100 之间')
     if tolerance < 0 or tolerance > 100 or tolerance != tolerance.quantize(Decimal('.0001')):
         raise TradeError('美元容限须在 0–100 之间，最多四位小数')
-    return dict(name=name, percent=float(pct), mode=mode,
+    result=dict(name=name, percent=float(pct), mode=mode,
                 tolerance=float(tolerance) if mode == 'STOP_LIMIT' else 0)
+    if raw.get('trigger_price') is not None:
+        trigger=number(raw['trigger_price'],'固定止损触发价')
+        if trigger!=trigger.quantize(Decimal('.01')):
+            raise TradeError('固定止损价格最多两位小数')
+        result['trigger_price']=float(trigger)
+    return result
 
 
 def stop_prices(basis, config):
     from .trading import TradeError
-    trigger = Decimal(str(basis)) * (1 - Decimal(str(config['percent'])) / 100)
+    trigger = Decimal(str(config['trigger_price'])) if config.get('trigger_price') is not None else Decimal(str(basis)) * (1 - Decimal(str(config['percent'])) / 100)
     def rounded(value):
-        return float(value.quantize(Decimal('.01') if value >= 1 else Decimal('.0001'), rounding=ROUND_DOWN))
+        return float(value.quantize(Decimal('.01') if config.get('option') or value >= 1 else Decimal('.0001'), rounding=ROUND_DOWN))
     trigger = rounded(trigger)
     limit = rounded(Decimal(str(trigger)) - Decimal(str(config['tolerance']))) if config['mode'] == 'STOP_LIMIT' else 0
     if trigger <= 0 or (config['mode'] == 'STOP_LIMIT' and limit <= 0):
@@ -136,7 +142,7 @@ class ProtectionMixin:
                     trigger, limit = stop_prices(value / delta, p['config'])
                     child_order = dict(acc_id=p['acc_id'], env=p['env'], code=p['code'], side='SELL',
                         order_type=p['config']['mode'], qty=delta, aux_price=trigger, price=limit,
-                        session='RTH', time_in_force='GTC')
+                        session='RTH', time_in_force='DAY' if p['config'].get('option') else 'GTC')
                     # Persist before any possible child submission. Never recreate this ID.
                     p['pending'] = dict(id=str(uuid.uuid4()), qty=delta, value=value, order=child_order)
                     p['message'] = f'已成交 {int(filled)} 股，正在提交新增 {delta} 股的止损'

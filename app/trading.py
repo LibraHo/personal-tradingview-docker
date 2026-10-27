@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from .protection import ProtectionMixin, stop_config, stop_prices
+from .option_tools import OptionToolsMixin
 
 
 class TradeError(Exception):
@@ -237,7 +238,7 @@ class OpenDBroker:
         self.ctx = self.quote_ctx = None
 
 
-class TradeEngine(ProtectionMixin):
+class TradeEngine(ProtectionMixin, OptionToolsMixin):
     """All methods run on one dedicated thread; SQLite is also a crash journal."""
     def __init__(self, path, broker=None):
         self.broker = broker or OpenDBroker()
@@ -388,8 +389,8 @@ class TradeEngine(ProtectionMixin):
         is_option = q.get('stock_type') == 'OPTION' or bool(OPTION_SYMBOL.fullmatch(code))
         multiplier = 1
         if is_option:
-            if kind != 'NORMAL' or session != 'RTH' or tif != 'DAY' or data.get('protection') is not None:
-                raise TradeError('期权目前仅开放 RTH / DAY 单腿限价买入及卖出已有多头；暂不支持自动止损')
+            if kind not in {'NORMAL','STOP','STOP_LIMIT'} or session != 'RTH' or tif != 'DAY':
+                raise TradeError('期权仅开放 RTH / DAY 单腿限价及实盘多头止损')
             if q.get('stock_type') != 'OPTION' or not q.get('option_valid'):
                 raise TradeError('无法确认期权合约信息')
             if q.get('option_standard_type') != 'STANDARD':
@@ -446,6 +447,10 @@ class TradeEngine(ProtectionMixin):
                 if Decimal(str(out['trail_spread'])) != Decimal(str(out['trail_spread'])).quantize(Decimal('.001')):
                     raise TradeError('限价偏移最多三位小数')
         out['reference_price'] = out['price'] if kind == 'NORMAL' else current
+        if is_option:
+            for field in ('price','aux_price'):
+                if field in out and Decimal(str(out[field])) != Decimal(str(out[field])).quantize(Decimal('.01')):
+                    raise TradeError('美股期权价格最多两位小数')
         out['estimate'] = round(out['reference_price'] * out['qty'] * multiplier, 2)
         if out['estimate'] > self.max_notional:
             raise TradeError(f'单笔估算金额超过 ${self.max_notional:g} 上限')
@@ -455,7 +460,14 @@ class TradeEngine(ProtectionMixin):
             if q.get('market_state') != 'AFTERNOON':
                 raise TradeError('请在美股常规交易时段提交带自动止损的买单')
             out['protection'] = stop_config(data['protection'])
-            stop_prices(out['reference_price'], out['protection'])
+            if is_option:
+                out['protection']['option']=True
+                tolerance=Decimal(str(out['protection']['tolerance']))
+                if tolerance!=tolerance.quantize(Decimal('.01')):
+                    raise TradeError('期权止损容限最多两位小数')
+            trigger,_=stop_prices(out['reference_price'], out['protection'])
+            if is_option and trigger>=min(current,out['reference_price']):
+                raise TradeError('期权止损触发价须低于最新快照和买入限价')
         return out
 
     def check_capacity(self, order, existing=None):

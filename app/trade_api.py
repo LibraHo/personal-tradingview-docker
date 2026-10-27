@@ -258,6 +258,14 @@ def create_app(data_dir=None, broker=None):
     async def options(code: str, expiry: str = ''):
         return await rpc('option_chain', code.upper(), expiry)
 
+    @app.get('/api/trade/options/nearest')
+    async def nearest(code: str, expiry: str, direction: str):
+        return await rpc('nearest_option', code.upper(), expiry, direction)
+
+    @app.get('/api/trade/options/size')
+    async def option_size(acc_id: str, env: str, code: str, side: str, fraction: str, price: float):
+        return await rpc('option_size', acc_id, env, code.upper(), side, fraction, price)
+
     @app.post('/api/trade/unlock')
     async def unlock(body: Unlock, request: Request):
         if body.confirm != 'UNLOCK REAL':

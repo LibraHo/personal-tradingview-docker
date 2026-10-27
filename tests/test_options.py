@@ -97,3 +97,58 @@ class OptionsTests(unittest.TestCase):
         self.engine.preferences({**self.engine.preferences(), 'option_quantities':[1,3]})
         saved = self.engine.preferences({'quantities':[10], 'stops':[2.5], 'templates':[]})
         self.assertEqual(saved['option_quantities'], [1,3])
+
+    def test_cash_fraction_sizes_whole_contracts_with_fee_reserve(self):
+        sized=self.engine.option_size(self.order['acc_id'],'SIMULATE',CODE,'BUY','1/4',2.5)
+        self.assertEqual(sized['qty'],9)
+        self.assertEqual(sized['cash_basis'],10000)
+        self.assertLessEqual(sized['estimate']+sized['fee_reserve'],2500)
+        with self.assertRaises(TradeError):
+            self.engine.option_size(self.order['acc_id'],'SIMULATE',CODE,'BUY','0.9',2.5)
+        self.broker.cash_qty=1
+        self.assertEqual(self.engine.option_size(self.order['acc_id'],'SIMULATE',CODE,'BUY','1/2',2.5)['qty'],1)
+
+    def test_sell_fraction_uses_available_contracts_and_rounds_down(self):
+        self.broker.positions=lambda *args:[dict(code=CODE,qty=20,can_sell_qty=11,position_side='LONG')]
+        self.assertEqual(self.engine.option_size(self.order['acc_id'],'SIMULATE',CODE,'SELL','1/4',2.5)['qty'],2)
+        self.assertEqual(self.engine.option_size(self.order['acc_id'],'SIMULATE',CODE,'SELL','1/3',2.5)['qty'],3)
+        self.broker.positions=lambda *args:[dict(code=CODE,qty=3,can_sell_qty=3,position_side='LONG')]
+        self.assertEqual(self.engine.option_size(self.order['acc_id'],'SIMULATE',CODE,'SELL','1/3',2.5)['qty'],1)
+
+    def test_nearest_option_uses_underlying_not_option_price(self):
+        old=self.broker.quote
+        self.broker.quote=lambda code: {**old(code),'stock_type':'STOCK','last_price':101} if code=='US.SNDK' else old(code)
+        self.broker.option_chain=lambda *args:{'contracts':[
+            dict(code=CODE,option_type='CALL',strike_price=100,option_standard_type='STANDARD'),
+            dict(code='US.SNDK991231C102000',option_type='CALL',strike_price=102,option_standard_type='STANDARD'),
+            dict(code='US.SNDK991231P101000',option_type='PUT',strike_price=101,option_standard_type='STANDARD')]}
+        selected=self.engine.nearest_option('US.SNDK','2099-12-31','CALL')
+        self.assertEqual(selected['contract']['code'],CODE)
+        self.assertEqual(selected['underlying_price'],101)
+
+    def test_real_option_stop_and_fixed_post_fill_stop(self):
+        acc='987654321987654321';self.engine.unlock('test',acc,'test-only')
+        self.broker.positions=lambda *args:[dict(code=CODE,qty=2,can_sell_qty=2,position_side='LONG')]
+        stop={**self.order,'acc_id':acc,'env':'REAL','side':'SELL','order_type':'STOP_LIMIT','aux_price':2,'price':1.95}
+        self.assertEqual(self.engine.preview('test',stop)['order']['aux_price'],2)
+        with self.assertRaises(TradeError):
+            self.engine.preview('test',{**stop,'price':1.951})
+        buy={**self.order,'acc_id':acc,'env':'REAL','protection':dict(name='期权保护',percent=20,mode='STOP_LIMIT',tolerance=.05,trigger_price=2)}
+        p=self.engine.preview('test',buy)
+        self.assertTrue(p['order']['protection']['option'])
+        result=self.engine.commit('test',p['preview_id'],str(uuid.uuid4()))
+        parent=self.broker.rows[-1];parent.update(dealt_qty=2,dealt_avg_price=2.5,order_status='FILLED_ALL')
+        self.engine.tick()
+        child=self.broker.calls[-1][1]
+        self.assertEqual(child['order_type'],'STOP_LIMIT')
+        self.assertEqual(child['qty'],2)
+        self.assertEqual(child['aux_price'],2)
+        self.assertEqual(child['time_in_force'],'DAY')
+        self.engine.tick();self.engine.tick()
+        self.assertEqual(sum(c[0]=='place' for c in self.broker.calls),2)
+
+    def test_small_option_prices_and_protection_are_cent_precision(self):
+        from app.protection import stop_prices
+        self.assertEqual(stop_prices(.37,dict(percent=2.5,mode='STOP_LIMIT',tolerance=.05,option=True)),(.36,.31))
+        with self.assertRaises(TradeError):
+            self.engine.normalize({**self.order,'price':.375})

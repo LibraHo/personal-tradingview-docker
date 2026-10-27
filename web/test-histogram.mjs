@@ -13,4 +13,7 @@ console.log('MACD histogram: 12 color cases passed');
 assert.equal(volumeColor(10,11),'#45caa6');
 assert.equal(volumeColor(10,9),'#ed6b7d');
 assert.equal(volumeColor(10,10),'#45caa6');
+assert.equal(volumeColor(10,11,{volumeUp:'#112233'}),'#112233');
+assert.equal(color(-1,-2,{negativeWeak:'#abcdef'}),'#abcdef');
+assert.equal(color(2,1,{positiveStrong:'invalid'}),'#26A69A');
 console.log('Volume: rising, falling and unchanged candles passed');
