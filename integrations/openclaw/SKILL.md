@@ -7,7 +7,11 @@ description: Use the user's NAS Market API to create and manage chart lines and 
 
 当用户明确要求在 NAS 看盘平台画线、标注价位、修改趋势线或斐波那契时使用。需要执行 Python 3 的工具能力及到 NAS 的网络访问。此 API 不连接 OpenD、不读取交易密码、不提供下单能力。
 
-配置环境变量：`NAS_MARKET_URL`、`NAS_MARKET_DRAWING_TOKEN_FILE`、HTTPS 私有证书时的 `NAS_MARKET_CA_FILE`。凭证只从密钥文件读取，不在消息、日志、命令行参数或示例中输出 Token。不需要 moomoo 密码或交易平台密码。
+配置环境变量：`NAS_MARKET_URL`、文件模式的 `NAS_MARKET_DRAWING_TOKEN_FILE`、HTTPS 私有证书时的 `NAS_MARKET_CA_FILE`。凭证通过受保护运行环境或操作者配置的私密文件读取，不在消息、日志、命令行参数或示例中输出 Token。不需要 moomoo 密码或交易平台密码。
+
+如果用户已通过 OpenClaw 遮罩输入保存为 protected secret，则优先沿用该保护，不把它导出成文件。使用 OpenClaw 的 `gateway_exec` 路径继承 `NAS_MARKET_DRAWING_TOKEN` 的受保护占位符；Codex 原生 shell 不会自动获得它。需要已通过人工审核的网关出站代理及正确的目标主机绑定。未启用时保持阻断，不用明文或关闭 TLS 验证绕过。代理本身也必须信任 NAS 的证书，客户端信任成功不代表代理上游成功。
+
+`python3 <skill目录>/draw.py diagnose` 只检查不带凭证的直连 TLS 和匿名接口 401，不读取 Token、不创建画线。正常命令保留网关注入的代理 CA（SSL_CERT_FILE），并叠加 NAS CA。也可在脚本旁放置仅含 `url`、`ca_file` 的 `connection.json`，不要在该文件存放 Token。
 
 先运行 `python3 <skill目录>/draw.py capabilities` 检查连接，再通过 `list --symbol US.SNDK --period 5m` 查看当前对象及 revision。股票、周期、价格和端点必须来自用户要求或已确认的数据；不清楚的关键参数先询问，不虚构价位。修改/删除已有对象时先列出并匹配 id，保留其他对象。
 

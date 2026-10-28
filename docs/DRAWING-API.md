@@ -31,9 +31,20 @@ environment:
 首次验证：
 
 ```sh
+python3 /opt/nas-market-drawings/draw.py diagnose
 python3 /opt/nas-market-drawings/draw.py capabilities
 python3 /opt/nas-market-drawings/draw.py list --symbol US.SNDK --period 5m
 ```
+
+### OpenClaw 的遮罩录入 / protected secret
+
+若 Token 已保存在 OpenClaw team secret store 的 `NAS_MARKET_DRAWING_TOKEN` 中，不需要重新录入，也不要用 `secrets store get` 或导出明文。受保护条目不会自动注入普通 Python 进程或 Codex 原生 shell；通过 OpenClaw 自己的 `gateway_exec` 使用受保护出站代理。启用提案需要按 OpenClaw 操作界面的审核流程生效，不能靠 SSH 改配置绕过审核。
+
+`NAS_MARKET_DRAWING_TOKEN` 的允许目标应包含精确主机 `192.168.101.103`（不带协议和端口）。代理按运行快照提供密钥；录入或修改策略后可能需要一个新的 Agent 回合。不要打印占位符或尝试从秘密存储读取明文。
+
+TLS 有两层：Python 要信任网关临时代理 CA，代理还要信任 NAS 上游证书。客户端先保留默认信任链及 `SSL_CERT_FILE`，再追加 `NAS_MARKET_CA_FILE`，避免用 NAS CA 覆盖代理 CA。`diagnose` 刻意不使用凭证，也不经过密钥替换路径；它成功不能证明受保护代理已接通。
+
+2026-10-29 实际部署检查：OpenClaw 2026.8.35 的代理显式使用内置根证书和临时代理 CA，NAS 自签 CA 尚需纳入代理上游信任；8443 在密钥代理路径中仍需单独验收。客户端直连信任已验证。后续涉及网关代码或配置的变化，应经过原维护、审核和回归流程，不能关闭证书验证或直接修改运行中的 dist。
 
 ## 接口
 
