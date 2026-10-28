@@ -403,6 +403,10 @@ class Bridge:
                     return cached[1], True
                 raise
 
+    def search_symbols(self, query, limit=12):
+        from .stock_search import search_cn_symbols
+        return search_cn_symbols(self, connect_db, query, limit)
+
     def names(self, symbols):
         from moomoo import RET_OK
         with self.lock:
@@ -653,6 +657,15 @@ def depth(symbol: str):
         raise HTTPException(400, str(exc))
     except Exception:
         raise HTTPException(503, '盘口连接异常，请检查 OpenD；旧盘口线已停用')
+
+
+@app.get('/api/symbols/search')
+async def search_symbols(q: str = '', market: str = 'CN', limit: int = 12):
+    if market != 'CN' or len(q) > 32 or not 1 <= limit <= 20:
+        raise HTTPException(400, '名称搜索仅支持 A 股，关键词最多 32 字，最多返回 20 项')
+    if not q.strip():
+        return {'results': [], 'stale': False, 'source': 'nas_cache'}
+    return await asyncio.to_thread(bridge.search_symbols, q, limit)
 
 
 @app.get('/api/symbols/names')

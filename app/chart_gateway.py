@@ -42,7 +42,7 @@ def register_chart_gateway(app, sessions, cookie):
         return Response(payload, status_code=status, media_type='application/json')
 
     allowed = {
-        'GET': {'status', 'cache/status', 'trading-config', 'depth', 'symbols/names',
+        'GET': {'status', 'cache/status', 'trading-config', 'depth', 'symbols/names', 'symbols/search',
                 'quotes', 'bars', 'bars/older', 'indicators'},
         'POST': {'quote/retry', 'python-indicator/validate', 'python-indicator', 'watchlists/import-moomoo', 'strategy/evaluate'},
     }
