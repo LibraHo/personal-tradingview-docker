@@ -1,0 +1,20 @@
+import ts from 'typescript';import {readFileSync} from 'node:fs';import assert from 'node:assert/strict';
+const source=readFileSync(new URL('./src/historyTools.ts',import.meta.url),'utf8');
+const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext}}).outputText;
+const {backfillHistory,visibleExtremes,marketDateWindow}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const bars=[{time:10,high:20,low:5},{time:20,high:30,low:7},{time:30,high:25,low:3}];
+assert.deepEqual(visibleExtremes(bars,10,20),{high:30,low:5,count:2});
+assert.equal(visibleExtremes(bars,40,50),null);
+const pages=[{bars:[],next_before:90,has_more:true},{bars:[bars[1]],next_before:20,has_more:true}];let received=[];
+const result=await backfillHistory({before:100,target:25,fetchPage:async()=>pages.shift(),onPage:p=>received.push(p),stopped:()=>false});
+assert.equal(received.length,2);assert.equal(result.before,20);assert.equal(result.hasMore,true);
+let applied=false;
+const cancelled=await backfillHistory({before:100,fetchPage:async()=>({bars:[bars[0]],next_before:10,has_more:true}),onPage:()=>{applied=true},stopped:()=>true});
+assert.equal(cancelled.cancelled,true);assert.equal(applied,false);
+const halted=await backfillHistory({before:100,target:5,fetchPage:async()=>({bars:[],next_before:100,has_more:true}),onPage:()=>{},stopped:()=>false});
+assert.equal(halted.hasMore,false);
+console.log('History empty-window continuation, target date, stale request cancellation, cursor guard and viewport extrema passed');
+assert.equal(marketDateWindow('2026-10-22',true).from,Date.parse('2026-10-22T04:00:00Z')/1000);
+assert.equal(marketDateWindow('2026-10-22',false).from,Date.parse('2026-10-21T16:00:00Z')/1000);
+for(const [date,hours] of [['2026-11-01',25],['2026-03-08',23]]){const window=marketDateWindow(date,true);assert.equal(window.to-window.from+1,hours*3600)}
+console.log('Market calendar dates use exchange timezone, including 23h/25h DST days');
