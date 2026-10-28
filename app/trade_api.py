@@ -133,12 +133,19 @@ def create_app(data_dir=None, broker=None):
             return JSONResponse({'detail': '请求长度无效'}, status_code=400)
         if length > 32768:
             return JSONResponse({'detail': '请求过大'}, status_code=413)
-        if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+        drawing_agent = request.url.path.startswith('/api/drawings/')
+        if drawing_agent:
+            from .drawing_api import authenticate
+            try:
+                authenticate(request)
+            except HTTPException as exc:
+                return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
+        if not drawing_agent and request.method not in {'GET', 'HEAD', 'OPTIONS'}:
             origin = request.headers.get('origin', '')
             if origin != f'https://{request.headers.get("host", "")}' or request.headers.get('sec-fetch-site') == 'cross-site':
                 return JSONResponse({'detail': '请从交易页面发起操作'}, status_code=403)
         public = request.url.path in {'/api/trade/auth', '/api/trade/login', '/api/trade/setup', '/health'}
-        if request.url.path.startswith('/api/') and not public:
+        if request.url.path.startswith('/api/') and not public and not drawing_agent:
             token = request.cookies.get(COOKIE, '')
             key = hashlib.sha256(token.encode()).hexdigest()
             session = sessions.get(key)
@@ -184,6 +191,11 @@ def create_app(data_dir=None, broker=None):
         valid = session and session['expires'] > time.time()
         return {'setup_required': not auth_file.exists(), 'authenticated': bool(valid),
                 'csrf': session['csrf'] if valid else None}
+
+    @app.get('/api/trade/drawing-token')
+    def drawing_access(request: Request):
+        from .drawing_api import drawing_token
+        return {'token': drawing_token(), 'base_url': str(request.base_url).rstrip('/'), 'scope': 'drawings_only'}
 
     @app.post('/api/trade/setup')
     async def setup(body: Credentials):

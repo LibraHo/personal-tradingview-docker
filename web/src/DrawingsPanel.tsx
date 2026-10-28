@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 import {drawingStyle,fibPrices,DEFAULT_FIB_LEVELS,type FibDrawing,type HorizontalDrawing,type TrendDrawing,type DrawingStyle,type DrawingKind,type DrawingSelection} from './drawingTools';
 const names={horizontal:'水平线',trend:'趋势线',fib:'斐波那契'};
 function StyleControls({value,kind,index,onChange}:{value:DrawingStyle;kind:DrawingKind;index:number;onChange:(style:DrawingStyle)=>void}){
@@ -13,7 +13,8 @@ function FibLevelColors({fib,index,onChange}:{fib:FibDrawing;index:number;onChan
 }
 export default function DrawingsPanel({horizontal,trends,fibos,onHorizontal,onTrends,onFibos,hidden,onHidden,selected,onSelect,editorRequest}:{horizontal:HorizontalDrawing[];trends:TrendDrawing[];fibos:FibDrawing[];onHorizontal:(v:HorizontalDrawing[])=>void;onTrends:(v:TrendDrawing[])=>void;onFibos:(v:FibDrawing[])=>void;hidden:boolean;onHidden:(hidden:boolean)=>void;selected:DrawingSelection|null;onSelect:(value:DrawingSelection|null)=>void;editorRequest:number}){
  const [open,setOpen]=useState(false),[expanded,setExpanded]=useState<string|null>(null);
- useEffect(()=>{if(selected){setOpen(true);setExpanded(selected.id)}},[selected?.id,editorRequest]);
+ const lastEditorRequest=useRef(editorRequest);
+ useEffect(()=>{const requested=editorRequest!==lastEditorRequest.current;lastEditorRequest.current=editorRequest;if(selected){setExpanded(selected.id);if(selected.kind!=='trend'||requested)setOpen(true)}},[selected?.id,editorRequest]);
  const positive=(v:string)=>Number.isFinite(Number(v))&&Number(v)>0;
  const heading=(kind:DrawingKind,id:string,index:number,value:DrawingStyle,patch:(style:DrawingStyle)=>void,remove:()=>void)=><div className="drawing-object-head"><span className="drawing-swatch" style={{borderTopColor:drawingStyle(value,kind).color}}/><button className="drawing-object-name" aria-label={`选择${names[kind]} ${index+1}`} onClick={()=>{onSelect({kind,id});setExpanded(id)}}>{names[kind]} {index+1}</button><button aria-label={`${value.visible===false?'显示':'隐藏'}${names[kind]} ${index+1}`} onClick={()=>patch({visible:value.visible===false})}>{value.visible===false?'显示':'隐藏'}</button><button aria-expanded={expanded===id} aria-label={`编辑${names[kind]} ${index+1} 样式`} onClick={()=>{setExpanded(expanded===id?null:id);if(expanded!==id)onSelect({kind,id})}}>样式</button><button className="drawing-delete" aria-label={`删除${names[kind]} ${index+1}`} onClick={()=>{remove();if(selected?.id===id)onSelect(null)}}>删除</button></div>;
  return <details className="drawing-manager" open={open} onToggle={e=>setOpen(e.currentTarget.open)}><summary>画线管理 · {horizontal.length+trends.length+fibos.length}</summary><div className="drawing-list" role="region" aria-label="画线对象列表">

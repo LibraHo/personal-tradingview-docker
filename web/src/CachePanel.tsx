@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
+import DrawingApiPanel from './DrawingApiPanel';
 
 export default function CachePanel({symbol,onClose}:{symbol?:string;onClose:()=>void}){
  const [data,setData]=useState<any>(null),[error,setError]=useState('');
@@ -11,6 +12,7 @@ export default function CachePanel({symbol,onClose}:{symbol?:string;onClose:()=>
  return <div className="cache-backdrop"><div className="cache-dialog" ref={box} role="dialog" aria-modal="true" aria-labelledby="cache-title" onKeyDown={e=>{if(e.key==='Escape')onClose();if(e.key==='Tab'){const nodes=box.current?.querySelectorAll<HTMLElement>('button,a[href],input,select');if(nodes?.length){const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}}}}>
   <div className="cache-title"><h2 id="cache-title">数据与缓存</h2><button aria-label="关闭缓存信息" onClick={onClose}>关闭</button></div>
   <p>行情保存在 NAS 的 SQLite 数据库，不依赖公司电脑的浏览器缓存。关闭网页或重启 NAS 后仍然保留。</p>
+  <DrawingApiPanel/>
   {error?<div role="alert">{error}</div>:!data?<p role="status">正在读取 NAS 缓存…</p>:<>
    <div className="cache-summary"><div><strong>{Number(data.total_bars).toLocaleString()}</strong><span>已保存 K 线</span></div><div><strong>{(data.bytes/1024/1024).toFixed(1)} MiB</strong><span>数据库及写入日志</span></div><div><strong>{data.intraday_retention_days} 天 / {data.daily_retention_days} 天</strong><span>日内 / 日线保留范围</span></div></div>
    <p>周线 / 月线保留 {data.long_retention_days||3650} 天；实际起始日期受上市时间与行情权限限制。</p>

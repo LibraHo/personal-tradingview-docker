@@ -25,6 +25,7 @@ from .indicators import calculate
 from .python_indicator_worker import validate_code, validate_inputs
 from .depth import DepthFeed
 from .opend_connection import connect_quote_context
+from . import drawing_api
 
 depth_feed = DepthFeed()
 
@@ -567,6 +568,7 @@ async def maintenance():
 async def lifespan(app):
     global loop
     init_db()
+    drawing_api.drawing_token()
     loop = asyncio.get_running_loop()
     task = asyncio.create_task(maintenance())
     depth_task = asyncio.create_task(depth_maintenance())
@@ -583,8 +585,22 @@ app = FastAPI(title='NAS Market', lifespan=lifespan)
 
 @app.middleware('http')
 async def auth(request: Request, call_next):
+    if request.url.path.startswith('/api/drawings/'):
+        from fastapi.responses import JSONResponse
+        try:
+            drawing_api.authenticate(request)
+        except HTTPException as exc:
+            return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
+        try:
+            length = int(request.headers.get('content-length', '0'))
+        except ValueError:
+            from fastapi.responses import JSONResponse
+            return JSONResponse({'detail': '请求长度无效'}, status_code=400)
+        if length > 32768:
+            from fastapi.responses import JSONResponse
+            return JSONResponse({'detail': '请求过大'}, status_code=413)
     header = os.getenv('TRUSTED_USER_HEADER', '')
-    if header and not request.headers.get(header):
+    if header and not request.headers.get(header) and not request.url.path.startswith('/api/drawings/'):
         from fastapi.responses import JSONResponse
         return JSONResponse({'detail': '登录后访问'}, status_code=401)
     return await call_next(request)
@@ -774,6 +790,7 @@ async def python_indicator(request: PythonIndicatorRequest):
 
 class Setting(BaseModel):
     value: object
+    drawing_revision: int | None = None
 
 
 class StrategyEvaluation(BaseModel):
@@ -876,10 +893,15 @@ async def import_moomoo_watchlists():
 
 
 @app.get('/api/settings/{key}')
-def get_setting(key: str):
+def get_setting(key: str, drawings_only: bool = False, since: int = -1):
     if key not in ('workspace', 'templates') and not re.fullmatch(r'depth-US\.[A-Z][A-Z0-9.]{0,11}', key):
         raise HTTPException(404)
     with connect_db() as db:
+        if key == 'workspace':
+            value, revision = drawing_api.load_workspace(db)
+            if drawings_only:
+                return {'drawing_revision': revision, 'changed': since != revision, **({'value': drawing_api.drawing_view(value)} if since != revision else {})}
+            return {'value': value, 'drawing_revision': revision}
         row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
     if row:
         return {'value': json.loads(row['value'])}
@@ -890,6 +912,11 @@ def get_setting(key: str):
 def put_setting(key: str, setting: Setting):
     if key not in ('workspace', 'templates') and not re.fullmatch(r'depth-US\.[A-Z][A-Z0-9.]{0,11}', key):
         raise HTTPException(404)
+    if key == 'workspace':
+        if not isinstance(setting.value, dict):
+            raise HTTPException(422, '工作区应为对象')
+        with connect_db() as db:
+            return drawing_api.save_browser_workspace(db, setting.value, setting.drawing_revision)
     if key.startswith('depth-'):
         v = setting.value
         if not isinstance(v, dict) or not isinstance(v.get('enabled'), bool) or not isinstance(v.get('cached'), bool):
@@ -941,6 +968,8 @@ async def stream(ws: WebSocket):
     finally:
         listeners.get(key, set()).discard(q)
 
+
+drawing_api.install(app, connect_db)
 
 STATIC = Path(__file__).parent / 'static'
 if STATIC.exists():

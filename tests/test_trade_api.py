@@ -104,6 +104,34 @@ class TradeApiTests(unittest.TestCase):
         self.assertEqual(self.client.put('/api/market/settings/workspace', headers=self.origin, json={'value':{}}).status_code, 403)
         self.assertFalse(self.broker.rows)
 
+    def test_drawing_agent_is_scoped_and_needs_no_trade_session(self):
+        token = 'drawing-agent-test-token-longer-than-32'
+        headers = {'Authorization': 'Bearer ' + token}
+        reply = MagicMock();reply.__enter__.return_value = reply;reply.status = 200;reply.read.return_value = b'{"created":true}'
+        with patch.dict(os.environ, {'DRAWING_API_TOKEN':token}), patch('app.chart_gateway.urllib.request.urlopen', return_value=reply) as forward:
+            self.assertEqual(self.client.get('/api/drawings/capabilities').status_code,401)
+            self.assertEqual(self.client.post('/api/drawings/objects',headers=headers,json={'price':130}).status_code,200)
+            req = forward.call_args.args[0]
+            self.assertEqual(req.full_url,'http://market:8000/api/drawings/objects')
+            self.assertNotIn('Cookie',req.headers)
+            self.assertEqual(self.client.get('/api/trade/accounts',headers=headers).status_code,401)
+            self.assertEqual(self.client.post('/api/trade/commit',headers=headers,json={}).status_code,403)
+            self.assertEqual(self.client.post('/api/drawings/trade/commit',headers=headers,json={}).status_code,404)
+            self.assertEqual(forward.call_count,1)
+        self.assertFalse(self.broker.rows)
+
+    def test_drawing_token_visible_only_to_authenticated_browser(self):
+        token='test-drawing-secret-at-least-32-characters'
+        with patch.dict(os.environ, {'DRAWING_API_TOKEN':token}):
+            self.assertEqual(self.client.get('/api/trade/drawing-token').status_code,401)
+            self.assertEqual(self.client.get('/api/trade/drawing-token',headers={'Authorization':'Bearer '+token}).status_code,401)
+            self.setup_account()
+            response=self.client.get('/api/trade/drawing-token')
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.json()['token'],token)
+            self.assertEqual(response.headers['cache-control'],'no-store')
+        self.assertFalse(self.broker.rows)
+
     def test_chart_websocket_rejects_missing_session(self):
         from starlette.websockets import WebSocketDisconnect
         with self.assertRaises(WebSocketDisconnect):

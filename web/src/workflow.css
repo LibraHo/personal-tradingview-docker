@@ -21,3 +21,7 @@
 /* Bound the watchlist to the workspace; legacy sticky alignment prevented flex stretching. */
 .chart-workspace .app-body>aside{position:relative;align-self:stretch;flex-shrink:0}
 .chart-workspace .app-body>aside .symbol-list{overscroll-behavior-y:contain;touch-action:pan-y;scrollbar-gutter:stable}
+
+.trend-handle-hover canvas{cursor:grab!important}.trend-dragging,.trend-dragging canvas{cursor:grabbing!important;touch-action:none}.trend-drag-help{color:#8db4e1;font-size:10px}
+.drawing-sync-notice{flex:none;padding:7px 10px;background:#40321d;color:#f0cf92;font-size:11px;line-height:1.5}.drawing-sync-notice button{margin-left:9px;padding:3px 7px;border:1px solid #8a6e43;border-radius:4px;background:#584326;color:#ffe2aa;font-size:10px}
+.drawing-api-access{border-top:1px solid #34465f;border-bottom:1px solid #34465f;padding:10px 0;margin:15px 0}.drawing-api-access label{display:block;font-size:11px;color:#a8c0dc;margin:8px 0}.drawing-api-access input{display:block;width:100%;padding:7px;margin-top:5px;color:#d3e5f6;background:#111e30;border:1px solid #38516f;border-radius:4px}.drawing-api-access button{margin:5px 6px 5px 0;padding:6px 9px;color:#ccdef3;background:#243e5c;border:1px solid #47668c;border-radius:4px;font-size:11px}.drawing-api-access a{margin-left:8px;color:#a9cdff}

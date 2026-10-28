@@ -1,0 +1,16 @@
+import ts from 'typescript';import {readFileSync} from 'node:fs';import assert from 'node:assert/strict';
+const js=ts.transpileModule(readFileSync(new URL('./src/trendGeometry.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext}}).outputText;
+const {drawingTimeAtX,projectDrawingTime,moveTrendEndpoint,hitTestTrendEndpoint}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const samples=[{time:100,x:10},{time:400,x:20},{time:1000,x:30}];
+assert.equal(drawingTimeAtX(18,samples,300,10),400);
+assert.equal(drawingTimeAtX(50,samples,300,10),1600);
+assert.equal(projectDrawingTime(1600,samples,300,10),50);
+assert.equal(projectDrawingTime(700,samples,300,10),25);
+const line={id:'original',points:[{time:100,price:10},{time:400,price:20}],extend:'right',color:'#aabbcc'};
+assert.deepEqual(moveTrendEndpoint(line,1,{time:1000,price:25}),{...line,points:[line.points[0],{time:1000,price:25}]});
+assert.equal(moveTrendEndpoint(line,1,{time:100,price:25}),line);
+assert.equal(moveTrendEndpoint(line,1,{time:1000,price:-1}),line);
+assert.equal(moveTrendEndpoint(line,1,{time:NaN,price:25}),line);
+assert.equal(hitTestTrendEndpoint({x:403,y:22},line,p=>p,t=>t),1);
+assert.equal(hitTestTrendEndpoint({x:250,y:15},line,p=>p,t=>t),null);
+console.log('Trend endpoint hit detection, drag validation, bar snapping and future-space projection passed');
