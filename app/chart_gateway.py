@@ -43,7 +43,7 @@ def register_chart_gateway(app, sessions, cookie):
 
     allowed = {
         'GET': {'status', 'cache/status', 'trading-config', 'depth', 'symbols/names', 'symbols/search',
-                'quotes', 'bars', 'bars/older', 'indicators'},
+                'quotes', 'bars', 'bars/older', 'bars/window', 'indicators'},
         'POST': {'quote/retry', 'python-indicator/validate', 'python-indicator', 'watchlists/import-moomoo', 'strategy/evaluate'},
     }
 

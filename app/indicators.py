@@ -31,10 +31,17 @@ def calculate(bars, name, params=None, reset='session'):
     low = [b['low'] for b in bars]
     volume = [b['volume'] for b in bars]
     n = max(1, int(p.get('period', 14)))
-    if name == 'SMA':
-        return {'main': sma(close, n)}
-    if name == 'EMA':
-        return {'main': ema(close, n)}
+    if name in ('EMA', 'SMA'):
+        calc = ema if name == 'EMA' else sma
+        if 'periods' not in p and 'period' not in p:
+            p = dict(p, periods=[5,10,20])
+        if 'periods' not in p:
+            return {'main': calc(close, n)}
+        periods = p['periods']
+        if not isinstance(periods,list) or not 1 <= len(periods) <= 12 or any(type(x) is not int or not 1 <= x <= 2000 for x in periods):
+            raise ValueError('均线周期须为 1–2000 的整数，最多 12 条')
+        label = 'EMA' if name == 'EMA' else 'MA'
+        return {f'{label}{period}':calc(close,period) for period in dict.fromkeys(periods)}
     if name == 'BBI':
         periods = [max(1, int(x)) for x in p.get('periods', [3, 6, 12, 24])]
         parts = [sma(close, x) for x in periods]

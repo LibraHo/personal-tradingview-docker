@@ -4,11 +4,16 @@ export type Indicator = {id:string;name:string;params:string;visible:boolean;tit
 const sma=(v:(number|null)[],n:number)=>(v.map((_,i)=>i>=n-1&&v.slice(i-n+1,i+1).every(x=>x!==null)?v.slice(i-n+1,i+1).reduce<number>((a,b)=>a+(b||0),0)/n:null));
 const ema=(v:(number|null)[],n:number)=>{let last:number|null=null;return v.map(x=>{if(x===null)return null;last=last===null?x:last+(x-last)*2/(n+1);return last})};
 export function compute(b:Bar[],name:string,params:string):Record<string,(number|null)[]>{
-  let p:Record<string,any>={};try{p=JSON.parse(params)}catch{return {error:[]}}
+  let p:Record<string,any>={};try{p=JSON.parse(params);if(!p||typeof p!=='object'||Array.isArray(p))throw Error()}catch{throw Error('指标参数 JSON 无效')}
   const c=b.map(x=>x.close), h=b.map(x=>x.high), l=b.map(x=>x.low),v=b.map(x=>x.volume),n=Math.max(1,Number(p.period)||14);
   if(name==='CUSTOM')return {main:formula(String(p.formula||''))(b)};
-  if(name==='SMA')return {main:sma(c,n)};
-  if(name==='EMA')return {main:ema(c,n)};
+  if(name==='SMA'||name==='EMA'){
+    const calc=name==='EMA'?ema:sma;
+    if(p.periods===undefined&&p.period===undefined)p.periods=[5,10,20];
+    if(p.periods===undefined)return {main:calc(c,n)};
+    if(!Array.isArray(p.periods)||!p.periods.length||p.periods.length>12||p.periods.some((x:unknown)=>!Number.isInteger(x)||Number(x)<1||Number(x)>2000))throw Error('均线周期须为 1–2000 的整数，最多 12 条');
+    return Object.fromEntries([...new Set<number>(p.periods)].map(period=>[`${name==='EMA'?'EMA':'MA'}${period}`,calc(c,period)]));
+  }
   if(name==='BBI'){const a=(p.periods||[3,6,12,24]).map((x:number)=>sma(c,Math.max(1,x))) as (number|null)[][];return {main:c.map((_,i)=>a.every(row=>row[i]!==null)?a.reduce((sum,row)=>sum+(row[i]||0),0)/a.length:null)}}
   if(name==='MACD'){const f=ema(c,Number(p.fast)||12),s=ema(c,Number(p.slow)||26),m=c.map((_,i)=>(f[i]||0)-(s[i]||0)),signal=ema(m,Number(p.signal)||9);return {macd:m,signal,hist:m.map((x,i)=>x-(signal[i]||0))}}
   if(name==='BOLL'){const mid=sma(c,n),scale=Number(p.stddev)||2;return {mid,upper:c.map((_,i)=>i<n-1?null:(mid[i]||0)+scale*Math.sqrt(c.slice(i-n+1,i+1).reduce((a,x)=>a+(x-(mid[i]||0))**2,0)/n)),lower:c.map((_,i)=>i<n-1?null:(mid[i]||0)-scale*Math.sqrt(c.slice(i-n+1,i+1).reduce((a,x)=>a+(x-(mid[i]||0))**2,0)/n))}}

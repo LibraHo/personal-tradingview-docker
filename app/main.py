@@ -46,6 +46,8 @@ PORT = int(os.getenv('OPEND_PORT', '11111'))
 MAX_STREAMS = int(os.getenv('MAX_ACTIVE_STREAMS', '32'))
 REFRESH = int(os.getenv('HISTORY_REFRESH_SECONDS', '120'))
 DEFAULT_DAYS = int(os.getenv('HISTORY_DAYS', '5'))
+HISTORY_LOOKBACK_DAYS = max(30, int(os.getenv('HISTORY_LOOKBACK_DAYS', '3650')))
+BROWSED_CACHE_DAYS = max(1, int(os.getenv('BROWSED_CACHE_DAYS', '7')))
 RETENTION_DAYS = max(1, int(os.getenv('CACHE_RETENTION_DAYS', '30')))
 DAILY_HISTORY_DAYS = max(1, int(os.getenv('DAILY_HISTORY_DAYS', '730')))
 DAILY_RETENTION_DAYS = max(DAILY_HISTORY_DAYS, int(os.getenv('DAILY_CACHE_RETENTION_DAYS', '1825')))
@@ -107,6 +109,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS cache_sync(symbol TEXT, period TEXT, mode TEXT,
           requested_days INTEGER, last_success REAL, PRIMARY KEY(symbol,period,mode));
+        CREATE TABLE IF NOT EXISTS history_windows(symbol TEXT, period TEXT, mode TEXT,
+          start INTEGER, end INTEGER, checked REAL, PRIMARY KEY(symbol,period,mode,start,end));
         CREATE TABLE IF NOT EXISTS symbol_names(symbol TEXT PRIMARY KEY, name TEXT, updated REAL);
         ''')
 
@@ -116,7 +120,8 @@ def prune_cache():
     intraday_cutoff = int((now - timedelta(days=RETENTION_DAYS)).timestamp())
     daily_cutoff = int((now - timedelta(days=DAILY_RETENTION_DAYS)).timestamp())
     with connect_db() as db:
-        db.execute("DELETE FROM bars WHERE period NOT IN ('1d','1w','1mo') AND time < ?", (intraday_cutoff,))
+        db.execute("DELETE FROM history_windows WHERE checked < ?", (time.time()-BROWSED_CACHE_DAYS*86400,))
+        db.execute("DELETE FROM bars WHERE period NOT IN ('1d','1w','1mo') AND time < ? AND NOT EXISTS (SELECT 1 FROM history_windows w WHERE w.symbol=bars.symbol AND w.period=bars.period AND w.mode=bars.mode AND bars.time BETWEEN w.start AND w.end)", (intraday_cutoff,))
         long_cutoff=int((now-timedelta(days=LONG_RETENTION_DAYS)).timestamp())
         db.execute("DELETE FROM bars WHERE period IN ('1w','1mo') AND time < ?", (long_cutoff,))
         db.execute("DELETE FROM bars WHERE period = '1d' AND time < ?", (daily_cutoff,))
@@ -206,8 +211,7 @@ def save_sync_state(key, days):
 
 
 def read_bars_before(key, before, limit):
-    retention = retention_days(key[1])
-    cutoff = int((datetime.now(ET) - timedelta(days=retention)).timestamp())
+    cutoff = int(time.time()) - HISTORY_LOOKBACK_DAYS*86400
     with connect_db() as db:
         rows = db.execute('SELECT * FROM bars WHERE symbol=? AND period=? AND mode=? AND time<? AND time>=? ORDER BY time DESC LIMIT ?',
                           (*key, before, cutoff, limit)).fetchall()
@@ -719,6 +723,36 @@ async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | N
     return {'bars': await asyncio.to_thread(read_bars, key, days, limit), 'stale': False, 'source': 'nas_cache'}
 
 
+def remember_history_window(key, start, end):
+    with connect_db() as db:
+        db.execute('INSERT OR REPLACE INTO history_windows VALUES(?,?,?,?,?,?)', (*key,start,end,time.time()))
+
+
+@app.get('/api/bars/window')
+async def bars_window(symbol: str, period: str, mode: str, start: int, end: int):
+    try:
+        key = validate(symbol, period, mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if start >= end or end-start > 31*86400 or end > time.time()+86400 or start < time.time()-max(HISTORY_LOOKBACK_DAYS,retention_days(period))*86400:
+        raise HTTPException(400, '日期范围无效或超出可配置的历史查询范围')
+    async with fetch_locks.setdefault(key, asyncio.Lock()):
+        with connect_db() as db:
+            covered = db.execute('SELECT 1 FROM history_windows WHERE symbol=? AND period=? AND mode=? AND start<=? AND end>=? AND checked>?', (*key,start,end,time.time()-86400)).fetchone()
+        if not covered:
+            zone = ET if key[0].startswith('US.') else CN_TZ
+            first = datetime.fromtimestamp(start,zone).date()
+            last = datetime.fromtimestamp(end,zone).date()
+            try:
+                await asyncio.to_thread(bridge.history,key,(last-first).days+1,last)
+            except Exception as exc:
+                raise HTTPException(503,f'目标日期行情暂不可用：{exc}')
+            remember_history_window(key,start,end)
+        with connect_db() as db:
+            rows=db.execute('SELECT * FROM bars WHERE symbol=? AND period=? AND mode=? AND time>=? AND time<=? ORDER BY time',(*key,start,end)).fetchall()
+        return {'bars':[row_to_bar(row) for row in rows]}
+
+
 @app.get('/api/bars/older')
 async def older_bars(symbol: str, period: str, mode: str, before: int, limit: int = 1000):
     try:
@@ -728,15 +762,20 @@ async def older_bars(symbol: str, period: str, mode: str, before: int, limit: in
     if before <= 0 or before > int(time.time()) + 86400:
         raise HTTPException(400, '无效的历史时间')
     limit = min(max(limit, 1), 2000)
-    retention = retention_days(period)
-    cutoff = int((datetime.now(ET) - timedelta(days=retention)).timestamp())
+    cutoff = int(time.time()) - max(HISTORY_LOOKBACK_DAYS,retention_days(period))*86400
     if before <= cutoff:
         return {'bars': [], 'next_before': before, 'has_more': False}
     lock = fetch_locks.setdefault(key, asyncio.Lock())
     async with lock:
-        cached = await asyncio.to_thread(read_bars_before, key, before, limit)
-        if cached:
-            return {'bars': cached, 'next_before': cached[0]['time'], 'has_more': cached[0]['time'] > cutoff}
+        # An isolated old date window is not proof that the gap before the
+        # current viewport was fetched. Reuse only verified adjacent coverage.
+        with connect_db() as db:
+            coverage=db.execute('SELECT start FROM history_windows WHERE symbol=? AND period=? AND mode=? AND start<? AND end>=? AND checked>? ORDER BY start LIMIT 1',(*key,before,before-1,time.time()-86400)).fetchone()
+        if coverage:
+            cached=await asyncio.to_thread(read_bars_before,key,before,limit)
+            cached=[b for b in cached if b['time']>=coverage['start']]
+            cursor=cached[0]['time'] if cached else max(cutoff,coverage['start'])
+            return {'bars':cached,'next_before':cursor,'has_more':cursor>cutoff}
         zone = ET if key[0].startswith('US.') else CN_TZ
         end_date = datetime.fromtimestamp(before, zone).date()
         window_days = 1825 if period == '1mo' else 730 if period == '1w' else 365 if period == '1d' else 3 if period == '1m' else 10 if period == '5m' else 21 if period == '15m' else 35
@@ -745,7 +784,10 @@ async def older_bars(symbol: str, period: str, mode: str, before: int, limit: in
             await asyncio.to_thread(bridge.history, key, window_days, end_date)
         except Exception as exc:
             raise HTTPException(503, f'历史 K 线暂不可用：{exc}')
+        remember_history_window(key, int(datetime.combine(start_date, datetime.min.time(), zone).timestamp()), before)
         result = await asyncio.to_thread(read_bars_before, key, before, limit)
+        window_start=int(datetime.combine(start_date,datetime.min.time(),zone).timestamp())
+        result=[b for b in result if b['time']>=window_start]
         next_before = result[0]['time'] if result else int(datetime.combine(start_date, datetime.min.time(), zone).timestamp())
         return {'bars': result, 'next_before': next_before, 'has_more': next_before > cutoff}
 
