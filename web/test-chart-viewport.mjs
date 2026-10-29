@@ -1,0 +1,17 @@
+import ts from 'typescript';import {readFileSync} from 'node:fs';import assert from 'node:assert/strict';
+const js=ts.transpileModule(readFileSync(new URL('./src/chartViewport.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {recentLogicalRange,resetChartViewport,markViewportReady}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+assert.deepEqual(recentLogicalRange(1000,960),{from:880,to:1005});
+assert.deepEqual(recentLogicalRange(50,960),{from:0,to:55});
+assert.deepEqual(recentLogicalRange(1000,320),{from:960,to:1005});
+assert.equal(recentLogicalRange(0,960),null);
+assert.ok(recentLogicalRange(10000,2400).from>=9840,'large histories must not be squeezed into one screen');
+const price=[],ranges=[];
+const chart={panes:()=>[0,1].map(i=>({priceScale:()=>({applyOptions:o=>price.push({i,...o})})})),timeScale:()=>({width:()=>960,applyOptions:()=>{},setVisibleLogicalRange:r=>ranges.push(r)})};
+resetChartViewport(chart,1000);
+assert.equal(price.length,2);assert.ok(price.every(o=>o.autoScale===true&&o.mode===0&&o.scaleMargins.top>0&&o.scaleMargins.bottom>0));
+assert.deepEqual(ranges,[{from:880,to:1005}]);
+const state={ready:false,suppressSyncUntil:Infinity};markViewportReady(state,true,100);assert.equal(state.suppressSyncUntil,450);
+markViewportReady(state,true,200);assert.equal(state.suppressSyncUntil,450,'ordinary data updates do not extend suppression');
+state.suppressSyncUntil=Infinity;markViewportReady(state,true,300);assert.equal(state.suppressSyncUntil,650,'refresh cannot leave synchronization permanently disabled');
+console.log('Viewport: bounded recent bars, responsive density, sparse/empty data and all-pane price reset passed');
