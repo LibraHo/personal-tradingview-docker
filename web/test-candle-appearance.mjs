@@ -1,0 +1,17 @@
+import ts from 'typescript';import {readFileSync} from 'node:fs';import assert from 'node:assert/strict';
+const js=ts.transpileModule(readFileSync(new URL('./src/candleAppearance.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {defaultCandleAppearance,normalizeCandleAppearance,candleSeriesOptions,candleBodyColor,volumePalette}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const us=defaultCandleAppearance('US'),cn=defaultCandleAppearance('CN');
+assert.equal(us.upColor,cn.downColor);assert.equal(us.downColor,cn.upColor);
+assert.equal(normalizeCandleAppearance({upColor:'bad',style:'unknown'},'CN').upColor,cn.upColor);
+assert.equal(normalizeCandleAppearance({showWicks:'false'},'US').showWicks,true);
+assert.equal(candleBodyColor(10,11,{...us,style:'hollow-up'}),'transparent');
+assert.equal(candleBodyColor(10,9,{...us,style:'hollow-up'}),us.downColor);
+assert.equal(candleBodyColor(10,9,{...cn,style:'hollow'}),'transparent');
+assert.equal(candleSeriesOptions({...cn,style:'hollow',showBorders:false}).borderVisible,true);
+assert.equal(candleSeriesOptions({...us,showWicks:false}).wickVisible,false);
+assert.equal(volumePalette(cn).volumeUp,cn.upColor);
+assert.equal(volumePalette(cn,{volumeUp:'#112233'}).volumeUp,'#112233');
+assert.equal(volumePalette(cn,{volumeUp:'invalid'}).volumeUp,cn.upColor);
+assert.equal(normalizeCandleAppearance(JSON.parse(JSON.stringify({...cn,upColor:'#abcdef'})),'CN').upColor,'#abcdef');
+console.log('Market palettes, style normalization, hollow bodies, wick/border options, volume overrides and reload persistence passed');
