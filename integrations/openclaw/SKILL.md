@@ -28,3 +28,8 @@ python3 <skill目录>/draw.py visibility --symbol US.SNDK --period 5m --json '{"
 趋势线/fib 的 `points` 必须是两个 `{time:Unix秒,price:正数}`，时间不能相同。趋势线 `extend` 可为 none/left/right/both。fib `levels` 可包含 1.272、1.618 等 0–4.236 比例，`levelColors` 按字符串比例设色，例如 `{"0.618":"#00cc88","1.618":"#aa77ff"}`。
 
 不写整个工作区设置，不调用交易接口，不修改自选分组或指标模板。返回成功后说明股票、周期、图形和价位；网页打开相同股票和周期时约 3 秒内同步，网页关闭时也会保留到 NAS。A 股使用 SH./SZ. 前缀，显示时切换到 A 股工作区。
+
+
+周期显示范围：创建或修改 JSON 可用 `timeframeScope:"all"` 在同一股票的所有周期显示；默认 `current` 仅存储周期。list 按所查看周期返回本地及共享对象，后续 update/delete 使用返回对象的 `period` 和 `id`。
+
+本 NAS 于 2026-10-29 已通过真实 gateway_exec capabilities 受保护链路测试，现有 Token 不需重新录入。详细运行状态见项目 docs/DRAWING-API.md；不要把此前的待审核报告当作当前状态。

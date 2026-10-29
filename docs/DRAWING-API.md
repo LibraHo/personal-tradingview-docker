@@ -44,7 +44,11 @@ python3 /opt/nas-market-drawings/draw.py list --symbol US.SNDK --period 5m
 
 TLS 有两层：Python 要信任网关临时代理 CA，代理还要信任 NAS 上游证书。客户端先保留默认信任链及 `SSL_CERT_FILE`，再追加 `NAS_MARKET_CA_FILE`，避免用 NAS CA 覆盖代理 CA。`diagnose` 刻意不使用凭证，也不经过密钥替换路径；它成功不能证明受保护代理已接通。
 
-2026-10-29 实际部署检查：OpenClaw 2026.8.35 的代理显式使用内置根证书和临时代理 CA，NAS 自签 CA 尚需纳入代理上游信任；8443 在密钥代理路径中仍需单独验收。客户端直连信任已验证。后续涉及网关代码或配置的变化，应经过原维护、审核和回归流程，不能关闭证书验证或直接修改运行中的 dist。
+2026-10-29 已通过真实受保护链路验收：新的 OpenClaw Agent 会话通过 `gateway_exec` 执行 capabilities，工具调用 1 次、失败 0 次，返回 horizontal / trend / fib 及 current / all。Token 未读取或导出，没有创建测试线，也未调用交易接口或发送 Telegram。
+
+本 NAS 的 OpenClaw 2026.8.35 使用显式内置 CA 列表，忽略了额外 NAS CA。最终采用 `integrations/openclaw/nas-market-ca-agent-compat-2026.8.35.mjs` 维护兼容层：仅对指定 NAS IP 的 8443 连接，在已有显式 CA 列表后追加 NAS 公共证书，保留原代理 CA、TLS 校验及其余参数。其他主机/端口及默认 CA 连接原样处理。网关保留原镜像和版本，未编辑运行 dist。
+
+该模块中的 IP、端口和证书路径针对本 NAS，不是自动安装器。当前网关已将其安装到 `/home/node/.openclaw/maintenance-patches/`，保留原 `NODE_OPTIONS` 后追加 `--import`，并配置 `NODE_EXTRA_CA_CERTS`。Codex 的 `clearEnv` 及额外网络保持原样。后续变更应先备份、隔离验证和按原维护流程应用，不能关闭验证或导出受保护 Token。此前受限内存的完整构建已停止，未部署。
 
 ## 接口
 
