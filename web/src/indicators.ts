@@ -1,6 +1,7 @@
 import {formula} from './formula';
 export type Bar = {time:number;open:number;high:number;low:number;close:number;volume:number;session:string;trade_date:string;session_date:string};
 export type Indicator = {id:string;name:string;params:string;visible:boolean;title?:string;pane?:'main'|'separate';charts?:number[];periods?:string[];colors?:Record<string,string>};
+export function indicatorPane(indicator:Pick<Indicator,'name'|'pane'>):'main'|'separate'{return indicator.pane||(['EMA','SMA','BBI','BOLL','VWAP'].includes(indicator.name)?'main':'separate')}
 const sma=(v:(number|null)[],n:number)=>(v.map((_,i)=>i>=n-1&&v.slice(i-n+1,i+1).every(x=>x!==null)?v.slice(i-n+1,i+1).reduce<number>((a,b)=>a+(b||0),0)/n:null));
 const ema=(v:(number|null)[],n:number)=>{let last:number|null=null;return v.map(x=>{if(x===null)return null;last=last===null?x:last+(x-last)*2/(n+1);return last})};
 export function compute(b:Bar[],name:string,params:string):Record<string,(number|null)[]>{

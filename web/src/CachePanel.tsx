@@ -1,16 +1,16 @@
 import {useEffect,useRef,useState} from 'react';
 import DrawingApiPanel from './DrawingApiPanel';
 
-export default function CachePanel({symbol,onClose}:{symbol?:string;onClose:()=>void}){
+export default function CachePanel({symbol,onClose,embedded=false}:{symbol?:string;onClose:()=>void;embedded?:boolean}){
  const [data,setData]=useState<any>(null),[error,setError]=useState('');
  const box=useRef<HTMLDivElement>(null);
- useEffect(()=>{const before=document.activeElement as HTMLElement|null;box.current?.querySelector('button')?.focus();let stopped=false;
+ useEffect(()=>{const before=document.activeElement as HTMLElement|null;if(!embedded)box.current?.querySelector('button')?.focus();let stopped=false;
   fetch('/api/cache/status'+(symbol?'?symbol='+encodeURIComponent(symbol):'')).then(async r=>{if(!r.ok)throw Error('缓存信息暂不可用');return r.json()}).then(d=>{if(!stopped)setData(d)}).catch(e=>{if(!stopped)setError(e.message)});
-  return()=>{stopped=true;before?.focus()};
+  return()=>{stopped=true;if(!embedded)before?.focus()};
  },[symbol]);
  const date=(v:number)=>new Date(v*1000).toLocaleDateString('zh-CN',{timeZone:symbol?.startsWith('US.')?'America/New_York':'Asia/Shanghai'});
- return <div className="cache-backdrop"><div className="cache-dialog" ref={box} role="dialog" aria-modal="true" aria-labelledby="cache-title" onKeyDown={e=>{if(e.key==='Escape')onClose();if(e.key==='Tab'){const nodes=box.current?.querySelectorAll<HTMLElement>('button,a[href],input,select');if(nodes?.length){const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}}}}>
-  <div className="cache-title"><h2 id="cache-title">数据与缓存</h2><button aria-label="关闭缓存信息" onClick={onClose}>关闭</button></div>
+ return <div className={embedded?'cache-embedded':'cache-backdrop'}><div className="cache-dialog" ref={box} role={embedded?undefined:'dialog'} aria-modal={embedded?undefined:true} aria-labelledby="cache-title" onKeyDown={e=>{if(embedded)return;if(e.key==='Escape')onClose();if(e.key==='Tab'){const nodes=box.current?.querySelectorAll<HTMLElement>('button,a[href],input,select');if(nodes?.length){const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}}}}>
+  <div className="cache-title"><h2 id="cache-title">数据与缓存</h2>{!embedded&&<button aria-label="关闭缓存信息" onClick={onClose}>关闭</button>}</div>
   <p>行情保存在 NAS 的 SQLite 数据库，不依赖公司电脑的浏览器缓存。关闭网页或重启 NAS 后仍然保留。</p>
   <DrawingApiPanel/>
   {error?<div role="alert">{error}</div>:!data?<p role="status">正在读取 NAS 缓存…</p>:<>

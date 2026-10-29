@@ -1,6 +1,6 @@
 export type DrawingPoint={time:number;price:number};
 export type DrawingKind='horizontal'|'trend'|'fib';
-export type DrawingStyle={color?:string;lineWidth?:1|2|3|4;lineStyle?:0|1|2;visible?:boolean};
+export type DrawingStyle={color?:string;lineWidth?:1|2|3|4;lineStyle?:0|1|2;visible?:boolean;timeframeScope?:'current'|'all'};
 export type HorizontalDrawing=DrawingStyle&{id:string;price:number};
 export type TrendDrawing=DrawingStyle&{id:string;points:DrawingPoint[];extend?:'none'|'left'|'right'|'both'};
 export type FibDrawing=DrawingStyle&{id?:string;points:DrawingPoint[];levels?:number[];levelColors?:Record<string,string>};
@@ -10,7 +10,26 @@ export function drawingStyle(raw:DrawingStyle,kind:DrawingKind){
  const fallback={color:kind==='horizontal'?'#c6d6e7':kind==='trend'?'#e3b76b':'#739dde',lineWidth:(kind==='trend'?2:1) as 1|2|3|4,lineStyle:(kind==='trend'?0:2) as 0|1|2};
  return {color:typeof raw.color==='string'&&/^#[0-9a-f]{6}$/i.test(raw.color)?raw.color:fallback.color,
   lineWidth:([1,2,3,4].includes(Number(raw.lineWidth))?Number(raw.lineWidth):fallback.lineWidth) as 1|2|3|4,
-  lineStyle:([0,1,2].includes(Number(raw.lineStyle))&&raw.lineStyle!=null?Number(raw.lineStyle):fallback.lineStyle) as 0|1|2,visible:raw.visible!==false};
+  lineStyle:([0,1,2].includes(Number(raw.lineStyle))&&raw.lineStyle!=null?Number(raw.lineStyle):fallback.lineStyle) as 0|1|2,visible:raw.visible!==false,timeframeScope:raw.timeframeScope==='all'?'all' as const:'current' as const};
+}
+/** Shared objects keep their source bucket. View IDs prevent same-ID collisions between periods. */
+export function drawingsForPeriod<T extends DrawingStyle&{id?:string}>(records:Record<string,T[]>,symbol:string,period:string):T[]{
+ const key=`${symbol}:${period}`;
+ return [...(records[key]||[]),...Object.entries(records).flatMap(([source,rows])=>source!==key&&source.startsWith(symbol+':')?rows.filter(row=>row.timeframeScope==='all').map(row=>({...row,id:`@${source}@${row.id}`})):[])];
+}
+export function updateDrawingRecords<T extends DrawingStyle&{id?:string}>(records:Record<string,T[]>,symbol:string,period:string,rows:T[]):Record<string,T[]>{
+ const key=`${symbol}:${period}`,result=Object.fromEntries(Object.entries(records).map(([k,v])=>[k,[...v]]));
+ const origin=(id:string|undefined)=>{const match=id?.match(/^@(.+:(?:1m|5m|15m|30m|60m|1d|1w|1mo))@(.+)$/);return match&&match[1].startsWith(symbol+':')?{key:match[1],id:match[2]}:{key,id}};
+ for(const row of drawingsForPeriod(records,symbol,period)){const source=origin(row.id);result[source.key]=(result[source.key]||[]).filter(x=>x.id!==source.id)}
+ for(const row of rows){
+  const source=origin(row.id),target=row.timeframeScope==='all'?source.key:key,bucket=result[target]||(result[target]=[]);
+  let id=source.id;for(let n=1;bucket.some(x=>x.id===id);n++)id=`${(source.id||'drawing').slice(0,110)}-moved-${n}`;
+  bucket.push({...row,id});
+ }
+ for(const [bucket,items] of Object.entries(result)){const order=new Map((records[bucket]||[]).map((row,i)=>[row.id,i]));items.sort((a,b)=>(order.get(a.id)??Number.MAX_SAFE_INTEGER)-(order.get(b.id)??Number.MAX_SAFE_INTEGER))}
+ // Never trim an aggregated view: that would delete shared source objects.
+ if(Object.values(result).some(bucket=>bucket.length>100))return records;
+ return result;
 }
 export function normalizeDrawingRecords(value:unknown,kind:'horizontal'):Record<string,HorizontalDrawing[]>;
 export function normalizeDrawingRecords(value:unknown,kind:'trend'):Record<string,TrendDrawing[]>;

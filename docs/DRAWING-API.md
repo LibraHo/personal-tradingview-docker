@@ -79,6 +79,14 @@ POST JSON 示例：
 
 PATCH 只传需要改动的字段；不能改变 id、股票、周期或类型。PUT visibility 的 JSON 为 `{"symbol":"US.SNDK","period":"5m","hidden":false}`。
 
+### 跨周期显示
+
+水平线、趋势线及斐波那契均支持 `timeframeScope`：`"current"`（默认，仅存储周期）或 `"all"`（同一股票所有周期）。例如 POST 添加 `"timeframeScope":"all"`，或 PATCH `{"timeframeScope":"all"}`。省略字段的旧对象保持仅当前周期。
+
+`GET /objects?symbol=US.SNDK&period=15m` 返回该周期本地对象及其他周期设为 `all` 的对象。返回的 `period` 始终为对象的存储周期；后续 PATCH / DELETE 应使用返回的 `period` 和 `id`，不能把查询周期误当作存储周期。共享对象只有一份，修改、删除和单个显隐同步作用于所有周期；整体 visibility 仍只作用于当前图表。
+
+网页在其他周期将共享对象改为“仅当前周期”时，会把对象移至当前周期，保留其他同名对象；对象 id 冲突时生成新的唯一 id。API PATCH 不迁移存储周期，`current` 表示返回对象的存储周期。
+
 每类每图最多 100 个对象，fib 最多 32 条比例（0–4.236）；工作区仍受 100 KB 容量限制。建议 Agent 创建稳定 id 以便重试；同 id 同内容返回原对象，不产生重复。可在修改请求中带 `If-Match: <revision>`；客户端对应 `--revision`。发生并发时返回 409，先重新查询再决定。
 
 Web 保存使用画线版本检查，旧页面不会覆盖较新的 API 图形。如果同时编辑发生冲突，页面保留远端画线并提示重新操作。后台代理不能用画线 Token 访问交易接口、修改自选分组或读取交易密码。

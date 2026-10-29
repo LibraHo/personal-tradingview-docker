@@ -1,0 +1,21 @@
+import ts from 'typescript';import {readFileSync} from 'node:fs';import assert from 'node:assert/strict';
+const js=ts.transpileModule(readFileSync(new URL('./src/drawingTools.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {normalizeDrawingRecords,drawingsForPeriod,updateDrawingRecords}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const records=normalizeDrawingRecords({'US.SNDK:5m':[{id:'same',price:100,timeframeScope:'all'},{id:'local',price:110}],'US.SNDK:15m':[{id:'same',price:120}],'US.AAPL:5m':[{id:'other',price:200,timeframeScope:'all'}]},'horizontal');
+assert.equal(records['US.SNDK:5m'][0].timeframeScope,'all');
+let view=drawingsForPeriod(records,'US.SNDK','15m');assert.equal(view.length,2);assert.equal(new Set(view.map(x=>x.id)).size,2,'same IDs in different source periods remain distinct');
+let edited=updateDrawingRecords(records,'US.SNDK','15m',view.map(x=>x.price===100?{...x,price:105}:x));
+assert.equal(edited['US.SNDK:5m'][0].price,105);assert.equal(edited['US.SNDK:15m'][0].price,120);assert.equal(edited['US.SNDK:5m'][1].id,'local');
+const shared=drawingsForPeriod(edited,'US.SNDK','15m').find(x=>x.price===105);
+edited=updateDrawingRecords(edited,'US.SNDK','15m',drawingsForPeriod(edited,'US.SNDK','15m').filter(x=>x.id!==shared.id));assert.equal(edited['US.SNDK:5m'].length,1,'delete shared line at its source');
+edited=updateDrawingRecords(edited,'US.SNDK','15m',view);assert.equal(edited['US.SNDK:5m'][1].price,100,'undo restores shared source identity');
+// Restrict a shared line to the current viewing period; a collision must not overwrite a local line.
+edited=updateDrawingRecords(records,'US.SNDK','15m',view.map(x=>x.price===100?{...x,timeframeScope:'current'}:x));
+assert.equal(edited['US.SNDK:15m'].length,2);assert.equal(new Set(edited['US.SNDK:15m'].map(x=>x.id)).size,2);
+assert.equal(drawingsForPeriod(edited,'US.SNDK','60m').length,0);assert.equal(edited['US.AAPL:5m'][0].price,200);
+console.log('Drawing scope migration, cross-period display/edit/delete/undo, identity collisions and stock isolation passed');
+const many=normalizeDrawingRecords({'US.SNDK:5m':Array.from({length:80},(_,i)=>({id:`shared-${i}`,price:100+i,timeframeScope:'all'}))},'horizontal');
+const expanded=updateDrawingRecords(many,'US.SNDK','15m',[...drawingsForPeriod(many,'US.SNDK','15m'),{id:'new-local',price:200,timeframeScope:'current'}]);
+assert.equal(expanded['US.SNDK:5m'].length,80);assert.equal(expanded['US.SNDK:15m'].length,1,'aggregate count must not delete shared objects');
+const full=normalizeDrawingRecords({'US.SNDK:15m':Array.from({length:100},(_,i)=>({id:`local-${i}`,price:100+i}))},'horizontal');
+assert.equal(updateDrawingRecords(full,'US.SNDK','15m',[...drawingsForPeriod(full,'US.SNDK','15m'),{id:'overflow',price:300}]),full,'full source bucket rejects update without trimming data');

@@ -54,10 +54,14 @@ def finite(value):
 def clean_object(raw, kind, identifier, strict=False):
     defaults = dict(color={'horizontal': '#c6d6e7', 'trend': '#e3b76b', 'fib': '#739dde'}[kind],
                     lineWidth=2 if kind == 'trend' else 1, lineStyle=0 if kind == 'trend' else 2, visible=True)
-    allowed = set(defaults) | {'id'} | ({'price'} if kind == 'horizontal' else {'points', 'extend'} if kind == 'trend' else {'points', 'levels', 'levelColors'})
+    allowed = set(defaults) | {'id', 'timeframeScope'} | ({'price'} if kind == 'horizontal' else {'points', 'extend'} if kind == 'trend' else {'points', 'levels', 'levelColors'})
     if not isinstance(raw, dict) or (strict and set(raw) - allowed):
         raise ValueError('画线字段不正确')
     result = {'id': identifier}
+    timeframe_scope = raw.get('timeframeScope','current')
+    if strict and timeframe_scope not in ('current','all'):
+        raise ValueError('周期显示范围须为 current 或 all')
+    result['timeframeScope'] = 'all' if timeframe_scope == 'all' else 'current'
     for name, fallback in defaults.items():
         value = raw.get(name, fallback)
         valid = bool(COLOR.fullmatch(value)) if name == 'color' and isinstance(value, str) else isinstance(value, bool) if name == 'visible' else type(value) is int and value in ([1, 2, 3, 4] if name == 'lineWidth' else [0, 1, 2]) if name in ('lineWidth', 'lineStyle') else False
@@ -194,7 +198,7 @@ def install(app, connect_db):
 
     @router.get('/capabilities')
     def capabilities():
-        return {'version': 1, 'kinds': list(KINDS), 'periods': sorted(PERIODS), 'time_unit': 'unix_seconds', 'trade_access': False, 'limits': {'objects_per_kind_and_chart': 100, 'fib_levels': 32}, 'auth': 'Bearer drawing token'}
+        return {'version': 1, 'kinds': list(KINDS), 'periods': sorted(PERIODS), 'timeframe_scopes':['current','all'], 'time_unit': 'unix_seconds', 'trade_access': False, 'limits': {'objects_per_kind_and_chart': 100, 'fib_levels': 32}, 'auth': 'Bearer drawing token'}
 
     @router.get('/objects')
     def list_objects(symbol: str | None = None, period: str | None = None):
@@ -208,13 +212,13 @@ def install(app, connect_db):
             for kind, field in KINDS.items():
                 for key, rows in values[field].items():
                     code, _, interval = key.rpartition(':')
-                    if (symbol is None or symbol == code) and (period is None or period == interval):
-                        objects.extend(dict(row, symbol=code, period=interval, kind=kind) for row in rows)
+                    if symbol is None or symbol == code:
+                        objects.extend(dict(row, symbol=code, period=interval, kind=kind) for row in rows if period is None or period == interval or row.get('timeframeScope')=='all')
         return {'revision': revision, 'objects': objects, 'visibility': {market: value['drawingsHidden'] for market, value in view['markets'].items()}}
 
     @router.post('/objects')
     def create_object(request: Request, body: dict):
-        if set(body) - {'symbol', 'period', 'kind', 'id', 'price', 'points', 'color', 'lineWidth', 'lineStyle', 'visible', 'extend', 'levels', 'levelColors'}:
+        if set(body) - {'symbol', 'period', 'kind', 'id', 'price', 'points', 'color', 'lineWidth', 'lineStyle', 'visible', 'extend', 'levels', 'levelColors', 'timeframeScope'}:
             raise HTTPException(422, '存在不支持的画线字段')
         kind = body.get('kind')
         if not isinstance(kind, str) or kind not in KINDS:

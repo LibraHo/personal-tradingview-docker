@@ -10,6 +10,16 @@ class DrawingApiTests(unittest.TestCase):
  def tearDown(self):self.env.stop();self.db.stop();self.tmp.cleanup()
  def create(self,kind='horizontal',**kwargs):
   return self.client.post('/api/drawings/objects',headers=self.auth,json={'symbol':'US.SNDK','period':'5m','kind':kind,**({'price':130} if kind=='horizontal' else {'points':[{'time':1700000000,'price':120},{'time':1700000300,'price':130}]}),**kwargs})
+ def test_timeframe_scope_all_tools_and_validation(self):
+  for kind in ['horizontal','trend','fib']:
+   r=self.create(kind,id='shared-'+kind,timeframeScope='all');self.assertEqual(r.status_code,201,r.text)
+   rows=self.client.get('/api/drawings/objects?symbol=US.SNDK&period=15m',headers=self.auth).json()['objects']
+   self.assertTrue(any(x['id']=='shared-'+kind and x['period']=='5m' and x['timeframeScope']=='all' for x in rows))
+   url='/api/drawings/objects/shared-'+kind+'?symbol=US.SNDK&period=5m&kind='+kind
+   self.assertEqual(self.client.patch(url,headers=self.auth,json={'timeframeScope':'current'}).status_code,200)
+  self.assertEqual(self.client.get('/api/drawings/objects?symbol=US.SNDK&period=15m',headers=self.auth).json()['objects'],[])
+  self.assertEqual(self.create(timeframeScope='invalid').status_code,422)
+  self.assertEqual(self.create(id='legacy').json()['object']['timeframeScope'],'current')
  def test_token_and_crud_all_tools(self):
   self.assertEqual(self.client.get('/api/drawings/capabilities').status_code,401)
   self.assertEqual(self.client.get('/api/drawings/capabilities',headers=self.auth).status_code,200)
