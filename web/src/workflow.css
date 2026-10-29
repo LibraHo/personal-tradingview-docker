@@ -34,3 +34,6 @@
 .indicator-parameters summary{cursor:pointer;font-size:11px;color:#8295af}
 .stock-search .add-symbol input{min-width:0;flex:1}
 .stock-search .add-symbol button{flex-shrink:0}
+.session-legend{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:10px;color:#a5b4cb}
+.session-legend i{display:inline-block;width:7px;height:7px;border-radius:2px;margin-left:4px}
+.session-legend .pre{background:#4881db}.session-legend .post{background:#dba148}.session-legend .overnight{background:#9b69db}

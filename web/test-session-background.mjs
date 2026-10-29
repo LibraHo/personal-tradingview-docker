@@ -1,0 +1,12 @@
+import ts from 'typescript';import {readFileSync} from 'node:fs';import assert from 'node:assert/strict';
+const js=ts.transpileModule(readFileSync(new URL('./src/SessionBackground.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {sessionBackground,sessionSpans,sessionColors}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const bars=[{time:1,session:'overnight',session_date:'a'},{time:2,session:'pre',session_date:'a'},{time:3,session:'pre',session_date:'a'},{time:4,session:'regular',session_date:'a'},{time:5,session:'post',session_date:'a'}];
+assert.deepEqual(sessionSpans(bars,t=>t*10-10,10,42),[{session:'overnight',left:0,right:5},{session:'pre',left:5,right:25},{session:'post',left:35,right:42}]);
+assert.deepEqual(sessionSpans(bars.filter(b=>b.session==='regular'),()=>10,10,100),[],'regular session has no tint');
+assert.equal(new Set(Object.values(sessionColors)).size,3,'each extended session has a distinct background');
+assert.equal(sessionSpans([{time:1,session:'pre',session_date:'day1'},{time:2,session:'pre',session_date:'day2'}],t=>t*10,10,100).length,2,'different session dates remain separate');
+const calls=[];const primitive=sessionBackground(bars);primitive.attached({chart:{timeScale:()=>({timeToCoordinate:t=>t*10-10,options:()=>({barSpacing:10})})},requestUpdate:()=>{}});
+const view=primitive.paneViews()[0];assert.equal(view.zOrder(),'bottom');view.renderer().draw({useMediaCoordinateSpace:fn=>fn({context:{save:()=>{},restore:()=>{},fillRect:(...a)=>calls.push(a)},mediaSize:{width:42,height:200}})});
+assert.deepEqual(calls,[[0,0,5,200],[5,0,20,200],[35,0,7,200]]);primitive.detached();
+console.log('Session backgrounds: pre/post/overnight grouping, regular exclusion, horizontal clipping and candle-underlay rendering passed');

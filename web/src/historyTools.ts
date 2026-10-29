@@ -18,6 +18,17 @@ export function visibleExtremes(bars:Pick<Bar,'time'|'high'|'low'>[],from:number
  for(const bar of bars)if(bar.time>=from&&bar.time<=to){high=Math.max(high,bar.high);low=Math.min(low,bar.low);count++}
  return count?{high,low,count}:null;
 }
+/** Only actual wick endpoints inside BOTH visible axes are candidates. */
+export function visiblePriceVertices(bars:Pick<Bar,'time'|'high'|'low'>[],from:number,to:number,priceA:number,priceB:number){
+ const lower=Math.min(priceA,priceB),upper=Math.max(priceA,priceB);
+ let high:{time:number;price:number}|null=null,low:{time:number;price:number}|null=null;
+ for(const bar of bars){
+  if(bar.time<from||bar.time>to)continue;
+  if(Number.isFinite(bar.high)&&bar.high>=lower&&bar.high<=upper&&(!high||bar.high>high.price))high={time:bar.time,price:bar.high};
+  if(Number.isFinite(bar.low)&&bar.low>=lower&&bar.low<=upper&&(!low||bar.low<low.price))low={time:bar.time,price:bar.low};
+ }
+ return {high,low};
+}
 export function marketDateWindow(date:string,isUS:boolean){
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return null;
  const utc=Date.parse(date+'T00:00:00Z');if(!Number.isFinite(utc))return null;
