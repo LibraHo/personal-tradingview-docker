@@ -460,7 +460,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   const normalizeSymbol=(input:string)=>{
     let s=input.trim().toUpperCase();
     if(market==='US')s=s.startsWith('US.')?s:`US.${s}`;
-    else if(/^\d{6}$/.test(s))s= /^[569]/.test(s)?`SH.${s}`:`SZ.${s}`;
+    // Bare CN codes must be resolved by the directory: 000001 is ambiguous.
     return belongs(s,market)&&(market==='US'?/^US\.[A-Z0-9.]{1,12}$/.test(s):/^(SH|SZ)\.\d{6}$/.test(s))?s:null;
   };
   const viewSymbol=(candidate=newSymbol,name?:string)=>{
