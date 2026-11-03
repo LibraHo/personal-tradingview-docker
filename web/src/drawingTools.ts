@@ -19,7 +19,7 @@ export function drawingsForPeriod<T extends DrawingStyle&{id?:string}>(records:R
 }
 export function updateDrawingRecords<T extends DrawingStyle&{id?:string}>(records:Record<string,T[]>,symbol:string,period:string,rows:T[]):Record<string,T[]>{
  const key=`${symbol}:${period}`,result=Object.fromEntries(Object.entries(records).map(([k,v])=>[k,[...v]]));
- const origin=(id:string|undefined)=>{const match=id?.match(/^@(.+:(?:1m|5m|15m|30m|60m|1d|1w|1mo))@(.+)$/);return match&&match[1].startsWith(symbol+':')?{key:match[1],id:match[2]}:{key,id}};
+ const origin=(id:string|undefined)=>{const match=id?.match(/^@(.+:(?:1m|5m|15m|30m|60m|120m|240m|1d|1w|1mo))@(.+)$/);return match&&match[1].startsWith(symbol+':')?{key:match[1],id:match[2]}:{key,id}};
  for(const row of drawingsForPeriod(records,symbol,period)){const source=origin(row.id);result[source.key]=(result[source.key]||[]).filter(x=>x.id!==source.id)}
  for(const row of rows){
   const source=origin(row.id),target=row.timeframeScope==='all'?source.key:key,bucket=result[target]||(result[target]=[]);

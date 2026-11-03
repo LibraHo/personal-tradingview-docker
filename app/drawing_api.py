@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 FIELDS = ('drawings', 'trends', 'fibos', 'drawingsHidden')
 KINDS = {'horizontal': 'drawings', 'trend': 'trends', 'fib': 'fibos'}
-PERIODS = {'1m', '5m', '15m', '30m', '60m', '1d', '1w', '1mo'}
+PERIODS = {'1m', '5m', '15m', '30m', '60m', '120m', '240m', '1d', '1w', '1mo'}
 SYMBOL = re.compile(r'^(US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.\d{6})$')
 IDENTIFIER = re.compile(r'^[A-Za-z0-9_.:-]{1,128}$')
 COLOR = re.compile(r'^#[0-9a-fA-F]{6}$')

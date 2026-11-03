@@ -57,7 +57,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['diagnose', 'capabilities', 'list', 'create', 'update', 'delete', 'visibility'])
     parser.add_argument('--symbol')
-    parser.add_argument('--period', choices=['1m','5m','15m','30m','60m','1d','1w','1mo'])
+    parser.add_argument('--period', choices=['1m','5m','15m','30m','60m','120m','240m','1d','1w','1mo'])
     parser.add_argument('--kind', choices=['horizontal','trend','fib'])
     parser.add_argument('--id')
     parser.add_argument('--json', help='JSON object, or @path/to/file.json; create fields exclude symbol/period/kind')

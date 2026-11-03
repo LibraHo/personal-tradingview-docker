@@ -26,6 +26,7 @@ from .python_indicator_worker import validate_code, validate_inputs
 from .depth import DepthFeed
 from .opend_connection import connect_quote_context
 from . import drawing_api
+from .hour_bars import is_us_hour, aggregate_hours, hour_bucket
 
 depth_feed = DepthFeed()
 
@@ -52,17 +53,39 @@ RETENTION_DAYS = max(1, int(os.getenv('CACHE_RETENTION_DAYS', '30')))
 DAILY_HISTORY_DAYS = max(1, int(os.getenv('DAILY_HISTORY_DAYS', '730')))
 DAILY_RETENTION_DAYS = max(DAILY_HISTORY_DAYS, int(os.getenv('DAILY_CACHE_RETENTION_DAYS', '1825')))
 SYMBOL_RE = re.compile(r'^(?:US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.[0-9]{6})$')
-PERIODS = {'1m': 'K_1M', '5m': 'K_5M', '15m': 'K_15M', '30m': 'K_30M', '60m': 'K_60M', '1d': 'K_DAY', '1w': 'K_WEEK', '1mo': 'K_MON'}
+PERIODS = {'1m': 'K_1M', '5m': 'K_5M', '15m': 'K_15M', '30m': 'K_30M', '60m': 'K_60M', '120m': 'K_120M', '240m': 'K_240M', '1d': 'K_DAY', '1w': 'K_WEEK', '1mo': 'K_MON'}
 LONG_PERIODS = {'1d','1w','1mo'}
 WEEKLY_HISTORY_DAYS = max(1,int(os.getenv('WEEKLY_HISTORY_DAYS','1825')))
 MONTHLY_HISTORY_DAYS = max(1,int(os.getenv('MONTHLY_HISTORY_DAYS','3650')))
 LONG_RETENTION_DAYS = max(DAILY_RETENTION_DAYS,WEEKLY_HISTORY_DAYS,MONTHLY_HISTORY_DAYS,int(os.getenv('LONG_CACHE_RETENTION_DAYS','3650')))
 
-def default_history_days(period):
+def default_history_days(period, symbol=''):
+    if symbol.startswith(('SH.', 'SZ.')) and period == '240m':
+        return DAILY_HISTORY_DAYS
+    if period in {'120m', '240m'}:
+        return min(RETENTION_DAYS, max(DEFAULT_DAYS, 30))
     return {'1d':DAILY_HISTORY_DAYS,'1w':WEEKLY_HISTORY_DAYS,'1mo':MONTHLY_HISTORY_DAYS}.get(period,DEFAULT_DAYS)
 
-def retention_days(period):
+def retention_days(period, symbol=''):
+    if symbol.startswith(('SH.', 'SZ.')) and period == '240m':
+        return DAILY_RETENTION_DAYS
     return LONG_RETENTION_DAYS if period in {'1w','1mo'} else DAILY_RETENTION_DAYS if period=='1d' else RETENTION_DAYS
+
+def opend_kline(symbol, period):
+    # Current OpenD returns two half-day candles for CN K_240M.
+    # Four trading hours in CN therefore use the native daily candle.
+    if is_us_hour(symbol, period):
+        return 'K_60M'
+    return 'K_DAY' if symbol.startswith(('SH.', 'SZ.')) and period == '240m' else PERIODS[period]
+
+
+def subscription_key(key):
+    return key[0], opend_kline(key[0], key[1])
+
+
+def push_matches(key, symbol, period):
+    return key[0] == symbol and opend_kline(key[0], key[1]) == PERIODS[period]
+
 
 def period_from_push(value):
     label=str(value).replace('K_','').lower()
@@ -121,10 +144,10 @@ def prune_cache():
     daily_cutoff = int((now - timedelta(days=DAILY_RETENTION_DAYS)).timestamp())
     with connect_db() as db:
         db.execute("DELETE FROM history_windows WHERE checked < ?", (time.time()-BROWSED_CACHE_DAYS*86400,))
-        db.execute("DELETE FROM bars WHERE period NOT IN ('1d','1w','1mo') AND time < ? AND NOT EXISTS (SELECT 1 FROM history_windows w WHERE w.symbol=bars.symbol AND w.period=bars.period AND w.mode=bars.mode AND bars.time BETWEEN w.start AND w.end)", (intraday_cutoff,))
+        db.execute("DELETE FROM bars WHERE period NOT IN ('1d','1w','1mo') AND NOT (period='240m' AND (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*')) AND time < ? AND NOT EXISTS (SELECT 1 FROM history_windows w WHERE w.symbol=bars.symbol AND w.period=bars.period AND w.mode=bars.mode AND bars.time BETWEEN w.start AND w.end)", (intraday_cutoff,))
         long_cutoff=int((now-timedelta(days=LONG_RETENTION_DAYS)).timestamp())
         db.execute("DELETE FROM bars WHERE period IN ('1w','1mo') AND time < ?", (long_cutoff,))
-        db.execute("DELETE FROM bars WHERE period = '1d' AND time < ?", (daily_cutoff,))
+        db.execute("DELETE FROM bars WHERE (period = '1d' OR (period='240m' AND (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*'))) AND time < ?", (daily_cutoff,))
 
 
 def validate(symbol, period, mode):
@@ -317,7 +340,7 @@ class Bridge:
                             continue
                         symbol = str(record['code'])
                         for key in list(bridge.active):
-                            if key[:2] == (symbol, period):
+                            if push_matches(key, symbol, period):
                                 bars = frame_to_bars(data[(data['code'] == symbol) & (data['k_type'] == record['k_type'])], symbol)
                                 loop.call_soon_threadsafe(asyncio.create_task, publish(key, bars))
                 return ret, data
@@ -345,7 +368,7 @@ class Bridge:
                 ctx = self.ensure()
                 end = end_date or datetime.now(ET if key[0].startswith('US.') else CN_TZ).date()
                 start = end - timedelta(days=days)
-                kwargs = dict(code=key[0], start=str(start), end=str(end), ktype=getattr(KLType, PERIODS[key[1]]),
+                kwargs = dict(code=key[0], start=str(start), end=str(end), ktype=getattr(KLType, opend_kline(key[0], key[1])),
                               autype=AuType.NONE, max_count=1000, session=Session.NONE if key[1] in LONG_PERIODS or not key[0].startswith('US.') else getattr(Session, MODES[key[2]]))
                 all_bars, page = [], None
                 while True:
@@ -356,6 +379,9 @@ class Bridge:
                     all_bars.extend(frame_to_bars(data, key[0]))
                     if page is None:
                         break
+                if is_us_hour(key[0], key[1]):
+                    save_bars((key[0], '60m', key[2]), all_bars)
+                    all_bars = aggregate_hours(all_bars, key[1])
                 save_bars(key, all_bars)
                 self.last_activity = time.monotonic()
                 return len(all_bars)
@@ -471,7 +497,7 @@ class Bridge:
             if len(self.active) >= MAX_STREAMS:
                 raise RuntimeError('实时订阅已达到本服务配置的上限')
             rank={'regular':0,'extended':1,'all':2}
-            prior=self.live_sessions.get(key[:2])
+            prior=self.live_sessions.get(subscription_key(key))
             if prior is not None and rank[prior]>=rank[key[2]]:
                 self.active[key]=time.monotonic()
                 self.last_activity=time.monotonic()
@@ -480,11 +506,11 @@ class Bridge:
                 ctx = self.ensure()
                 self.rate_limit()
                 session = Session.NONE if not key[0].startswith('US.') or key[1] in LONG_PERIODS else getattr(Session, MODES[key[2]])
-                ret, error = ctx.subscribe([key[0]], [getattr(SubType, PERIODS[key[1]])], session=session, subscribe_push=True)
+                ret, error = ctx.subscribe([key[0]], [getattr(SubType, opend_kline(key[0], key[1]))], session=session, subscribe_push=True)
                 if ret != RET_OK:
                     self.raise_quote_error(key[0], error)
                 self.active[key] = time.monotonic()
-                self.live_sessions[key[:2]]=key[2]
+                self.live_sessions[subscription_key(key)]=key[2]
                 self.last_activity = time.monotonic()
             except QuotePermissionError:
                 raise
@@ -498,19 +524,19 @@ class Bridge:
             for key, start in list(self.active.items()):
                 if listeners.get(key) or time.monotonic()-start < 65:
                     continue
-                if any(other!=key and other[:2]==key[:2] for other in self.active):
+                if any(other!=key and subscription_key(other)==subscription_key(key) for other in self.active):
                     self.active.pop(key,None)
                     continue
                 try:
                     self.rate_limit()
-                    ret, error = self.ctx.unsubscribe([key[0]], [getattr(SubType, PERIODS[key[1]])])
+                    ret, error = self.ctx.unsubscribe([key[0]], [getattr(SubType, opend_kline(key[0], key[1]))])
                     if ret != 0:
                         raise RuntimeError(str(error))
                 except Exception as exc:
                     self.reset(exc)
                     break
                 self.active.pop(key, None)
-                self.live_sessions.pop(key[:2],None)
+                self.live_sessions.pop(subscription_key(key),None)
                 self.last_activity = time.monotonic()
 
     def close_if_idle(self):
@@ -527,6 +553,8 @@ async def publish(key, bars):
     if key[2] != 'all':
         bars = [b for b in bars if session_fields(b['time'], key[0])[0] == 'regular' or
                 (key[2] == 'extended' and session_fields(b['time'], key[0])[0] in ('pre', 'post'))]
+    if is_us_hour(key[0], key[1]) and bars:
+        bars = await asyncio.to_thread(rebuild_hour_push, key, bars)
     await asyncio.to_thread(save_bars, key, bars)
     for bar in bars:
         item = {'type': 'bar', 'bar': row_to_bar(dict(symbol=key[0], period=key[1], mode=key[2], **bar))}
@@ -534,6 +562,18 @@ async def publish(key, bars):
             if q.full():
                 q.get_nowait()
             q.put_nowait(item)
+
+
+def rebuild_hour_push(key, bars):
+    source = (key[0], '60m', key[2])
+    save_bars(source, bars)
+    start = min(hour_bucket(b['time'], key[1]) for b in bars)
+    end = max(hour_bucket(b['time'], key[1]) for b in bars) + int(key[1][:-1])*60
+    with connect_db() as db:
+        rows = db.execute('SELECT * FROM bars WHERE symbol=? AND period=? AND mode=? AND time>=? AND time<? ORDER BY time',
+                          (*source, start, end)).fetchall()
+    touched = {hour_bucket(b['time'], key[1]) for b in bars}
+    return [bar for bar in aggregate_hours([dict(row) for row in rows], key[1]) if bar['time'] in touched]
 
 
 async def maintenance():
@@ -558,7 +598,7 @@ async def maintenance():
                     if reconnect:
                         await asyncio.to_thread(bridge.subscribe, key)
                     if reconnect or time.monotonic() - last_fetch.get(key, 0) > max(REFRESH, 600):
-                        days = default_history_days(key[1])
+                        days = default_history_days(key[1], key[0])
                         known, success, latest = await asyncio.to_thread(sync_state, key)
                         span = refresh_span(key, days, known, latest, success)
                         await asyncio.to_thread(bridge.history, key, span)
@@ -699,8 +739,8 @@ async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | N
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     if days is None:
-        days = default_history_days(period)
-    days = min(max(days, 1), retention_days(period))
+        days = default_history_days(period, symbol)
+    days = min(max(days, 1), retention_days(period, symbol))
     limit = min(max(limit, 1), 10000)
     lock = fetch_locks.setdefault(key, asyncio.Lock())
     async with lock:
@@ -734,7 +774,7 @@ async def bars_window(symbol: str, period: str, mode: str, start: int, end: int)
         key = validate(symbol, period, mode)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    if start >= end or end-start > 31*86400 or end > time.time()+86400 or start < time.time()-max(HISTORY_LOOKBACK_DAYS,retention_days(period))*86400:
+    if start >= end or end-start > 31*86400 or end > time.time()+86400 or start < time.time()-max(HISTORY_LOOKBACK_DAYS,retention_days(period, symbol))*86400:
         raise HTTPException(400, '日期范围无效或超出可配置的历史查询范围')
     async with fetch_locks.setdefault(key, asyncio.Lock()):
         with connect_db() as db:
@@ -762,7 +802,7 @@ async def older_bars(symbol: str, period: str, mode: str, before: int, limit: in
     if before <= 0 or before > int(time.time()) + 86400:
         raise HTTPException(400, '无效的历史时间')
     limit = min(max(limit, 1), 2000)
-    cutoff = int(time.time()) - max(HISTORY_LOOKBACK_DAYS,retention_days(period))*86400
+    cutoff = int(time.time()) - max(HISTORY_LOOKBACK_DAYS,retention_days(period, symbol))*86400
     if before <= cutoff:
         return {'bars': [], 'next_before': before, 'has_more': False}
     lock = fetch_locks.setdefault(key, asyncio.Lock())
@@ -832,7 +872,7 @@ async def python_indicator(request: PythonIndicatorRequest):
         validate_inputs(request.inputs)
     except (SyntaxError, ValueError) as exc:
         raise HTTPException(400, python_validation_error(exc))
-    days = default_history_days(key[1])
+    days = default_history_days(key[1], key[0])
     bars_data = await asyncio.to_thread(read_bars, key, days, 5000)
     if not bars_data:
         raise HTTPException(409, '请先加载该图表的 K 线')

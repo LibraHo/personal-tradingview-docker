@@ -28,16 +28,16 @@ import IndicatorAppearance from './IndicatorAppearance';
 import DrawingsPanel from './DrawingsPanel';
 import {fibPrices,drawingStyle,normalizeDrawingRecords,drawingsForPeriod,updateDrawingRecords,newDrawingId,hitTestDrawing,type FibDrawing,type HorizontalDrawing,type TrendDrawing,type DrawingSelection} from './drawingTools';
 const StrategyPanel=lazy(()=>import('./StrategyPanel'));
-type Mode='all'|'extended'|'regular';type Period='1m'|'5m'|'15m'|'30m'|'60m'|'1d'|'1w'|'1mo';
+type Mode='all'|'extended'|'regular';type Period='1m'|'5m'|'15m'|'30m'|'60m'|'120m'|'240m'|'1d'|'1w'|'1mo';
 type Tile={symbol:string;period:Period};
 type StockQuote={symbol:string;name:string;price:number|null;change_percent:number|null;pre_price:number|null;pre_change_percent:number|null;after_price:number|null;after_change_percent:number|null;overnight_price:number|null;overnight_change_percent:number|null;update_time:string};
 const percent=(value:number|null)=>value===null?'—':`${value>0?'+':''}${value.toFixed(2)}%`;
 const priceText=(value:number|null,market:'US'|'CN')=>value===null?'—':`${market==='US'?'$':'¥'}${value.toFixed(2)}`;
 const mergeBars=(older:Bar[],newer:Bar[])=>[...new Map([...older,...newer].map(bar=>[bar.time,bar])).values()].sort((a,b)=>a.time-b.time);
 type TrendPoint={time:number;price:number};
-const periods:Period[]=['1m','5m','15m','30m','60m','1d','1w','1mo'];
+const periods:Period[]=['1m','5m','15m','30m','60m','120m','240m','1d','1w','1mo'];
 const isLongPeriod=(p:string)=>['1d','1w','1mo'].includes(p);
-const periodLabel=(p:string)=>({ '1d':'日线','1w':'周线','1mo':'月线'} as Record<string,string>)[p]||p;
+const periodLabel=(p:string)=>({ '120m':'2小时','240m':'4小时','1d':'日线','1w':'周线','1mo':'月线'} as Record<string,string>)[p]||p;
 const names=['EMA','SMA','VWAP','BBI','BOLL','ATR','MACD','DMI','RSI','VOLUME'];
 const chartSlots=[0,1,2,3];
 const pythonExample='fast = EMA(C, PARAMS["fast"])\nslow = EMA(C, PARAMS["slow"])\nmacd = fast - slow\nsignal = EMA(macd, PARAMS["signal"])\nresult = {"MACD": macd, "Signal": signal, "Histogram": macd - signal}';
@@ -174,7 +174,7 @@ function ChartPane({drawingHost,index,tile,mode,appearance,indicators,active,onA
  useEffect(()=>{const candle=candleRef.current;if(!candle||!isUS||isLongPeriod(tile.period)||mode==='regular')return;const primitive=sessionBackground(filtered);candle.attachPrimitive(primitive);return()=>{if(candleRef.current===candle)candle.detachPrimitive(primitive)}},[filtered,key,isUS,mode,tile.period]);
  useEffect(()=>{const candle=candleRef.current;if(!candle||!showExtremes)return;const primitive=visibleExtremeLabels(filtered);candle.attachPrimitive(primitive);return()=>{if(candleRef.current===candle)candle.detachPrimitive(primitive)}},[showExtremes,filtered,key]);
 const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
- const drawingStep=({'1m':60,'5m':300,'15m':900,'30m':1800,'60m':3600,'1d':86400,'1w':604800,'1mo':2592000} as Record<Period,number>)[tile.period];
+ const drawingStep=tile.symbol.startsWith('US.')||tile.period!=='240m'?({'1m':60,'5m':300,'15m':900,'30m':1800,'60m':3600,'120m':7200,'240m':14400,'1d':86400,'1w':604800,'1mo':2592000} as Record<Period,number>)[tile.period]:86400;
  const timeToDrawingX=(time:number)=>chartRef.current?drawingTimeCoordinate(chartRef.current,time,barTimes,drawingStep):null;
  const pythonIndicators=useMemo(()=>activeIndicators.filter(ind=>ind.name==='PYTHON'),[activeIndicators]);
  const latestPythonBar=filtered.at(-1);
@@ -327,7 +327,7 @@ function restoreMarket(raw:any,market:Market):MarketWorkspace {
     layout:[1,2,4].includes(raw?.layout)?raw.layout:1,
     mode:market==='CN'?'regular':(['all','extended','regular'].includes(raw?.mode)?raw.mode:base.mode),
     tiles:tiles.length?tiles:base.tiles,
-    indicators:Array.isArray(raw?.indicators)?raw.indicators.map((ind:Indicator)=>Array.isArray(ind.periods)&&ind.periods.length===6&&['1m','5m','15m','30m','60m','1d'].every(p=>ind.periods!.includes(p))?{...ind,periods:[...periods]}:ind):base.indicators,
+    indicators:Array.isArray(raw?.indicators)?raw.indicators.map((ind:Indicator)=>Array.isArray(ind.periods)&&((ind.periods.length===6&&['1m','5m','15m','30m','60m','1d'].every(p=>ind.periods!.includes(p)))||(ind.periods.length===8&&['1m','5m','15m','30m','60m','1d','1w','1mo'].every(p=>ind.periods!.includes(p))))?{...ind,periods:[...periods]}:ind):base.indicators,
     drawings:normalizeDrawingRecords(raw?.drawings,'horizontal'),
     trends:normalizeDrawingRecords(raw?.trends,'trend'),
     fibos:normalizeDrawingRecords(raw?.fibos,'fib'),

@@ -79,7 +79,7 @@ POST JSON 示例：
 {"symbol":"US.SNDK","period":"5m","kind":"fib","id":"agent-sndk-fib","points":[{"time":1793107800,"price":120},{"time":1793111400,"price":130}],"levels":[0,0.382,0.5,0.618,1,1.272,1.618],"levelColors":{"0.618":"#00cc88","1.618":"#aa77ff"}}
 ```
 
-上述端点仅为接口格式示例，不是行情分析或建议价位。时间单位是 Unix **秒**，不是毫秒。周期为 `1m/5m/15m/30m/60m/1d/1w/1mo`。A 股使用 `SH.600584`、`SZ.000001` 等代码。`lineWidth` 为 1–4；`lineStyle` 为实线 0、点线 1、虚线 2。单对象 `visible:false` 隐藏自身，整体 `hidden:true` 保留各对象原有显隐。
+上述端点仅为接口格式示例，不是行情分析或建议价位。时间单位是 Unix **秒**，不是毫秒。周期为 `1m/5m/15m/30m/60m/120m/240m/1d/1w/1mo`。A 股使用 `SH.600584`、`SZ.000001` 等代码。`lineWidth` 为 1–4；`lineStyle` 为实线 0、点线 1、虚线 2。单对象 `visible:false` 隐藏自身，整体 `hidden:true` 保留各对象原有显隐。
 
 PATCH 只传需要改动的字段；不能改变 id、股票、周期或类型。PUT visibility 的 JSON 为 `{"symbol":"US.SNDK","period":"5m","hidden":false}`。
 
