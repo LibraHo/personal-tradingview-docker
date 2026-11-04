@@ -1,3 +1,4 @@
+import {advancedCatalog,advancedDefaults} from './advancedCatalog';
 import {useEffect,useId,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import {Activity,X} from 'lucide-react';
@@ -10,7 +11,7 @@ function scopeReason(i:Indicator,index:number,period:string,symbol:string){
  if(i.name==='ORB5'&&(['1d','1w','1mo'].includes(period)||(!symbol.startsWith('US.')&&period==='240m')))return '仅用于日内图';
  return '';
 }
-function description(i:Indicator){try{const p=JSON.parse(i.params);if(p.periods)return p.periods.join(' / ');if(i.name==='MACD')return `${p.fast??12} / ${p.slow??26} / ${p.signal??9}`;if(i.name==='STOCH')return `${p.period??14} / ${p.smoothK??3} / ${p.smoothD??3}`;return p.period?`${p.period} 周期`:''}catch{return '参数待修正'}}
+function description(i:Indicator){try{const p=JSON.parse(i.params);if(Object.hasOwn(advancedCatalog,i.name))return advancedCatalog[i.name].fields.map(f=>p[f.key]??advancedDefaults[i.name][f.key]).join(' / ');if(p.periods)return p.periods.join(' / ');if(i.name==='MACD')return `${p.fast??12} / ${p.slow??26} / ${p.signal??9}`;if(i.name==='STOCH')return `${p.period??14} / ${p.smoothK??3} / ${p.smoothD??3}`;return p.period?`${p.period} 周期`:''}catch{return '参数待修正'}}
 export default function QuickIndicators({indicators,index,period,symbol,onToggle}:{indicators:Indicator[];index:number;period:string;symbol:string;onToggle:(id:string,visible:boolean)=>void}){
  const [open,setOpen]=useState(false),[pos,setPos]=useState({left:8,top:80,maxHeight:500});
  const button=useRef<HTMLButtonElement>(null),panel=useRef<HTMLDivElement>(null),id=useId();

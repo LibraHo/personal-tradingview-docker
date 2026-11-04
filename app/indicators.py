@@ -1,6 +1,7 @@
 from __future__ import annotations
 import math
 from .extra_indicators import calculate_extra
+from .advanced_indicators import calculate_advanced
 
 
 def sma(values, n):
@@ -26,7 +27,12 @@ def ema(values, n):
 
 
 def calculate(bars, name, params=None, reset='session'):
+    if params is not None and not isinstance(params, dict):
+        raise ValueError('指标参数须为对象')
     p = params or {}
+    advanced = calculate_advanced(bars, name, p)
+    if advanced is not None:
+        return advanced
     extra = calculate_extra(bars, name, p)
     if extra is not None:
         return extra

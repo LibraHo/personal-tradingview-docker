@@ -1,12 +1,6 @@
-import ts from 'typescript';
-import {readFileSync} from 'node:fs';
+import {loadTS} from './test-load-ts.mjs';
 import assert from 'node:assert/strict';
-const load=async file=>{
- let source=readFileSync(new URL(file,import.meta.url),'utf8');
- source=source.replace("import {formula} from './formula';",'const formula=()=>()=>[];');
- return import('data:text/javascript;base64,'+Buffer.from(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText).toString('base64'));
-};
-const {compute}=await load('./src/indicators.ts');
+const {compute}=await loadTS('indicators');
 const bars=Array.from({length:30},(_,i)=>({close:i+1}));
 assert.deepEqual(Object.keys(compute(bars,'EMA','{"periods":[5,10,20]}')),['EMA5','EMA10','EMA20']);
 assert.equal(compute(bars,'SMA','{"periods":[5,10,20]}').MA5[4],3);

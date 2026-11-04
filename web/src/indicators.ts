@@ -1,12 +1,15 @@
+import {computeAdvanced} from './advancedIndicators';
+import {advancedCatalog} from './advancedCatalog';
 import {computeExtra} from './extraIndicators';
 import {formula} from './formula';
 export type Bar = {time:number;open:number;high:number;low:number;close:number;volume:number;session:string;trade_date:string;session_date:string};
 export type Indicator = {id:string;name:string;params:string;visible:boolean;title?:string;pane?:'main'|'separate';charts?:number[];periods?:string[];colors?:Record<string,string>};
-export function indicatorPane(indicator:Pick<Indicator,'name'|'pane'>):'main'|'separate'{return indicator.name==='ORB5'?'main':indicator.pane||(['EMA','SMA','BBI','BOLL','VWAP','WMA','VWMA','DC'].includes(indicator.name)?'main':'separate')}
+export function indicatorPane(indicator:Pick<Indicator,'name'|'pane'>):'main'|'separate'{return indicator.name==='ORB5'?'main':indicator.pane||advancedCatalog[indicator.name]?.pane||(['EMA','SMA','BBI','BOLL','VWAP','WMA','VWMA','DC'].includes(indicator.name)?'main':'separate')}
 const sma=(v:(number|null)[],n:number)=>(v.map((_,i)=>i>=n-1&&v.slice(i-n+1,i+1).every(x=>x!==null)?v.slice(i-n+1,i+1).reduce<number>((a,b)=>a+(b||0),0)/n:null));
 const ema=(v:(number|null)[],n:number)=>{let last:number|null=null;return v.map(x=>{if(x===null)return null;last=last===null?x:last+(x-last)*2/(n+1);return last})};
 export function compute(b:Bar[],name:string,params:string):Record<string,(number|null)[]>{
   let p:Record<string,any>={};try{p=JSON.parse(params);if(!p||typeof p!=='object'||Array.isArray(p))throw Error()}catch{throw Error('指标参数 JSON 无效')}
+  const advanced=computeAdvanced(b,name,p);if(advanced)return advanced;
   const extra=computeExtra(b,name,p);if(extra)return extra;
   const c=b.map(x=>x.close), h=b.map(x=>x.high), l=b.map(x=>x.low),v=b.map(x=>x.volume),n=Math.max(1,Number(p.period)||14);
   if(name==='CUSTOM')return {main:formula(String(p.formula||''))(b)};

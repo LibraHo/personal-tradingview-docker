@@ -1,10 +1,10 @@
 import type {Bar} from './indicators';
 type Values=(number|null)[];
 export const extraDefaults:Record<string,Record<string,number>>={WMA:{period:20},VWMA:{period:20},DC:{period:20},STOCH:{period:14,smoothK:3,smoothD:3},CCI:{period:20},WR:{period:14},ROC:{period:9},MOM:{period:10},OBV:{},CMF:{period:20}};
-function period(p:Record<string,unknown>,key:string,fallback:number){const n=Object.hasOwn(p,key)?p[key]:fallback;if(typeof n!=='number'||!Number.isInteger(n)||n<1||n>2000)throw Error(`${key} 须为 1–2000 的整数`);return n}
-function sum(v:Values,n:number):Values{let total=0,valid=0;return v.map((x,i)=>{if(x!==null){total+=x;valid++}if(i>=n&&v[i-n]!==null){total-=v[i-n]!;valid--}return i>=n-1&&valid===n?total:null})}
-function average(v:Values,n:number):Values{return sum(v,n).map(x=>x===null?null:x/n)}
-function extreme(v:number[],n:number,high:boolean):Values{const q:number[]=[];let head=0;return v.map((x,i)=>{while(q.length>head&&(high?v[q[q.length-1]]<=x:v[q[q.length-1]]>=x))q.pop();q.push(i);while(q[head]<=i-n)head++;return i>=n-1?v[q[head]]:null})}
+export function period(p:Record<string,unknown>,key:string,fallback:number){const n=Object.hasOwn(p,key)?p[key]:fallback;if(typeof n!=='number'||!Number.isInteger(n)||n<1||n>2000)throw Error(`${key} 须为 1–2000 的整数`);return n}
+export function sum(v:Values,n:number):Values{let total=0,valid=0;return v.map((x,i)=>{if(x!==null){total+=x;valid++}if(i>=n&&v[i-n]!==null){total-=v[i-n]!;valid--}return i>=n-1&&valid===n?total:null})}
+export function average(v:Values,n:number):Values{return sum(v,n).map(x=>x===null?null:x/n)}
+export function extreme(v:number[],n:number,high:boolean):Values{const q:number[]=[];let head=0;return v.map((x,i)=>{while(q.length>head&&(high?v[q[q.length-1]]<=x:v[q[q.length-1]]>=x))q.pop();q.push(i);while(q[head]<=i-n)head++;return i>=n-1?v[q[head]]:null})}
 /** Rolling windows use only the current/past bars. Null means insufficient or undefined data. */
 export function computeExtra(b:Bar[],name:string,p:Record<string,unknown>):Record<string,Values>|null{
  if(!Object.hasOwn(extraDefaults,name))return null;
