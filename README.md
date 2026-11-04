@@ -99,3 +99,5 @@ result = {"MACD": diff, "Signal": signal, "Histogram": diff - signal}
 准备好原交易证书及 trade-data 后，执行 `docker compose -f docker-compose.yml -f docker-compose.trade.yml up -d --build market`。只运行一个应用容器，保留 HTTP 8088 看盘、HTTPS 8443 看盘交易两个入口。OpenD 仍使用现有容器。具体迁移、备份及回滚见 [合并部署说明](docs/COMBINED-DEPLOYMENT.md)。
 
 两小时/四小时的数据边界与 A 股适配见 [HOUR-PERIODS-20261104.md](docs/HOUR-PERIODS-20261104.md)。
+
+开盘5分钟高低线：设置 → 指标管理 → ORB5，规则及接口见 [OPENING-RANGE-20261104.md](docs/OPENING-RANGE-20261104.md)。

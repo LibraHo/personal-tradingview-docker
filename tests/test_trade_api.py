@@ -101,6 +101,9 @@ class TradeApiTests(unittest.TestCase):
             self.assertNotIn('X-csrf-token', req.headers)
             self.assertEqual(self.client.get('/api/market/trade/commit').status_code, 404)
             self.assertEqual(forward.call_count, 1)
+            self.assertEqual(self.client.get('/api/market/opening-range?symbol=US.AAPL').status_code,200)
+            self.assertTrue(forward.call_args.args[0].full_url.endswith('/api/opening-range?symbol=US.AAPL'))
+            self.assertNotIn('Cookie',forward.call_args.args[0].headers)
         self.assertEqual(self.client.put('/api/market/settings/workspace', headers=self.origin, json={'value':{}}).status_code, 403)
         self.assertFalse(self.broker.rows)
 

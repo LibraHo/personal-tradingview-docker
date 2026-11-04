@@ -27,6 +27,7 @@ from .depth import DepthFeed
 from .opend_connection import connect_quote_context
 from . import drawing_api
 from .hour_bars import is_us_hour, aggregate_hours, hour_bucket
+from .opening_range import range_times, select_opening_range
 
 depth_feed = DepthFeed()
 
@@ -437,6 +438,25 @@ class Bridge:
         from .stock_search import search_cn_symbols
         return search_cn_symbols(self, connect_db, query, limit)
 
+    def opening_five(self, symbol, day):
+        from moomoo import KLType, AuType, Session, RET_OK
+        with self.lock:
+            self.check_permission(symbol)
+            try:
+                self.rate_limit()
+                ret, data, _ = self.ensure().request_history_kline(code=symbol,start=day,end=day,
+                    ktype=KLType.K_5M,autype=AuType.NONE,max_count=2,
+                    session=Session.RTH if symbol.startswith('US.') else Session.NONE)
+                if ret != RET_OK:self.raise_quote_error(symbol,data)
+                rows=frame_to_bars(data,symbol)
+                save_bars((symbol,'5m','regular'),rows)
+                self.last_activity=time.monotonic()
+                return rows
+            except QuotePermissionError:raise
+            except Exception as exc:
+                self.reset(exc)
+                raise
+
     def names(self, symbols):
         from moomoo import RET_OK
         with self.lock:
@@ -840,6 +860,44 @@ async def indicators(symbol: str, period: str, mode: str, name: str, params: str
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(400, str(exc))
     return {'time': [b['time'] for b in response['bars']], 'values': values, 'stale': response['stale']}
+
+
+@app.get('/api/opening-range')
+async def opening_range(symbol: str, date: str | None = None):
+    try:
+        symbol=validate(symbol,'5m','regular')[0]
+        zone=ET if symbol.startswith('US.') else CN_TZ
+        today=datetime.fromtimestamp(time.time(),zone).date()
+        day=date or str(today)
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',day):raise ValueError('日期格式应为 YYYY-MM-DD')
+        times=range_times(symbol,day)
+        if times['open_at']>time.time()+86400 or times['open_at']<time.time()-HISTORY_LOOKBACK_DAYS*86400:
+            raise ValueError('日期超出可查询范围')
+    except ValueError as exc:raise HTTPException(400,str(exc))
+    if time.time()<times['confirmed_at']+2:
+        return {**times,'symbol':symbol,'status':'forming','message':'等待常规开盘后5分钟收线'}
+    cache_key=f'opening-range.{symbol}.{day}'
+    async with fetch_locks.setdefault((symbol,'opening-range',day),asyncio.Lock()):
+        with connect_db() as db:
+            row=db.execute('SELECT value FROM settings WHERE key=?',(cache_key,)).fetchone()
+        cached=json.loads(row[0]) if row else None
+        label=os.getenv('OPENING_RANGE_BAR_LABEL','end')
+        ttl=30 if cached and cached.get('status')=='missing' and day==str(today) else 900
+        if cached and cached.get('label')==label and time.time()-cached.get('checked',0)<ttl:
+            return {**cached,'source':'nas_cache','stale':False}
+        try:
+            rows=await asyncio.to_thread(bridge.opening_five,symbol,day)
+            result=select_opening_range(rows,symbol,times)
+        except Exception as exc:
+            if cached and cached.get('status')=='ready' and cached.get('label')==label:
+                return {**cached,'source':'nas_cache','stale':True,'error':str(exc)}
+            raise HTTPException(503,f'开盘5分钟行情暂不可用：{exc}')
+        result=result or {**times,'symbol':symbol,'status':'missing','message':'当天尚未取得开盘5分钟行情，休市日不画线'}
+        result.update(checked=time.time(),label=label)
+        with connect_db() as db:
+            db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                       (cache_key,json.dumps(result)))
+        return {**result,'source':'opend','stale':False}
 
 
 class PythonIndicatorRequest(BaseModel):
