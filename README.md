@@ -101,3 +101,5 @@ result = {"MACD": diff, "Signal": signal, "Histogram": diff - signal}
 两小时/四小时的数据边界与 A 股适配见 [HOUR-PERIODS-20261104.md](docs/HOUR-PERIODS-20261104.md)。
 
 开盘5分钟高低线：设置 → 指标管理 → ORB5，规则及接口见 [OPENING-RANGE-20261104.md](docs/OPENING-RANGE-20261104.md)。
+
+常用指标扩展与工具栏快捷开关见 [INDICATORS-20261104.md](docs/INDICATORS-20261104.md)。

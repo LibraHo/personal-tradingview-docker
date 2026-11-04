@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math
+from .extra_indicators import calculate_extra
 
 
 def sma(values, n):
@@ -26,6 +27,9 @@ def ema(values, n):
 
 def calculate(bars, name, params=None, reset='session'):
     p = params or {}
+    extra = calculate_extra(bars, name, p)
+    if extra is not None:
+        return extra
     close = [b['close'] for b in bars]
     high = [b['high'] for b in bars]
     low = [b['low'] for b in bars]
