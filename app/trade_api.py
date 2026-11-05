@@ -67,6 +67,9 @@ def create_app(data_dir=None, broker=None):
             await asyncio.wait_for(gate.acquire(), timeout=.2)
         except asyncio.TimeoutError:
             raise HTTPException(503, '上一项券商操作仍在处理，请稍后刷新；不要重复下单')
+        if getattr(app.state, 'opend_restarting', False) and method not in {'lock', 'state', 'preferences'}:
+            gate.release()
+            raise HTTPException(503, 'OpenD 正在重启登录，请在连接面板确认恢复后再操作')
         future = asyncio.get_running_loop().run_in_executor(executor, getattr(engine, method), *args)
         try:
             return await asyncio.wait_for(asyncio.shield(future), 15)
@@ -327,6 +330,9 @@ def create_app(data_dir=None, broker=None):
 
     from .strategy_api import register_strategy_api
     strategy_poll=register_strategy_api(app,root,sessions,rpc)
+
+    from .opend_login_api import register_opend_login
+    register_opend_login(app, root, gate)
 
     static = Path(__file__).parent / 'static'
     if (static / 'assets').exists():

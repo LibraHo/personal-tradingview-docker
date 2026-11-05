@@ -1,0 +1,8 @@
+# Merge after docker-compose.yml and docker-compose.trade.yml.
+# The source must be the SAME absolute private directory mounted into OpenD.
+services:
+  market:
+    environment:
+      OPEND_LOGIN_SOCKET: /run/nas-market-opend/login.sock
+    volumes:
+      - ${OPEND_LOGIN_SHARED_DIR:?Set the absolute OpenD login-runtime directory}:/run/nas-market-opend

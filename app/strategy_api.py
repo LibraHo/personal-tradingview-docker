@@ -55,7 +55,9 @@ def register_strategy_api(app,root,sessions,rpc):
         sid=str(body.get('id',''));current=item(sid)
         try:
             if body.get('enabled') is not True:return store.start(sid,False)
+            if getattr(app.state,'opend_restarting',False):raise ValueError('OpenD 正在重启登录，请稍后再启动策略')
             baseline=await market_evaluate(current['config'],True)
+            if getattr(app.state,'opend_restarting',False):raise ValueError('OpenD 正在重启登录，请稍后再启动策略')
             if baseline.get('stale'):raise ValueError('行情为缓存，暂不能启动监控')
             if store.get(sid)['revision']!=current['revision']:raise ValueError('配置已变化，请重新启动')
             store.event(sid,'START','从当前收线开始监控，不补下历史订单',baseline)

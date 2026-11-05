@@ -1,0 +1,9 @@
+# Merge with the existing OpenD Compose file. Keep its image, ports and home/app volumes.
+services:
+  opend:
+    entrypoint: ["python3", "-u", "/opt/nas-market-login/supervisor.py"]
+    volumes:
+      - ./login-adapter:/opt/nas-market-login:ro
+      - ${OPEND_LOGIN_SHARED_DIR:-./login-runtime}:/run/nas-market-opend
+    environment:
+      OPEND_LOGIN_DIR: /run/nas-market-opend

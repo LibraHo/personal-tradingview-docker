@@ -20,6 +20,7 @@ import CachePanel from './CachePanel';
 import StockSearch from './StockSearch';
 import {resetChartViewport,resetPriceScales,markViewportReady} from './chartViewport';
 import SettingsPanel,{type SettingsTab} from './SettingsPanel';
+import OpenDPanel from './OpenDPanel';
 import CandleSettings from './CandleSettings';
 import {defaultCandleAppearance,normalizeCandleAppearance,candleSeriesOptions,candleBodyColor,volumePalette,type CandleAppearance} from './candleAppearance';
 import type {CSSProperties} from 'react';
@@ -383,7 +384,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   const [dockProduct,setDockProduct]=useState<'stocks'|'options'>(new URLSearchParams(location.search).get('intent')==='options'?'options':'stocks');
   const [dockSymbol,setDockSymbol]=useState(new URLSearchParams(location.search).get('symbol')||'US.SNDK');
   const [appearanceMarket,setAppearanceMarket]=useState<Market>('US');
-  const [settingsTab,setSettingsTab]=useState<SettingsTab|null>(null),[settingsHost,setSettingsHost]=useState<HTMLDivElement|null>(null);
+  const [settingsTab,setSettingsTab]=useState<SettingsTab|null>(new URLSearchParams(location.search).get('settings')==='connection'?'connection':null),[settingsHost,setSettingsHost]=useState<HTMLDivElement|null>(null);
  const [drawingHost,setDrawingHost]=useState<HTMLDivElement|null>(null);
  const [watchCollapsed,setWatchCollapsed]=useState(()=>{try{return localStorage.getItem('chart-watch-collapsed')==='yes'}catch{return false}});
  const toggleWatch=()=>{if(matchMedia('(max-width:700px)').matches){setMobileWatchOpen(v=>!v);return}setWatchCollapsed(v=>{try{localStorage.setItem('chart-watch-collapsed',v?'no':'yes')}catch{}return !v})};
@@ -569,7 +570,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   return <div style={{'--market-up':ws.chartAppearance.upColor,'--market-down':ws.chartAppearance.downColor} as CSSProperties} className={`shell chart-workspace ${watchCollapsed?'watch-collapsed':''}`}>
     <header><div className="brand"><div className="brand-mark"><Activity size={20}/></div><div><strong>NAS MARKET</strong><small>私人多市场看盘终端</small></div></div>
       <div className="current-instrument" aria-label="当前查看股票"><span>当前查看</span><strong title={stockNames[current.symbol]||quotes[current.symbol]?.name||current.symbol}>{stockNames[current.symbol]||quotes[current.symbol]?.name||current.symbol.replace('US.','')}</strong><code>{current.symbol}</code><small>图 {active+1} · {periodLabel(current.period)}</small></div>
-      <div className="workspace-actions"><button className="secondary" aria-label="设置" disabled={!ready} onClick={()=>setSettingsTab('indicators')}><Settings2 size={16}/> 设置</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>{setActive(i=>Math.min(i,n-1));updateMarket(w=>({...w,layout:n,tiles:Array.from({length:Math.max(n,w.tiles.length)},(_,i)=>w.tiles[i]||{symbol:w.tiles[0]?.symbol||'US.SNDK',period:(["5m","15m","60m","1d"] as Period[])[i]})}))}}>{n}</button>)}</div></div><div className="header-right"><button className="watch-toggle" aria-label="切换自选侧栏" aria-expanded={!watchCollapsed} onClick={toggleWatch}>自选</button><span className="connection">{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:status.last_error?<><span className="dot red"/> OpenD 连接异常</>:<><span className="dot idle"/> OpenD 按需连接</>}</span><button className="icon-button" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
+      <div className="workspace-actions"><button className="secondary" aria-label="设置" disabled={!ready} onClick={()=>setSettingsTab('indicators')}><Settings2 size={16}/> 设置</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>{setActive(i=>Math.min(i,n-1));updateMarket(w=>({...w,layout:n,tiles:Array.from({length:Math.max(n,w.tiles.length)},(_,i)=>w.tiles[i]||{symbol:w.tiles[0]?.symbol||'US.SNDK',period:(["5m","15m","60m","1d"] as Period[])[i]})}))}}>{n}</button>)}</div></div><div className="header-right"><button className="watch-toggle" aria-label="切换自选侧栏" aria-expanded={!watchCollapsed} onClick={toggleWatch}>自选</button><button className="connection" aria-label="OpenD 连接与登录" title="管理 OpenD 连接与登录" onClick={()=>setSettingsTab('connection')}>{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:status.last_error?<><span className="dot red"/> OpenD 连接异常</>:<><span className="dot idle"/> OpenD 按需连接</>}</button><button className="icon-button" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
     </header>
     <div className="app-body"><aside className={mobileWatchOpen?'mobile-open':''}>
       <div className="side-title"><span>自选行情</span><span className="side-title-caption">WATCHLIST</span></div>
@@ -620,7 +621,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
 
     </main></div>
 
-    {settingsTab&&<SettingsPanel tab={settingsTab} onTab={tab=>{if(tab==='appearance')setAppearanceMarket(market);setSettingsTab(tab)}} onClose={()=>setSettingsTab(null)} onContentHost={setSettingsHost}>{settingsTab==='appearance'?<CandleSettings market={appearanceMarket} onMarket={setAppearanceMarket} appearance={state.markets[appearanceMarket].chartAppearance} onChange={patch=>setState(old=>({...old,markets:{...old.markets,[appearanceMarket]:{...old.markets[appearanceMarket],chartAppearance:{...old.markets[appearanceMarket].chartAppearance,...patch}}}}))}/>:settingsTab==='indicators'?indicatorSettings:settingsTab==='cache'?<CachePanel embedded symbol={current?.symbol} onClose={()=>setSettingsTab(null)}/>:market==='CN'?<p>A 股暂不支持美股盘口密集线。</p>:<p className="settings-depth-caption">{current.symbol} · 参数按股票保存；工具栏“挂档密集线”可直接开关。</p>}</SettingsPanel>}
+    {settingsTab&&<SettingsPanel tab={settingsTab} onTab={tab=>{if(tab==='appearance')setAppearanceMarket(market);setSettingsTab(tab)}} onClose={()=>setSettingsTab(null)} onContentHost={setSettingsHost}>{settingsTab==='connection'?<OpenDPanel tradingUrl={tradingUrl} onReady={()=>setRefresh(v=>v+1)}/>:settingsTab==='appearance'?<CandleSettings market={appearanceMarket} onMarket={setAppearanceMarket} appearance={state.markets[appearanceMarket].chartAppearance} onChange={patch=>setState(old=>({...old,markets:{...old.markets,[appearanceMarket]:{...old.markets[appearanceMarket],chartAppearance:{...old.markets[appearanceMarket].chartAppearance,...patch}}}}))}/>:settingsTab==='indicators'?indicatorSettings:settingsTab==='cache'?<CachePanel embedded symbol={current?.symbol} onClose={()=>setSettingsTab(null)}/>:market==='CN'?<p>A 股暂不支持美股盘口密集线。</p>:<p className="settings-depth-caption">{current.symbol} · 参数按股票保存；工具栏“挂档密集线”可直接开关。</p>}</SettingsPanel>}
 
   </div>;
 }
