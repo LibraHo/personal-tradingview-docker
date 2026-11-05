@@ -10,6 +10,16 @@ spec.loader.exec_module(module)
 
 
 class LoginStateTests(unittest.TestCase):
+    def test_native_login_errors_across_every_split(self):
+        for message, expected in [('登录失败,账号密码不齐全', 'incomplete'),
+                                  ('登录失败,网络异常，请稍后再试', 'network')]:
+            wire = message.encode()
+            for split in range(len(wire) + 1):
+                state = module.LoginState()
+                state.feed(wire[:split]);state.feed(wire[split:])
+                self.assertEqual(state.error, expected, (message, split))
+                self.assertEqual(state.stage, 'error')
+
     def test_split_unicode_prompts_and_password_not_retained(self):
         state = module.LoginState()
         for byte in 'OpenD 10.11.7108\n请输入账号：'.encode():

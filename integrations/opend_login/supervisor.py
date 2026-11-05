@@ -18,6 +18,7 @@ import threading
 import time
 
 ERRORS = {
+    'incomplete': 'OpenD 未完整接收账号和密码，请重新开始登录。',
     'network': 'OpenD 登录遇到网络异常，请检查旁路由或代理线路后重试。',
     'password': 'OpenD 提示账号或密码不正确，请重新输入。',
     'verification': '验证码不正确或已失效，请重新获取。',
@@ -31,7 +32,7 @@ EVENTS = re.compile(
     r'|(?P<sms>需要手机验证码|Need phone verification code|Phone verification code is required)'
     r'|(?P<captcha>需要图形验证码|Need (?:picture|image) verification code)'
     r'|(?P<ready>登录成功|Login success(?:ful)?)'
-    r'|(?P<error>登录失败|Login fail(?:ed|ure)?|网络库内部异常|密码不正确|密码错误|验证码错误)', re.I)
+    r'|(?P<error>登录失败|Login fail(?:ed|ure)?|网络库内部异常|网络异常|账号密码不齐全|密码不正确|密码错误|验证码错误)', re.I)
 
 class RestartNotStarted(ValueError):
     pass
@@ -79,7 +80,8 @@ class LoginState:
                     remember = True
                 elif kind == 'error':
                     text = self.buffer
-                    self.error = ('network' if '网络库内部异常' in text else
+                    self.error = ('incomplete' if '账号密码不齐全' in text else
+                                  'network' if '网络库内部异常' in text or '网络异常' in text else
                                   'password' if '密码错误' in text or '密码不正确' in text else
                                   'verification' if '验证码错误' in text else 'login')
                     self.change(self.challenge if self.error == 'verification' and self.challenge else 'error')
@@ -252,6 +254,8 @@ class Supervisor:
         import pty
         import select
         import termios
+        import fcntl
+        import struct
         while not self.stop.is_set():
             self.restart.clear()
             with self.state.lock:
@@ -261,6 +265,10 @@ class Supervisor:
                 self.state.picture = None
                 self.state.decoder.reset()
                 self.master, self.slave = pty.openpty()
+                # openpty defaults to 0x0: OpenD's native editor then silently
+                # drops input characters. Leave room for the 512-byte input cap.
+                fcntl.ioctl(self.slave, termios.TIOCSWINSZ,
+                            struct.pack('HHHH', 32, 1024, 0, 0))
                 attrs = termios.tcgetattr(self.slave)
                 attrs[3] &= ~(termios.ECHO | termios.ECHONL)
                 termios.tcsetattr(self.slave, termios.TCSANOW, attrs)
