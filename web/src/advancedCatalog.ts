@@ -1,3 +1,4 @@
+import {signalSettings} from './sixpulseSignals';
 type Field={key:string;label:string;value:number;step?:number;max?:number};
 type Entry={label:string;pane:'main'|'separate';description:string;fields:Field[]};
 const length=(value:number,key='period',label='计算周期'):Field=>({key,label,value});
@@ -26,13 +27,15 @@ export const advancedCatalog:Record<string,Entry>={
  BBP:{label:'%B · 布林位置',pane:'separate',description:'(收盘−下轨)/(上轨−下轨)，下轨为 0，上轨为 1。',fields:[length(20),factor(2,'stddev','标准差倍数')]},
  AROON:{label:'Aroon · 趋势时效',pane:'separate',description:'最近高低点距当前的根数，范围 0–100；相同极值取最近一根。',fields:[length(25)]},
 };
+advancedCatalog.SIXPULSE_SIGNAL={...advancedCatalog.SIXPULSE,label:'六脉神剑 · 主图上下车',pane:'main',description:'独立设置本指标的各项周期。红色代表满足该项条件，不是 K 线涨跌色。已确认信号仍会受历史补齐或行情校正影响。'};
 export const advancedDefaults=Object.fromEntries(Object.entries(advancedCatalog).map(([name,v])=>[name,Object.fromEntries(v.fields.map(f=>[f.key,f.value]))]));
 export function advancedParams(name:string,input:Record<string,unknown>):Record<string,number>|null{
  if(!Object.hasOwn(advancedCatalog,name))return null;
  const result:Record<string,number>={};
  for(const f of advancedCatalog[name].fields){const v=Object.hasOwn(input,f.key)?input[f.key]:f.value;if(typeof v!=='number'||!Number.isFinite(v)||v<=0||v>(f.max??2000)||(!f.step&&!Number.isInteger(v)))throw Error(`${f.label}须为有效${f.step?'正数':'整数'}（≤${f.max??2000}）`);result[f.key]=v}
  if('fast'in result&&result.fast>=result.slow)throw Error('慢线周期须大于快线周期');
- if(name==='SIXPULSE'&&(result.rsiFast>=result.rsiSlow||result.mtmFast>=result.mtmSlow))throw Error('RSI、MTM 慢线周期须大于快线周期');
+ if(['SIXPULSE','SIXPULSE_SIGNAL'].includes(name)&&(result.rsiFast>=result.rsiSlow||result.mtmFast>=result.mtmSlow))throw Error('RSI、MTM 慢线周期须大于快线周期');
  if(name==='SAR'&&(result.start>result.maximum||result.increment>result.maximum))throw Error('初始加速和步长不得大于最大加速');
+ if(name==='SIXPULSE_SIGNAL')signalSettings(input);
  return result;
 }

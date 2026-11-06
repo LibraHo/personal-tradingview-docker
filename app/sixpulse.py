@@ -13,6 +13,39 @@ DEFAULTS = dict(fast=8, slow=13, signal=5, kdjPeriod=8, smoothK=3,
 ROWS = ('MACD', 'KDJ', 'RSI', 'LWR', 'BBI', 'MTM')
 
 
+def signal_settings(inputs):
+    enabled = inputs.get('enabled', list(ROWS))
+    if not isinstance(enabled, list) or not enabled or any(not isinstance(x,str) or x not in ROWS for x in enabled) or len(set(enabled)) != len(enabled):
+        raise ValueError('请勾选至少一项不重复的六脉指标')
+    n = len(enabled)
+    enter, leave = inputs.get('enterReds', min(5,n)), inputs.get('exitGreens', min(3,n))
+    for value in (enter, leave):
+        if isinstance(value,bool) or not isinstance(value,(int,float)) or not 1<=value<=n or int(value)!=value:
+            raise ValueError(f'提示门槛须为 1–{n} 的整数')
+    if enter+leave<=n:
+        raise ValueError('上车红数 + 下车绿数须大于参与指标数，避免同根冲突')
+    confirm=inputs.get('confirm','next_bar')
+    if confirm not in ('next_bar','live'):raise ValueError('确认方式不正确')
+    return enabled,int(enter),int(leave),confirm
+
+
+def signal_values(values, inputs):
+    enabled,enter,leave,confirm=signal_settings(inputs)
+    size=len(values['MACD']);reds=[];greens=[];entry=[];exit_=[];states=[];holding=False
+    for i in range(size):
+        valid=all(values[name][i] is not None for name in enabled)
+        r=sum(values[name][i] for name in enabled) if valid else None
+        g=len(enabled)-r if valid else None
+        reds.append(r);greens.append(g)
+        if not valid or (confirm=='next_bar' and i==size-1):
+            entry.append(None);exit_.append(None);states.append(None);continue
+        buy=sell=0
+        if not holding and r>=enter:holding=True;buy=1
+        elif holding and g>=leave:holding=False;sell=1
+        entry.append(buy);exit_.append(sell);states.append(int(holding))
+    return {**values,'SCORE':reds,'REDS':reds,'GREENS':greens,'ENTRY':entry,'EXIT':exit_,'STATE':states}
+
+
 def smooth(values, n, exponential=False):
     last, out = None, []
     alpha = 2/(n+1) if exponential else 1/n

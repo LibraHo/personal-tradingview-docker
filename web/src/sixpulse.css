@@ -1,0 +1,4 @@
+.sixpulse-votes{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 14px}
+.indicator-parameters .sixpulse-votes label{display:flex;flex-direction:row;align-items:center;gap:7px;padding:8px 12px;border:1px solid #354a65;border-radius:6px;background:#101d2e;font-size:12px;cursor:pointer}
+.indicator-parameters .sixpulse-votes label:has(input:checked){border-color:#548dce;background:#203e60;color:#e5efff}
+.indicator-parameters .sixpulse-votes input[type=checkbox]{width:15px;height:15px;margin:0;accent-color:#66a7f4}

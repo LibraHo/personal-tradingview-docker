@@ -12,7 +12,7 @@ for(let t=0;t<cases.length;t++){
  const {name,params,dataset}=cases[t],data=datasets[dataset],actual=compute(data,name,JSON.stringify(params));
  assert.deepEqual(Object.keys(actual),Object.keys(expected[t]),name);
  for(const [key,arr] of Object.entries(actual)){assert.equal(arr.length,data.length);arr.forEach((x,i)=>{const y=expected[t][key][i];if(x===null||y===null)assert.equal(x,y,`${name} ${key} ${i} warmup`);else assert.ok(Number.isFinite(x)&&Math.abs(x-y)<1e-8*Math.max(1,Math.abs(y)),`${name} ${key} ${i}: ${x} vs ${y}`)})}
- const prefix=compute(data.slice(0,100),name,JSON.stringify(params));for(const key of Object.keys(actual))assert.deepEqual(prefix[key],actual[key].slice(0,100),name+' no lookahead');
+ const prefix=compute(data.slice(0,100),name,JSON.stringify(params));for(const key of Object.keys(actual)){const confirmedLast=name==='SIXPULSE_SIGNAL'&&['ENTRY','EXIT','STATE'].includes(key),size=confirmedLast?Math.max(0,prefix[key].length-1):prefix[key].length;assert.deepEqual(prefix[key].slice(0,size),actual[key].slice(0,size),name+' no future prices');if(confirmedLast&&prefix[key].length)assert.equal(prefix[key].at(-1),null)}
 }
 for(const [name,item] of Object.entries(advancedCatalog)){
  assert.equal(indicatorPane({name}),item.pane);

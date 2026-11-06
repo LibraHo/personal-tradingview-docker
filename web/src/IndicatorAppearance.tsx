@@ -4,11 +4,12 @@ import {selectedColor,indicatorDefaultColor} from './histogramColors';
 export default function IndicatorAppearance({indicator,onChange}:{indicator:Indicator;onChange:(value:Partial<Indicator>)=>void}){
  const [line,setLine]=useState('');let keys:string[]=[];
  try{if(indicator.name==='PYTHON'){const code=JSON.parse(indicator.params).code||'';keys=[...code.matchAll(/["']([^"'\n]{1,64})["']\s*:/g)].map((x:RegExpMatchArray)=>x[1])}else keys=Object.keys(compute([],indicator.name,indicator.params))}catch{/* Parameter errors are shown by the indicator editor. */}
- if(indicator.name==='SUPERTREND'||indicator.name==='SIXPULSE')keys=[];
+ if(['SUPERTREND','SIXPULSE','SIXPULSE_SIGNAL'].includes(indicator.name))keys=[];
  if(indicator.name==='ORB5')keys=['high','low'];
- keys=[...new Set([...keys,...Object.keys(indicator.colors||{})])].filter(k=>!['hist','volume','stop_long','stop_short','positiveStrong','positiveWeak','negativeStrong','negativeWeak','volumeUp','volumeDown',...(indicator.name==='SUPERTREND'||indicator.name==='SIXPULSE'?['up','down','main','direction']:[]),...(indicator.name==='AO'?['rising','falling']:[])].includes(k));
+ keys=[...new Set([...keys,...Object.keys(indicator.colors||{})])].filter(k=>!['hist','volume','stop_long','stop_short','positiveStrong','positiveWeak','negativeStrong','negativeWeak','volumeUp','volumeDown',...(['SUPERTREND','SIXPULSE','SIXPULSE_SIGNAL'].includes(indicator.name)?['up','down','entry','exit','main','direction']:[]),...(indicator.name==='AO'?['rising','falling']:[])].includes(k));
  const fields=keys.map((key,i)=>({key,label:key==='main'?'主线':key==='average'?'量均线':indicator.name==='ORB5'?(key==='high'?'开盘高点':'开盘低点'):key,color:indicatorDefaultColor(indicator.name,key,i)}));
  if(['MACD','PPO'].includes(indicator.name))fields.push(...[{key:'positiveStrong',label:'正值增强 · 深绿',color:'#26A69A'},{key:'positiveWeak',label:'正值缩小 · 浅绿',color:'#B2DFDB'},{key:'negativeStrong',label:'负值增强 · 深红',color:'#FF5252'},{key:'negativeWeak',label:'负值缩小 · 浅红',color:'#FFCDD2'}]);
+ if(indicator.name==='SIXPULSE_SIGNAL')fields.push({key:'entry',label:'上车提示',color:'#ef5350'},{key:'exit',label:'下车提示',color:'#26a69a'});
  if(indicator.name==='SIXPULSE')fields.push({key:'up',label:'满足条件 · 向上箭头',color:'#ef5350'},{key:'down',label:'未满足 · 向下箭头',color:'#26a69a'});
  if(indicator.name==='SUPERTREND')fields.push({key:'up',label:'上涨趋势',color:'#26a69a'},{key:'down',label:'下跌趋势',color:'#ef5350'});
  if(indicator.name==='AO')fields.push({key:'rising',label:'动量上升',color:'#26a69a'},{key:'falling',label:'动量下降',color:'#ef5350'});

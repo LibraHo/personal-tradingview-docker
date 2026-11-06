@@ -125,7 +125,12 @@ class AdvancedIndicatorTests(unittest.TestCase):
             with self.subTest(name=name):
                 full = calculate(data, name)
                 for length in (1, 2, 30, 75, 149):
-                    self.assertEqual(calculate(data[:length], name), {k: v[:length] for k, v in full.items()})
+                    expected = {k: v[:length] for k, v in full.items()}
+                    # next_bar deliberately leaves the newest bar unconfirmed;
+                    # its price is never used to decide the preceding signal.
+                    if name == 'SIXPULSE_SIGNAL' and length:
+                        for key in ('ENTRY', 'EXIT', 'STATE'):expected[key][-1] = None
+                    self.assertEqual(calculate(data[:length], name), expected)
                 corrected = data[:-1]+[dict(data[-1], high=data[-1]['high']+5, close=data[-1]['high']+4, volume=999)]
                 self.assertEqual({k: v[:-1] for k, v in calculate(corrected, name).items()}, {k: v[:-1] for k, v in full.items()})
 
