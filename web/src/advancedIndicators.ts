@@ -1,4 +1,5 @@
 import type {Bar} from './indicators';
+import {computeSixPulse} from './sixpulse';
 import {advancedParams} from './advancedCatalog';
 import {average,sum,extreme} from './extraIndicators';
 type V=(number|null)[];
@@ -9,6 +10,7 @@ function rsi(c:number[],n:number):V{const g=rma(c.map((x,i)=>i?Math.max(0,x-c[i-
 function atr(b:Bar[],n:number){return rma(b.map((x,i)=>i?Math.max(x.high-x.low,Math.abs(x.high-b[i-1].close),Math.abs(x.low-b[i-1].close)):x.high-x.low),n)}
 export function computeAdvanced(b:Bar[],name:string,input:Record<string,unknown>):Record<string,V>|null{
  const p=advancedParams(name,input);if(!p)return null;
+ if(name==='SIXPULSE')return computeSixPulse(b,p);
  const c=b.map(x=>x.close),h=b.map(x=>x.high),l=b.map(x=>x.low),n=p.period;
  if(name==='KDJ'){const hi=extreme(h,n,true),lo=extreme(l,n,false);let k=50,d=50;const ks:V=[],ds:V=[],js:V=[];c.forEach((x,i)=>{if(hi[i]===null){ks.push(null);ds.push(null);js.push(null);return}const raw=hi[i]===lo[i]?50:100*(x-lo[i]!)/(hi[i]!-lo[i]!);k+=(raw-k)/p.smoothK;d+=(k-d)/p.smoothD;ks.push(k);ds.push(d);js.push(3*k-2*d)});return {k:ks,d:ds,j:js}}
  if(name==='MFI'){const tp=b.map(x=>(x.high+x.low+x.close)/3),pos=sum(tp.map((x,i)=>i?(x>tp[i-1]?x*b[i].volume:0):null),n),neg=sum(tp.map((x,i)=>i?(x<tp[i-1]?x*b[i].volume:0):null),n);return {main:pos.map((x,i)=>x===null?null:!x&&!neg[i]?null:!neg[i]?100:100-100/(1+x/neg[i]!))}}

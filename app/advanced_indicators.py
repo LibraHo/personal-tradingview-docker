@@ -1,8 +1,10 @@
 """Common indicators, explicitly seeded and based only on past/current OHLCV."""
 import math
 from .extra_indicators import average, rolling_sum, extreme
+from .sixpulse import DEFAULTS as SIXPULSE_DEFAULTS, calculate_sixpulse
 
 DEFAULTS = {
+    'SIXPULSE': SIXPULSE_DEFAULTS,
     'KDJ': dict(period=9, smoothK=3, smoothD=3), 'MFI': dict(period=14),
     'KC': dict(period=20, atrPeriod=10, multiplier=2), 'SUPERTREND': dict(period=10, multiplier=3),
     'SAR': dict(start=.02, increment=.02, maximum=.2),
@@ -30,6 +32,8 @@ def parameters(name, inputs):
         result[key] = value if fractional else int(value)
     if 'fast' in result and result['fast'] >= result['slow']:
         raise ValueError('慢线周期须大于快线周期')
+    if name == 'SIXPULSE' and (result['rsiFast'] >= result['rsiSlow'] or result['mtmFast'] >= result['mtmSlow']):
+        raise ValueError('RSI、MTM 慢线周期须大于快线周期')
     if name == 'SAR' and (result['start'] > result['maximum'] or result['increment'] > result['maximum']):
         raise ValueError('初始加速和步长不得大于最大加速')
     return result
@@ -92,6 +96,8 @@ def calculate_advanced(bars, name, inputs):
     p = parameters(name, inputs)
     if p is None:
         return None
+    if name == 'SIXPULSE':
+        return calculate_sixpulse(bars, p)
     c, h, l = ([b[key] for b in bars] for key in ('close', 'high', 'low'))
     n = p.get('period')
     if name == 'KDJ':

@@ -4,6 +4,7 @@ const length=(value:number,key='period',label='计算周期'):Field=>({key,label
 const factor=(value:number,key='multiplier',label='ATR 倍数',max=100):Field=>({key,label,value,step:.01,max});
 const pair=(fast:number,slow:number)=>[length(fast,'fast','快线周期'),length(slow,'slow','慢线周期')];
 export const advancedCatalog:Record<string,Entry>={
+ SIXPULSE:{label:'六脉神剑 · 六项共振',pane:'separate',description:'按 Mai 版本计算：MACD、KDJ、RSI、LWR、BBI、MTM 六排箭头。红色向上、绿色向下，可改颜色；相等归下，算不出的值显示灰点。递推平滑从首个有效值初始化，窗口不足不出信号。分数不是胜率，未收线时会变化。可在下方选择显示周期。',fields:[length(8,'fast','MACD 快线'),length(13,'slow','MACD 慢线'),length(5,'signal','MACD 信号'),length(8,'kdjPeriod','KDJ 窗口'),length(3,'smoothK','K 平滑'),length(3,'smoothD','D 平滑'),length(5,'rsiFast','RSI 快线'),length(13,'rsiSlow','RSI 慢线'),length(13,'lwrPeriod','LWR 窗口'),length(3,'lwrSmooth1','LWR 一次平滑'),length(3,'lwrSmooth2','LWR 二次平滑'),length(3,'bbi1','BBI 周期 1'),length(6,'bbi2','BBI 周期 2'),length(12,'bbi3','BBI 周期 3'),length(24,'bbi4','BBI 周期 4'),length(5,'mtmFast','MTM 快线'),length(3,'mtmFastSmooth','MTM 快线二次平滑'),length(13,'mtmSlow','MTM 慢线'),length(8,'mtmSlowSmooth','MTM 慢线二次平滑')]},
  KDJ:{label:'KDJ · 随机指标',pane:'separate',description:'K、D 按 1/N 递归平滑，初值 50；J=3K−2D，可超过 0–100。',fields:[length(9),length(3,'smoothK','K 平滑周期'),length(3,'smoothD','D 平滑周期')]},
  MFI:{label:'MFI · 资金流量指标',pane:'separate',description:'典型价涨跌结合成交量，范围 0–100；不是账户资金净流入。',fields:[length(14)]},
  KC:{label:'KC · Keltner 通道',pane:'main',description:'收盘价 EMA ± Wilder ATR 倍数，可分别调整均线与 ATR 周期。',fields:[length(20),length(10,'atrPeriod','ATR 周期'),factor(2)]},
@@ -31,6 +32,7 @@ export function advancedParams(name:string,input:Record<string,unknown>):Record<
  const result:Record<string,number>={};
  for(const f of advancedCatalog[name].fields){const v=Object.hasOwn(input,f.key)?input[f.key]:f.value;if(typeof v!=='number'||!Number.isFinite(v)||v<=0||v>(f.max??2000)||(!f.step&&!Number.isInteger(v)))throw Error(`${f.label}须为有效${f.step?'正数':'整数'}（≤${f.max??2000}）`);result[f.key]=v}
  if('fast'in result&&result.fast>=result.slow)throw Error('慢线周期须大于快线周期');
+ if(name==='SIXPULSE'&&(result.rsiFast>=result.rsiSlow||result.mtmFast>=result.mtmSlow))throw Error('RSI、MTM 慢线周期须大于快线周期');
  if(name==='SAR'&&(result.start>result.maximum||result.increment>result.maximum))throw Error('初始加速和步长不得大于最大加速');
  return result;
 }
