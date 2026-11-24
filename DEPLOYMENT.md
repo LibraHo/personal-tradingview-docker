@@ -2,6 +2,8 @@
 
 看盘与 HTTPS 交易已整合到 `nas-market-market-1` 一个应用容器，外接原有 `moomoo-opend`。原 `nas-market-trading-1` 由合并部署替代。访问地址仍是 HTTP 8088 与 HTTPS 8443；账户认证、证书、行情缓存和策略数据库继续沿用原挂载目录。更新使用：
 
+OpenD 容器的安装、目录准备与启动见 [moomoo-opend-docker 部署说明](https://github.com/LibraHo/moomoo-opend-docker#部署)。NAS Market 通过现有 Docker 网络连接它；重新部署 NAS Market 不需要重启 OpenD。
+
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.trade.yml up -d --build market
 ```
