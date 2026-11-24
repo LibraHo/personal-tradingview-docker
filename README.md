@@ -1,6 +1,17 @@
 # NAS Market
 
-轻量级美股与 A 股网页看盘终端，复用已有的 moomoo OpenD。默认看盘服务保持只读；可选的独立 HTTPS 美股交易台支持持仓、快捷买卖、止损和撤改单，详见 [交易平台部署与使用](TRADING.md)。Web 端使用 Lightweight Charts 5、React；服务端使用 FastAPI、WebSocket 与 SQLite。生产环境直接使用 OpenD 接口，不提供伪造行情。
+NAS Market 是部署在 NAS 上的 A 股与美股看盘、交易计划和复盘工作台。它连接已有的 moomoo OpenD，提供实时与历史 K 线、技术指标、扫描结果，以及按市场保存的交易档案。看盘页面默认只读；可选的 HTTPS 美股交易台见 [交易平台说明](TRADING.md)。
+
+## 重点功能
+
+| 功能 | 可以做什么 |
+| --- | --- |
+| 开放 API | 行情、扫描和复盘接口分别提供机器凭证与权限范围；可在 HTTPS「API 管理」查看 OpenAPI、签发或撤销凭证。API 请求有独立的读写权限，浏览器登录不会直接变成 Agent 凭证。 |
+| 交易计划与复盘 | 在图表创建结构化计划，记录入场/出场条件、前高前低、平台、缺口、防守位、止盈位和仓位安排；保存版本历史，关联真实成交。每日与每周复盘可引用计划和成交，并回查引用来源。 |
+| Agent 接入 | Agent 可凭 `review:read` / `review:write` 访问复盘 API，读取计划、成交、持仓及日周记录，再按当前版本写入更新。仓库提供 [API 文档](docs/REVIEW-API.md)和 [OpenClaw skill 与客户端](integrations/openclaw/review/SKILL.md)；Agent 草稿也可复制到图表计划编辑器，由用户检查后保存。 |
+| 自定义指标 | 内置指标之外，可以编写简易价格公式或受限 Python 指标，设置参数、主图/副图、适用图表与周期，并保存模板。详见 [指标说明](docs/INDICATORS-20261105.md)。 |
+
+行情与交易权限以 OpenD 登录账号和券商实际授权为准。Agent 接入用于查询、记录和复盘；计划保存不等于自动下单。
 
 ## 官方能力与边界
 
