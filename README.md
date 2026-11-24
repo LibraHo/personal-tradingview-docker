@@ -19,6 +19,8 @@
 
 ## 部署
 
+OpenD 容器的构建、目录准备与启动步骤见 [moomoo-opend-docker 部署说明](https://github.com/LibraHo/moomoo-opend-docker#部署)。NAS Market 只连接该容器；更新本项目无需重建或重启 OpenD。NAS Market 自身的生产配置与回滚说明见 [部署状态](DEPLOYMENT.md)和[合并部署说明](docs/COMBINED-DEPLOYMENT.md)。
+
 1. 确认 OpenD 已登录，版本至少 9.2.4207；确认 NAS 容器可访问 OpenD TCP 端口。例如 OpenD 在 `moomoo-opend_default` Docker 网络中，本项目可用容器名 `moomoo-opend:11111` 连接，无须公开 OpenD 端口。本项目只部署看盘网页，不会启动第二个 OpenD。
 2. 在本目录复制 `.env.example` 为 `.env`，按实际 Docker 网络、容器名、端口和 RSA 私钥路径调整 `OPEND_NETWORK`、`OPEND_HOST`、`OPEND_PORT`、`OPEND_RSA_SOURCE`。Compose 将已有的私钥只读挂载进看盘容器；私钥不要提交到仓库。
 3. 执行 `docker compose up -d --build`。局域网使用时可设置 `WEB_BIND=0.0.0.0`，然后访问 `http://<NAS局域网IP>:8088`。OpenD 本身仍只在 Docker 网络或宿主机回环地址可见。
