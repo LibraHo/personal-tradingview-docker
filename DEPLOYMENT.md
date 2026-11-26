@@ -36,7 +36,7 @@ docker compose -f docker-compose.yml -f docker-compose.trade.yml up -d --build m
 - 项目目录：`/tmp/zfsv3/sata11/18600104924/data/nas-market`。
 - Compose 服务：`market`；容器：`nas-market-market-1`；设置了自动重启与健康检查。
 - 局域网网页：`http://192.168.101.103:8088`。极空间“远程访问”中使用该地址添加网页入口，名称建议为 `NAS Market`。不要把 8088 在路由器上转发到公网。
-- OpenD：经现有 `moomoo-opend_default` Docker 网络连接 `moomoo-opend:11111`。现有 RSA 私钥以只读卷挂载，项目目录和镜像不含私钥内容。原 OpenD 容器未修改。
+- OpenD：经现有 `moomoo-opend_default` Docker 网络连接 `moomoo-opend:11111`。现有 RSA 私钥以只读卷挂载，项目目录和镜像不含私钥内容。原 OpenD 容器未修改。OpenD 的安装与启动步骤见 [moomoo-opend-docker](https://github.com/LibraHo/moomoo-opend-docker#部署)。单独更新 NAS Market 时只需重建看盘容器。
 
 ## 已完成的实际检查
 
