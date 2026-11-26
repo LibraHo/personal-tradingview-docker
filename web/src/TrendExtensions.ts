@@ -28,7 +28,12 @@ export function trendExtension(initial:TrendDrawing,selected:boolean,timeToX?:(t
    if(line.extend==='left'||line.extend==='both'){ctx.moveTo(0,y(0));ctx.lineTo(x1,y1)}
    if(line.extend==='right'||line.extend==='both'){ctx.moveTo(x2,y2);ctx.lineTo(mediaSize.width,y(mediaSize.width))}
    ctx.stroke();
-   if(selected){ctx.setLineDash([]);ctx.lineWidth=2;for(const [x,y] of [[x1,y1],[x2,y2]]){ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle='#0e1624';ctx.fill();ctx.strokeStyle='#d6e9ff';ctx.stroke()}}
+   if(selected){
+    const {background,textColor}=chart.options().layout;
+    ctx.fillStyle='color' in background?background.color:background.topColor;
+    ctx.strokeStyle=textColor;ctx.setLineDash([]);ctx.lineWidth=2;
+    for(const [x,y] of [[x1,y1],[x2,y2]]){ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fill();ctx.stroke()}
+   }
    ctx.restore();
   });
  }})};

@@ -1,10 +1,12 @@
 import {signalSettings} from './sixpulseSignals';
-type Field={key:string;label:string;value:number;step?:number;max?:number};
+import {tdxCatalog} from './tdxIndicators';
+type Field={key:string;label:string;value:number;step?:number;max?:number;min?:number};
 type Entry={label:string;pane:'main'|'separate';description:string;fields:Field[]};
 const length=(value:number,key='period',label='计算周期'):Field=>({key,label,value});
 const factor=(value:number,key='multiplier',label='ATR 倍数',max=100):Field=>({key,label,value,step:.01,max});
 const pair=(fast:number,slow:number)=>[length(fast,'fast','快线周期'),length(slow,'slow','慢线周期')];
 export const advancedCatalog:Record<string,Entry>={
+ MSIGM8:{label:'MACD突破',pane:'main',description:'MACD 柱拐点后的价位突破。绿箭头买入、红箭头卖出，连线从前一根拐点 K 线到信号当根；未收线时会变化。默认有效 8 根（含拐点确认当根），缓冲比例 0.0003 = 0.03%。BUY/SELL 输出是原始突破触发，箭头另经有效期、扩张及重复过滤。',fields:[length(12,'fast','MACD 快线'),length(26,'slow','MACD 慢线'),length(9,'signal','MACD 信号'),length(8,'validBars','有效 K 线数'),{key:'bufferRate',label:'突破缓冲比例',value:.0003,step:.0001,min:0,max:1}]},
  SIXPULSE:{label:'六脉神剑 · 六项共振',pane:'separate',description:'按 Mai 版本计算：MACD、KDJ、RSI、LWR、BBI、MTM 六排箭头。红色向上、绿色向下，可改颜色；相等归下，算不出的值显示灰点。递推平滑从首个有效值初始化，窗口不足不出信号。分数不是胜率，未收线时会变化。可在下方选择显示周期。',fields:[length(8,'fast','MACD 快线'),length(13,'slow','MACD 慢线'),length(5,'signal','MACD 信号'),length(8,'kdjPeriod','KDJ 窗口'),length(3,'smoothK','K 平滑'),length(3,'smoothD','D 平滑'),length(5,'rsiFast','RSI 快线'),length(13,'rsiSlow','RSI 慢线'),length(13,'lwrPeriod','LWR 窗口'),length(3,'lwrSmooth1','LWR 一次平滑'),length(3,'lwrSmooth2','LWR 二次平滑'),length(3,'bbi1','BBI 周期 1'),length(6,'bbi2','BBI 周期 2'),length(12,'bbi3','BBI 周期 3'),length(24,'bbi4','BBI 周期 4'),length(5,'mtmFast','MTM 快线'),length(3,'mtmFastSmooth','MTM 快线二次平滑'),length(13,'mtmSlow','MTM 慢线'),length(8,'mtmSlowSmooth','MTM 慢线二次平滑')]},
  KDJ:{label:'KDJ · 随机指标',pane:'separate',description:'K、D 按 1/N 递归平滑，初值 50；J=3K−2D，可超过 0–100。',fields:[length(9),length(3,'smoothK','K 平滑周期'),length(3,'smoothD','D 平滑周期')]},
  MFI:{label:'MFI · 资金流量指标',pane:'separate',description:'典型价涨跌结合成交量，范围 0–100；不是账户资金净流入。',fields:[length(14)]},
@@ -28,11 +30,12 @@ export const advancedCatalog:Record<string,Entry>={
  AROON:{label:'Aroon · 趋势时效',pane:'separate',description:'最近高低点距当前的根数，范围 0–100；相同极值取最近一根。',fields:[length(25)]},
 };
 advancedCatalog.SIXPULSE_SIGNAL={...advancedCatalog.SIXPULSE,label:'六脉神剑 · 主图上下车',pane:'main',description:'独立设置本指标的各项周期。红色代表满足该项条件，不是 K 线涨跌色。已确认信号仍会受历史补齐或行情校正影响。'};
+Object.assign(advancedCatalog,Object.fromEntries(Object.entries(tdxCatalog).map(([name,item])=>[name,{label:item.label,pane:item.pane,description:item.description,fields:[]}])));
 export const advancedDefaults=Object.fromEntries(Object.entries(advancedCatalog).map(([name,v])=>[name,Object.fromEntries(v.fields.map(f=>[f.key,f.value]))]));
 export function advancedParams(name:string,input:Record<string,unknown>):Record<string,number>|null{
  if(!Object.hasOwn(advancedCatalog,name))return null;
  const result:Record<string,number>={};
- for(const f of advancedCatalog[name].fields){const v=Object.hasOwn(input,f.key)?input[f.key]:f.value;if(typeof v!=='number'||!Number.isFinite(v)||v<=0||v>(f.max??2000)||(!f.step&&!Number.isInteger(v)))throw Error(`${f.label}须为有效${f.step?'正数':'整数'}（≤${f.max??2000}）`);result[f.key]=v}
+ for(const f of advancedCatalog[name].fields){const v=Object.hasOwn(input,f.key)?input[f.key]:f.value;if(typeof v!=='number'||!Number.isFinite(v)||(f.min===0?v<0:v<=0)||v>(f.max??2000)||(!f.step&&!Number.isInteger(v)))throw Error(`${f.label}须为有效${f.step?(f.min===0?'非负数':'正数'):'整数'}（≤${f.max??2000}）`);result[f.key]=v}
  if('fast'in result&&result.fast>=result.slow)throw Error('慢线周期须大于快线周期');
  if(['SIXPULSE','SIXPULSE_SIGNAL'].includes(name)&&(result.rsiFast>=result.rsiSlow||result.mtmFast>=result.mtmSlow))throw Error('RSI、MTM 慢线周期须大于快线周期');
  if(name==='SAR'&&(result.start>result.maximum||result.increment>result.maximum))throw Error('初始加速和步长不得大于最大加速');

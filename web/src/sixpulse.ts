@@ -2,7 +2,7 @@ import type {Bar} from './indicators';
 import {average,extreme} from './extraIndicators';
 type V=(number|null)[];
 export const sixPulseRows=['MACD','KDJ','RSI','LWR','BBI','MTM'] as const;
-function smooth(v:V,n:number,exponential=false):V{let last:number|null=null;const alpha=exponential?2/(n+1):1/n;return v.map(x=>{if(x===null)return null;last=last===null?x:last+(x-last)*alpha;return last})}
+export function smooth(v:V,n:number,exponential=false):V{let last:number|null=null;const alpha=exponential?2/(n+1):1/n;return v.map(x=>{if(x===null)return null;last=last===null?x:last+(x-last)*alpha;return last})}
 const ratio=(a:V,b:V):V=>a.map((x,i)=>x===null||b[i]===null||b[i]===0?null:100*x/b[i]!);
 /** Mai SMA(X,N,1), first valid seed; undefined values are not down signals. */
 export function computeSixPulse(b:Bar[],p:Record<string,number>):Record<string,V>{

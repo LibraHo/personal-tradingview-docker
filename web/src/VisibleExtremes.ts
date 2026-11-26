@@ -12,13 +12,15 @@ export function visibleExtremeLabels(bars:Bar[]):ISeriesPrimitive<Time>{
    const top=series.coordinateToPrice(0),bottom=series.coordinateToPrice(mediaSize.height);if(top===null||bottom===null)return;
    const visibleBars=bars.filter(bar=>{if(bar.time<Number(range.from)||bar.time>Number(range.to))return false;const x=chart.timeScale().timeToCoordinate(bar.time as UTCTimestamp);return x!==null&&x>=0&&x<=mediaSize.width});
    const extremes=visiblePriceVertices(visibleBars,Number(range.from),Number(range.to),top,bottom);
+   const background=chart.options?.().layout.background;
+   const light=background&&'color' in background&&background.color==='#ffffff';
    ctx.save();ctx.font='11px system-ui';ctx.textBaseline='middle';
    for(const high of [true,false]){
     const point=high?extremes.high:extremes.low;if(!point)continue;const price=point.price;
     const x=chart.timeScale().timeToCoordinate(point.time as UTCTimestamp),y=series.priceToCoordinate(price);if(x===null||y===null||x<0||x>mediaSize.width||y<0||y>mediaSize.height)continue;
     const text=price.toFixed(price<1?4:2),width=ctx.measureText(text).width;
     const dir=x+width+34<mediaSize.width?1:-1,dy=high?-15:15,labelY=Math.max(9,Math.min(mediaSize.height-9,y+dy));
-    ctx.strokeStyle=high?'#d9b36b':'#8cb5dc';ctx.fillStyle=ctx.strokeStyle;ctx.lineWidth=1;ctx.setLineDash([]);ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+dir*10,labelY);ctx.lineTo(x+dir*22,labelY);ctx.stroke();
+    ctx.strokeStyle=high?(light?'#8c570d':'#d9b36b'):(light?'#285c8f':'#8cb5dc');ctx.fillStyle=ctx.strokeStyle;ctx.lineWidth=1;ctx.setLineDash([]);ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+dir*10,labelY);ctx.lineTo(x+dir*22,labelY);ctx.stroke();
     ctx.textAlign=dir===1?'left':'right';ctx.fillText(text,x+dir*26,labelY);
    }ctx.restore();
   });

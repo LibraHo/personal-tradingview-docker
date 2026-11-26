@@ -1,0 +1,100 @@
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --theme-page: #f2f5fa;
+  --theme-surface: #fff;
+  --theme-surface-raised: #f0f4f9;
+  --theme-surface-active: #e1edfb;
+  --theme-surface-floating: #f7faff;
+  --theme-chart: #fff;
+  --theme-text: #17263a;
+  --theme-text-secondary: #344862;
+  --theme-muted: #51657c;
+  --theme-link: #1d5597;
+  --theme-border: #d5dfeb;
+  --theme-border-strong: #a6b8ce;
+  --theme-border-active: #5487c5;
+  --theme-primary: #215fa9;
+  --theme-focus: #216bc0;
+  --theme-accent-wash: #dcebfc;
+  --theme-shadow: #20395824;
+  --theme-scrim: #15243f66;
+  --theme-positive: #09684f;
+  --theme-positive-surface: #e4f5ee;
+  --theme-positive-border: #82baa7;
+  --theme-danger: #a12641;
+  --theme-danger-surface: #fce9ed;
+  --theme-danger-border: #d795a4;
+  --theme-warning: #805311;
+  --theme-warning-surface: #fff3d8;
+  --theme-warning-border: #d1ad6d;
+  --theme-flow-buy: #0e876633;
+  --theme-flow-sell: #be3d5633;
+}
+
+.theme-toggle {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 29px;
+  padding: 0;
+  border: 1px solid var(--theme-border-strong, #3c5877);
+  border-radius: 5px;
+  background: var(--theme-surface-raised, #172b43);
+  color: var(--theme-link, #d7e6f7);
+}
+
+.theme-toggle:hover {
+  background: var(--theme-surface-active, #233e5b);
+}
+
+.trade-terminal button.theme-toggle {
+  padding: 0;
+}
+
+.trade-login-card .theme-toggle {
+  float: right;
+}
+
+:root[data-theme="light"] .chart-workspace {
+  --market-up-text: color-mix(in srgb, var(--market-up) 52%, #17263a);
+  --market-down-text: color-mix(in srgb, var(--market-down) 52%, #17263a);
+}
+
+@media (max-width: 420px) {
+  .shell.chart-workspace > header .workspace-actions .secondary {
+    width: 30px;
+    justify-content: center;
+    font-size: 0;
+    gap: 0;
+  }
+
+  .shell.chart-workspace > header .watch-toggle {
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 365px) {
+  .shell.chart-workspace > header .workspace-view-select {
+    width: 78px;
+  }
+
+  .shell.chart-workspace > header .layout-picker button {
+    width: 20px;
+  }
+
+  .shell.chart-workspace > header .header-right {
+    gap: 3px;
+  }
+}
+
+.theme-sync-error {
+  color: var(--theme-danger, #f08080);
+  font-size: 11px;
+  line-height: 1.5;
+  max-width: 180px;
+}

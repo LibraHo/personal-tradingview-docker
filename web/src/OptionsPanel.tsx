@@ -13,6 +13,7 @@ export default function OptionsPanel({api,underlying,positions,quantities,canTra
  const [contracts,setContracts]=useState<Row[]>([]),[direction,setDirection]=useState('CALL'),[code,setCode]=useState('');
  const [quote,setQuote]=useState<Row|null>(null),[limit,setLimit]=useState(''),[qty,setQty]=useState(1),[side,setSide]=useState('BUY');
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[editing,setEditing]=useState(false),[draft,setDraft]=useState('');
+ const [catalogLoading,setCatalogLoading]=useState(false);
  const [fraction,setFraction]=useState(''),[sizing,setSizing]=useState<Row|null>(null),[sizingLoading,setSizingLoading]=useState(false),[nearest,setNearest]=useState<Row|null>(null);
  const [stopPrice,setStopPrice]=useState(''),[stopMode,setStopMode]=useState('STOP_LIMIT'),[tolerance,setTolerance]=useState('0.05');
  const sequence=useRef(0),chainSequence=useRef(0),stockSequence=useRef(0),sizeSequence=useRef(0);
@@ -23,9 +24,12 @@ export default function OptionsPanel({api,underlying,positions,quantities,canTra
  const stopRequested=stopPrice.trim()!=='';
  const stopLimit=cents(Number(stopPrice)-Number(tolerance)),stopValid=Number.isFinite(Number(stopPrice))&&Number(stopPrice)>0&&Number(stopPrice)===cents(Number(stopPrice))&&(stopMode==='STOP'||(Number.isFinite(Number(tolerance))&&Number(tolerance)>=0&&Number(tolerance)===cents(Number(tolerance))&&stopLimit>0));
  const invalidate=()=>{onSelectionChange()};
- const clear=()=>{sequence.current++;chainSequence.current++;stockSequence.current++;sizeSequence.current++;setDates([]);setExpiry('');setContracts([]);setCode('');setQuote(null);setLimit('');setStopPrice('');setFraction('');setSizing(null);setNearest(null);setLoading(false);setSizingLoading(false)};
+ const clear=()=>{sequence.current++;chainSequence.current++;stockSequence.current++;sizeSequence.current++;setDates([]);setExpiry('');setContracts([]);setCode('');setQuote(null);setLimit('');setStopPrice('');setFraction('');setSizing(null);setNearest(null);setError('');setLoading(false);setCatalogLoading(false);setSizingLoading(false)};
  useEffect(()=>{setStock(underlying);clear()},[underlying]);
  useEffect(()=>()=>{sequence.current++;chainSequence.current++;stockSequence.current++;sizeSequence.current++},[]);
+ const ticker=stock.trim().toUpperCase();
+ const stockCode=ticker.startsWith('US.')?ticker:'US.'+ticker;
+ const selecting=loading||catalogLoading;
  const choose=async(value:string,fill=false)=>{
   invalidate();const token=++sequence.current;setCode(value);setQuote(null);setLimit('');setStopPrice('');setError('');
   if(!value){setLoading(false);return}setLoading(true);
@@ -35,17 +39,21 @@ export default function OptionsPanel({api,underlying,positions,quantities,canTra
  };
  const loadDates=async()=>{
   const token=++stockSequence.current;chainSequence.current++;void choose('');setDates([]);setExpiry('');setContracts([]);setNearest(null);setError('');
-  try{const r=await api('options?code='+encodeURIComponent(stock.toUpperCase()));if(token===stockSequence.current)setDates(r.expirations)}
+  setCatalogLoading(true);
+  try{const r=await api('options?code='+encodeURIComponent(stockCode));if(token===stockSequence.current){setDates(r.expirations);if(!r.expirations.length)setError(stockCode+' 暂无可选到期日')}}
   catch(e){if(token===stockSequence.current)setError(String(e instanceof Error?e.message:e))}
+  finally{if(token===stockSequence.current)setCatalogLoading(false)}
  };
  const loadChain=async(date:string)=>{
   const token=++chainSequence.current;setExpiry(date);setContracts([]);setNearest(null);void choose('');if(!date)return;
-  try{const r=await api('options?code='+encodeURIComponent(stock.toUpperCase())+'&expiry='+date);if(token===chainSequence.current)setContracts(r.contracts)}
+  setCatalogLoading(true);
+  try{const r=await api('options?'+new URLSearchParams({code:stockCode,expiry:date}));if(token===chainSequence.current)setContracts(r.contracts)}
   catch(e){if(token===chainSequence.current)setError(String(e instanceof Error?e.message:e))}
+  finally{if(token===chainSequence.current)setCatalogLoading(false)}
  };
  const chooseNearest=async(type:string)=>{
   const token=++chainSequence.current;invalidate();setDirection(type);setLoading(true);setError('');
-  try{const r=await api('options/nearest?'+new URLSearchParams({code:stock,expiry,direction:type}));if(token!==chainSequence.current)return;setNearest(r);await choose(r.contract.code,true)}
+  try{const r=await api('options/nearest?'+new URLSearchParams({code:stockCode,expiry,direction:type}));if(token!==chainSequence.current)return;setNearest(r);await choose(r.contract.code,true)}
   catch(e){if(token===chainSequence.current){setError(String(e instanceof Error?e.message:e));setLoading(false)}}
  };
  useEffect(()=>{
@@ -64,12 +72,12 @@ export default function OptionsPanel({api,underlying,positions,quantities,canTra
  return <section className="trade-card option-panel" aria-label="期权快捷交易"><fieldset disabled={busy} style={{border:0,padding:0,margin:0,minWidth:0}}>
   <div className="trade-card-title"><h2>期权下单</h2><span className="trade-pill">RTH · DAY · {quick?'直接提交':'先预览'}</span></div>
   <div className="option-step"><span className="step-number">1</span><h3>选择合约</h3></div>
-  <div className="trade-ticket-grid"><label>标的股票<div className="trade-inline"><input aria-label="期权标的" value={stock} onChange={e=>{invalidate();clear();setStock(e.target.value.toUpperCase())}}/><button disabled={busy||loading} onClick={()=>void loadDates()}>读取到期日</button></div></label>
-   <label>到期日<select aria-label="期权到期日" value={expiry} disabled={loading} onChange={e=>void loadChain(e.target.value)}><option value="">选择到期日</option>{dates.map(d=><option key={d}>{d}</option>)}</select></label></div>
-  <div className="trade-row-actions option-nearest"><button disabled={!expiry||loading} onClick={()=>void chooseNearest('CALL')}>最近 Call</button><button disabled={!expiry||loading} onClick={()=>void chooseNearest('PUT')}>最近 Put</button><small>{nearest?`正股 ${money(nearest.underlying_price)} · ${nearest.update_time}（美东）`:'按正股现价选最近行权价；先选择到期日'}</small></div>
-  <details className="option-manual"><summary>手动选择行权价</summary><div className="trade-ticket-grid"><label>方向<select aria-label="期权方向" value={direction} disabled={loading} onChange={e=>{setDirection(e.target.value);void choose('')}}><option value="CALL">Call · 看涨</option><option value="PUT">Put · 看跌</option></select></label><label>行权价 / 合约<select aria-label="期权合约" value={code} disabled={loading} onChange={e=>void choose(e.target.value,true)}><option value="">选择具体合约</option>{contracts.filter(c=>c.option_type===direction).sort((a,b)=>a.strike_price-b.strike_price).map(c=><option key={c.code} value={c.code}>{money(c.strike_price)} · {c.code}{c.option_standard_type&&c.option_standard_type!=='STANDARD'?' · 非标准':''}</option>)}</select></label></div></details>
-  {!!holdings.length&&<details className="option-manual"><summary>从期权持仓选择 · {holdings.length}</summary><div className="trade-row-actions">{holdings.map(p=><button key={p.code} disabled={loading} onClick={()=>void choose(p.code,true)}>{p.code} · {p.qty} 张</button>)}</div></details>}
-  {loading&&<p role="status">正在读取合约…</p>}
+  <div className="trade-ticket-grid"><label>标的股票<div className="trade-inline"><input aria-label="期权标的" value={stock} onChange={e=>{invalidate();clear();setStock(e.target.value.toUpperCase())}}/><button disabled={!ticker||selecting} onClick={()=>void loadDates()}>读取到期日</button></div></label>
+   <label>到期日<select aria-label="期权到期日" value={expiry} disabled={selecting||!dates.length} onChange={e=>void loadChain(e.target.value)}><option value="">选择到期日</option>{dates.map(d=><option key={d}>{d}</option>)}</select></label></div>
+  <div className="trade-row-actions option-nearest"><button disabled={!expiry||selecting} onClick={()=>void chooseNearest('CALL')}>最近 Call</button><button disabled={!expiry||selecting} onClick={()=>void chooseNearest('PUT')}>最近 Put</button><small>{nearest?`正股 ${money(nearest.underlying_price)} · ${nearest.update_time}（美东）`:'按正股现价选最近行权价；先选择到期日'}</small></div>
+  <details className="option-manual"><summary>手动选择行权价</summary><div className="trade-ticket-grid"><label>方向<select aria-label="期权方向" value={direction} disabled={selecting} onChange={e=>{setDirection(e.target.value);void choose('')}}><option value="CALL">Call · 看涨</option><option value="PUT">Put · 看跌</option></select></label><label>行权价 / 合约<select aria-label="期权合约" value={code} disabled={selecting||!contracts.length} onChange={e=>void choose(e.target.value,true)}><option value="">选择具体合约</option>{contracts.filter(c=>c.option_type===direction).sort((a,b)=>a.strike_price-b.strike_price).map(c=><option key={c.code} value={c.code}>{money(c.strike_price)} · {c.code}{c.option_standard_type&&c.option_standard_type!=='STANDARD'?' · 非标准':''}</option>)}</select></label></div></details>
+  {!!holdings.length&&<details className="option-manual"><summary>从期权持仓选择 · {holdings.length}</summary><div className="trade-row-actions">{holdings.map(p=><button key={p.code} disabled={selecting} onClick={()=>void choose(p.code,true)}>{p.code} · {p.qty} 张</button>)}</div></details>}
+  {selecting&&<p role="status">正在读取期权数据…</p>}
   {code&&<div className="option-selected"><strong>{code}</strong>{validQuote&&<span>{quote.option_type} · {quote.strike_time} · 行权价 {money(quote.option_strike_price)} · ×{multiplier||'未知'}</span>}</div>}
   <div className="option-trade-grid"><div className="option-sizing-block"><div className="option-step"><span className="step-number">2</span><h3>仓位与限价</h3></div>
   <div className="option-side" role="group" aria-label="期权买卖方向"><button aria-pressed={side==='BUY'} className="trade-buy" onClick={()=>{invalidate();setSide('BUY');setFraction('')}}>买入</button><button aria-pressed={side==='SELL'} className="trade-sell" onClick={()=>{invalidate();setSide('SELL');setFraction('')}}>卖出已有多头</button></div>

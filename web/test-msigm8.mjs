@@ -1,0 +1,32 @@
+import {moduleUrl} from './test-load-ts.mjs';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import assert from 'node:assert/strict';
+const {compute,indicatorPane}=await import(moduleUrl('indicators'));
+const {msigm8Signals}=await import(moduleUrl('msigm8'));
+const {msigm8Drawings}=await import(moduleUrl('msigm8Overlay'));
+const {advancedCatalog}=await import(moduleUrl('advancedCatalog'));
+const bars=Array.from({length:300},(_,i)=>{const c=100+Math.sin(i/4)*5+Math.cos(i/11)*2;return {time:1793930400+i*60,open:c-.15,close:c,high:c+.7,low:c-.6,volume:100,session:'regular',trade_date:'2026-11-06',session_date:'regular'}});
+const datasets=[bars,[],bars.slice(0,1),bars.map(b=>({...b,open:100,close:100,high:100,low:100}))];
+const configs=[{},{fast:3,slow:7,signal:2,validBars:1,bufferRate:0},{fast:8,slow:20,signal:5,validBars:12,bufferRate:.001}];
+const expected=JSON.parse(execFileSync(process.env.PYTHON||'python',['-c','import sys,json;from app.indicators import calculate;x=json.load(sys.stdin);print(json.dumps([[calculate(b,"MSIGM8",p) for p in x["configs"]] for b in x["datasets"]]))'],{cwd:fileURLToPath(new URL('..',import.meta.url)),input:JSON.stringify({datasets,configs}),encoding:'utf8'}));
+datasets.forEach((data,d)=>configs.forEach((cfg,j)=>{
+ const actual=compute(data,'MSIGM8',JSON.stringify(cfg));
+ assert.deepEqual(Object.keys(actual),Object.keys(expected[d][j]));
+ for(const key in actual)actual[key].forEach((v,i)=>{const e=expected[d][j][key][i];if(v===null||e===null)assert.equal(v,e);else assert.ok(Math.abs(v-e)<1e-10*Math.max(1,Math.abs(e)),key+' parity')});
+ for(const size of [1,2,10,90]){const prefix=compute(data.slice(0,size),'MSIGM8',JSON.stringify(cfg));for(const key in actual)assert.deepEqual(prefix[key],actual[key].slice(0,size),key+' no future')}
+ const drawing=msigm8Drawings(data,actual);
+ assert.equal(drawing.markers.length,actual.BUY_SIGNAL.filter(x=>x===1).length+actual.SELL_SIGNAL.filter(x=>x===1).length);
+ assert.equal(drawing.segments.length,drawing.markers.length);
+ drawing.segments.forEach(line=>assert.ok(line.from<line.to&&line.price>0));
+}));
+const fixture=[101,101,100.01,99.98,99.96,99.9].map((close,i)=>({...bars[i],close,high:102,low:Math.min(100,close)}));
+const v=msigm8Signals(fixture,[0,2,1,.8,.6,.4],8,.0003);
+assert.deepEqual(v.SELL,[0,0,0,0,1,1]);assert.deepEqual(v.SELL_SIGNAL,[0,0,0,0,1,0]);
+const shapes=msigm8Drawings(fixture,v,{sellArrow:'#123456',sellLine:'#654321'});
+assert.deepEqual(shapes.segments,[{from:fixture[1].time,to:fixture[4].time,price:100,color:'#654321'}]);
+assert.equal(shapes.markers[0].time,fixture[4].time);assert.equal(shapes.markers[0].text,'↓');assert.equal(shapes.markers[0].color,'#123456');
+assert.equal(shapes.markers[0].price,102+(102-99.96)*.25);
+assert.equal(indicatorPane({name:'MSIGM8',pane:'separate'}),'main');
+assert.equal(advancedCatalog.MSIGM8.label,'MACD突破');
+console.log('MACD突破: 12 parity cases, no future signals, finite pivot lines, exact marker prices, colours and main-pane registration passed');

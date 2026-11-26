@@ -109,6 +109,8 @@ class AdvancedIndicatorTests(unittest.TestCase):
                         self.assertTrue(all(x is None or math.isfinite(x) for x in values))
                 for key in defaults:
                     for invalid in (None, '3', True, -1, 0, 2001, math.inf, math.nan):
+                        if name == 'MSIGM8' and key == 'bufferRate' and type(invalid) is int and invalid == 0:
+                            continue
                         with self.subTest(key=key, invalid=invalid), self.assertRaises(ValueError):
                             calculate([], name, {key: invalid})
         for name in ('PPO', 'AO', 'CHO'):

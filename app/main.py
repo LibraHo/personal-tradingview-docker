@@ -17,26 +17,30 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .indicators import calculate
 from .python_indicator_worker import validate_code, validate_inputs
 from .depth import DepthFeed
+from .market_flow import option_profile, quote_result
 from .opend_connection import connect_quote_context
 from . import drawing_api
+from .stock_search import maintain_directory, search_directory
 from .hour_bars import is_us_hour, aggregate_hours, hour_bucket
 from .opening_range import range_times, select_opening_range
 
 depth_feed = DepthFeed()
+ticker_feed = DepthFeed("TICKER")
 
 
 async def depth_maintenance():
     while True:
         await asyncio.sleep(10)
         try:
-            await asyncio.to_thread(depth_feed.cleanup)
+            await asyncio.gather(asyncio.to_thread(depth_feed.cleanup),
+                                 asyncio.to_thread(ticker_feed.cleanup))
         except Exception:
             pass
 
@@ -53,14 +57,19 @@ BROWSED_CACHE_DAYS = max(1, int(os.getenv('BROWSED_CACHE_DAYS', '7')))
 RETENTION_DAYS = max(1, int(os.getenv('CACHE_RETENTION_DAYS', '30')))
 DAILY_HISTORY_DAYS = max(1, int(os.getenv('DAILY_HISTORY_DAYS', '730')))
 DAILY_RETENTION_DAYS = max(DAILY_HISTORY_DAYS, int(os.getenv('DAILY_CACHE_RETENTION_DAYS', '1825')))
-SYMBOL_RE = re.compile(r'^(?:US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.[0-9]{6})$')
+SYMBOL_RE = re.compile(r'^(?:US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.(?:[0-9]{6}|(?:BK|LIST)[0-9]{1,10}))$')
 PERIODS = {'1m': 'K_1M', '5m': 'K_5M', '15m': 'K_15M', '30m': 'K_30M', '60m': 'K_60M', '120m': 'K_120M', '240m': 'K_240M', '1d': 'K_DAY', '1w': 'K_WEEK', '1mo': 'K_MON'}
 LONG_PERIODS = {'1d','1w','1mo'}
 WEEKLY_HISTORY_DAYS = max(1,int(os.getenv('WEEKLY_HISTORY_DAYS','1825')))
 MONTHLY_HISTORY_DAYS = max(1,int(os.getenv('MONTHLY_HISTORY_DAYS','3650')))
 LONG_RETENTION_DAYS = max(DAILY_RETENTION_DAYS,WEEKLY_HISTORY_DAYS,MONTHLY_HISTORY_DAYS,int(os.getenv('LONG_CACHE_RETENTION_DAYS','3650')))
 
+# Cover the 20 prior sessions even around extended exchange holidays.
+CN_VOLUME_HISTORY_DAYS = 60
+
 def default_history_days(period, symbol=''):
+    if symbol.startswith(('SH.', 'SZ.')) and period in ('60m', '120m'):
+        return max(DEFAULT_DAYS, CN_VOLUME_HISTORY_DAYS)
     if symbol.startswith(('SH.', 'SZ.')) and period == '240m':
         return DAILY_HISTORY_DAYS
     if period in {'120m', '240m'}:
@@ -68,6 +77,8 @@ def default_history_days(period, symbol=''):
     return {'1d':DAILY_HISTORY_DAYS,'1w':WEEKLY_HISTORY_DAYS,'1mo':MONTHLY_HISTORY_DAYS}.get(period,DEFAULT_DAYS)
 
 def retention_days(period, symbol=''):
+    if symbol.startswith(('SH.', 'SZ.')) and period in ('60m', '120m'):
+        return max(RETENTION_DAYS, CN_VOLUME_HISTORY_DAYS)
     if symbol.startswith(('SH.', 'SZ.')) and period == '240m':
         return DAILY_RETENTION_DAYS
     return LONG_RETENTION_DAYS if period in {'1w','1mo'} else DAILY_RETENTION_DAYS if period=='1d' else RETENTION_DAYS
@@ -97,6 +108,7 @@ listeners: dict[tuple[str, str, str], set[asyncio.Queue]] = {}
 last_fetch: dict[tuple[str, str, str], float] = {}
 fetched_days: dict[tuple[str, str, str], int] = {}
 fetch_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+history_failures: dict[tuple[str, str, str], tuple[float, str, str]] = {}
 python_slots = asyncio.Semaphore(1)
 strategy_leases = {}
 loop = None
@@ -136,6 +148,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS history_windows(symbol TEXT, period TEXT, mode TEXT,
           start INTEGER, end INTEGER, checked REAL, PRIMARY KEY(symbol,period,mode,start,end));
         CREATE TABLE IF NOT EXISTS symbol_names(symbol TEXT PRIMARY KEY, name TEXT, updated REAL);
+        CREATE TABLE IF NOT EXISTS symbol_kinds(symbol TEXT PRIMARY KEY, kind TEXT NOT NULL);
         ''')
 
 
@@ -145,7 +158,7 @@ def prune_cache():
     daily_cutoff = int((now - timedelta(days=DAILY_RETENTION_DAYS)).timestamp())
     with connect_db() as db:
         db.execute("DELETE FROM history_windows WHERE checked < ?", (time.time()-BROWSED_CACHE_DAYS*86400,))
-        db.execute("DELETE FROM bars WHERE period NOT IN ('1d','1w','1mo') AND NOT (period='240m' AND (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*')) AND time < ? AND NOT EXISTS (SELECT 1 FROM history_windows w WHERE w.symbol=bars.symbol AND w.period=bars.period AND w.mode=bars.mode AND bars.time BETWEEN w.start AND w.end)", (intraday_cutoff,))
+        db.execute("DELETE FROM bars WHERE period NOT IN ('1d','1w','1mo') AND NOT (period='240m' AND (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*')) AND time < ? AND (period NOT IN ('60m','120m') OR NOT (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*') OR time < ?) AND NOT EXISTS (SELECT 1 FROM history_windows w WHERE w.symbol=bars.symbol AND w.period=bars.period AND w.mode=bars.mode AND bars.time BETWEEN w.start AND w.end)", (intraday_cutoff, int((now-timedelta(days=CN_VOLUME_HISTORY_DAYS)).timestamp())))
         long_cutoff=int((now-timedelta(days=LONG_RETENTION_DAYS)).timestamp())
         db.execute("DELETE FROM bars WHERE period IN ('1w','1mo') AND time < ?", (long_cutoff,))
         db.execute("DELETE FROM bars WHERE (period = '1d' OR (period='240m' AND (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*'))) AND time < ?", (daily_cutoff,))
@@ -287,6 +300,7 @@ class Bridge:
     def __init__(self):
         self.ctx = None
         self.lock = threading.RLock()
+        self.refreshing_directories = frozenset()
         self.active: dict[tuple[str, str, str], float] = {}
         self.last_error = None
         self.last_request = 0.0
@@ -434,9 +448,8 @@ class Bridge:
                     return cached[1], True
                 raise
 
-    def search_symbols(self, query, limit=12):
-        from .stock_search import search_cn_symbols
-        return search_cn_symbols(self, connect_db, query, limit)
+    def search_symbols(self, query, limit=12, market='CN'):
+        return search_directory(self, connect_db, query, limit, market)
 
     def opening_five(self, symbol, day):
         from moomoo import KLType, AuType, Session, RET_OK
@@ -457,14 +470,24 @@ class Bridge:
                 self.reset(exc)
                 raise
 
+    @staticmethod
+    def cached_names(symbols):
+        with connect_db() as db:
+            rows = db.execute('SELECT * FROM symbol_names WHERE symbol IN ('+','.join('?' for _ in symbols)+')', symbols)
+            cached = {row['symbol']: row for row in rows}
+        cutoff = time.time() - 86400
+        missing = [s for s in symbols if s not in cached or cached[s]['updated'] < cutoff]
+        return {s: row['name'] for s, row in cached.items()}, missing
+
     def names(self, symbols):
+        result, missing = self.cached_names(symbols)
+        if not missing:
+            return result
         from moomoo import RET_OK
         with self.lock:
-            with connect_db() as db:
-                cached = {r['symbol']: dict(r) for r in db.execute(
-                    'SELECT * FROM symbol_names WHERE symbol IN ('+','.join('?' for _ in symbols)+')', symbols).fetchall()}
-            result = {code:r['name'] for code,r in cached.items()}
-            missing = [code for code in symbols if code not in cached or time.time()-cached[code]['updated'] > 86400]
+            # Another request may have populated these names while this one waited.
+            found, missing = self.cached_names(missing)
+            result.update(found)
             for market in ('SH', 'SZ', 'US'):
                 codes = [code for code in missing if code.startswith(market+'.')]
                 if not codes:
@@ -619,11 +642,7 @@ async def maintenance():
                         await asyncio.to_thread(bridge.subscribe, key)
                     if reconnect or time.monotonic() - last_fetch.get(key, 0) > max(REFRESH, 600):
                         days = default_history_days(key[1], key[0])
-                        known, success, latest = await asyncio.to_thread(sync_state, key)
-                        span = refresh_span(key, days, known, latest, success)
-                        await asyncio.to_thread(bridge.history, key, span)
-                        await asyncio.to_thread(save_sync_state, key, days)
-                        last_fetch[key] = time.monotonic()
+                        await refresh_history(key, days, force=True)
                 except QuotePermissionError:
                     continue
                 except Exception as exc:
@@ -640,10 +659,23 @@ async def lifespan(app):
     loop = asyncio.get_running_loop()
     task = asyncio.create_task(maintenance())
     depth_task = asyncio.create_task(depth_maintenance())
+    await scan_service.start()
+    from .ledger_opend import run as sync_trade_archive
+    archive_task = asyncio.create_task(sync_trade_archive(connect_db))
+    from .plan_daily import run as run_plan_daily
+    plan_daily_task = asyncio.create_task(run_plan_daily(connect_db, scan_service.calendar, bars))
+    directory_stop = asyncio.Event()
+    directory_task = asyncio.create_task(maintain_directory(bridge, connect_db, directory_stop, Bridge))
     yield
+    directory_stop.set()
+    await directory_task
+    plan_daily_task.cancel()
+    archive_task.cancel()
+    await asyncio.gather(archive_task, plan_daily_task, return_exceptions=True)
+    await scan_service.stop()
     task.cancel()
     depth_task.cancel()
-    await asyncio.to_thread(depth_feed.close)
+    await asyncio.gather(asyncio.to_thread(depth_feed.close), asyncio.to_thread(ticker_feed.close))
     if bridge.ctx:
         await asyncio.to_thread(bridge.ctx.close)
 
@@ -653,6 +685,14 @@ app = FastAPI(title='NAS Market', lifespan=lifespan)
 
 @app.middleware('http')
 async def auth(request: Request, call_next):
+    if (request.url.path.startswith(('/api/scanner/', '/api/review/')) or request.url.path=='/api/settings/theme') and request.method not in ('GET','HEAD','OPTIONS'):
+        origin=request.headers.get('origin')
+        fetch_site=request.headers.get('sec-fetch-site')
+        different_origin=origin and origin!=str(request.base_url).rstrip('/')
+        # Browser metadata describes the public origin even when a proxy rewrites the URL.
+        if fetch_site=='cross-site' or (different_origin and fetch_site!='same-origin'):
+            from fastapi.responses import JSONResponse
+            return JSONResponse({'detail':'请从 NAS Market 页面发起操作'},status_code=403)
     if request.url.path.startswith('/api/drawings/'):
         from fastapi.responses import JSONResponse
         try:
@@ -668,7 +708,7 @@ async def auth(request: Request, call_next):
             from fastapi.responses import JSONResponse
             return JSONResponse({'detail': '请求过大'}, status_code=413)
     header = os.getenv('TRUSTED_USER_HEADER', '')
-    if header and not request.headers.get(header) and not request.url.path.startswith('/api/drawings/'):
+    if header and not request.headers.get(header) and not request.url.path.startswith(('/api/drawings/', '/api/v1/')):
         from fastapi.responses import JSONResponse
         return JSONResponse({'detail': '登录后访问'}, status_code=401)
     return await call_next(request)
@@ -723,20 +763,62 @@ def depth(symbol: str):
         raise HTTPException(503, '盘口连接异常，请检查 OpenD；旧盘口线已停用')
 
 
+@app.get('/api/order-flow')
+def order_flow(symbol: str):
+    symbol = symbol.upper()
+    if not re.fullmatch(r'US\.[A-Z][A-Z0-9.]{0,11}', symbol):
+        raise HTTPException(400, '逐笔面板目前只支持美股')
+    try:
+        return {'ticks': ticker_feed.read_ticks(symbol)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        raise HTTPException(503, '逐笔行情连接异常，请检查 OpenD')
+
+
+@app.get('/api/option-profile')
+def option_volume_profile(symbol: str, expiry: str = ''):
+    symbol = symbol.upper()
+    if not re.fullmatch(r'US\.[A-Z][A-Z0-9.]{0,11}', symbol):
+        raise HTTPException(400, '请输入美股或 ETF 代码')
+    if expiry:
+        try:
+            if datetime.strptime(expiry, '%Y-%m-%d').date().isoformat() != expiry:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(400, '到期日格式应为 YYYY-MM-DD')
+    try:
+        with bridge.lock:
+            ctx = bridge.ensure()
+            if expiry:
+                return {'rows': option_profile(ctx, symbol, expiry, bridge.rate_limit)}
+            bridge.rate_limit()
+            rows = quote_result(ctx.get_option_expiration_date(symbol))
+            today = datetime.now(ET).date().isoformat()
+            return {'expirations': sorted({r['strike_time'] for r in rows if r['strike_time'] >= today})}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        raise HTTPException(503, '期权行情连接异常，请检查 OpenD')
+
+
 @app.get('/api/symbols/search')
-async def search_symbols(q: str = '', market: str = 'CN', limit: int = 12):
-    if market != 'CN' or len(q) > 32 or not 1 <= limit <= 20:
-        raise HTTPException(400, '名称搜索仅支持 A 股，关键词最多 32 字，最多返回 20 项')
+def search_symbols(q: str = '', market: str = 'CN', limit: int = 12):
+    if market not in ('CN', 'US') or len(q) > 32 or not 1 <= limit <= 20:
+        raise HTTPException(400, '请选择沪深或美股市场，关键词最多 32 字，最多返回 20 项')
     if not q.strip():
         return {'results': [], 'stale': False, 'source': 'nas_cache'}
-    return await asyncio.to_thread(bridge.search_symbols, q, limit)
+    return bridge.search_symbols(q, limit, market)
 
 
 @app.get('/api/symbols/names')
-async def symbol_names(symbols: str):
+async def symbol_names(symbols: str, prefer_cache: bool = False):
     codes = list(dict.fromkeys(s.strip().upper() for s in symbols.split(',') if s.strip()))
     if not codes or len(codes) > 100 or any(not SYMBOL_RE.fullmatch(code) for code in codes):
         raise HTTPException(400, '股票代码无效，单次最多一百只')
+    if prefer_cache:
+        names, missing = await asyncio.to_thread(bridge.cached_names, codes)
+        return {'names': names, 'missing': missing}
     return {'names': await asyncio.to_thread(bridge.names, codes)}
 
 
@@ -752,8 +834,47 @@ async def quotes(symbols: str):
         raise HTTPException(503, f'OpenD 快照不可用：{exc}')
 
 
+def history_needs_refresh(key, days, known, success):
+    age = time.monotonic()-last_fetch[key] if key in last_fetch else time.time()-success
+    return age > REFRESH or days > max(known, fetched_days.get(key, 0))
+
+
+async def refresh_history(key, days, force=False):
+    started = time.monotonic()
+    async with fetch_locks.setdefault(key, asyncio.Lock()):
+        known, success, latest = await asyncio.to_thread(sync_state, key)
+        if not history_needs_refresh(key, days, known, success):
+            if not force or last_fetch.get(key, 0) >= started:
+                return None
+        failure = history_failures.get(key)
+        if failure and failure[0] > started - 15 and (not force or failure[0] >= started):
+            return failure
+        try:
+            span = refresh_span(key, days, max(known, fetched_days.get(key, 0)), latest, success)
+            await asyncio.to_thread(bridge.history, key, span)
+        except Exception as exc:
+            now = time.monotonic()
+            for old in [k for k, entry in history_failures.items() if entry[0] <= now - 15]:
+                del history_failures[old]
+            code = 'permission_denied' if isinstance(exc, QuotePermissionError) else 'quote_unavailable'
+            history_failures[key] = (now, code, str(exc))
+            return history_failures[key]
+        await asyncio.to_thread(save_sync_state, key, days)
+        last_fetch[key] = time.monotonic()
+        fetched_days[key] = max(days, fetched_days.get(key, 0))
+        history_failures.pop(key, None)
+        return None
+
+
 @app.get('/api/bars')
-async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | None = None, limit: int = 5000, refresh: bool = False):
+async def bars_response(symbol: str, period: str = '5m', mode: str = 'all', days: int | None = None,
+                        limit: int = 5000, refresh: bool = False, prefer_cache: bool = False):
+    result = await bars(symbol, period, mode, days, limit, refresh, prefer_cache)
+    return await asyncio.to_thread(JSONResponse, result)
+
+
+async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | None = None, limit: int = 5000,
+               refresh: bool = False, prefer_cache: bool = False):
     try:
         key = validate(symbol, period, mode)
     except ValueError as exc:
@@ -762,25 +883,24 @@ async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | N
         days = default_history_days(period, symbol)
     days = min(max(days, 1), retention_days(period, symbol))
     limit = min(max(limit, 1), 10000)
-    lock = fetch_locks.setdefault(key, asyncio.Lock())
-    async with lock:
-        known, success, latest = await asyncio.to_thread(sync_state, key)
-        known = max(known, fetched_days.get(key, 0))
-        expired = time.monotonic()-last_fetch[key] > REFRESH if key in last_fetch else time.time()-success > REFRESH
-        if refresh or expired or days > known:
-            try:
-                refresh_days = refresh_span(key, days, known, latest, success)
-                await asyncio.to_thread(bridge.history, key, refresh_days)
-                await asyncio.to_thread(save_sync_state, key, days)
-                last_fetch[key] = time.monotonic()
-                fetched_days[key] = max(days, fetched_days.get(key, 0))
-            except Exception as exc:
-                cached = await asyncio.to_thread(read_bars, key, days, limit)
-                if not cached:
-                    raise HTTPException(503, f'OpenD 行情不可用：{exc}')
-                return {'bars': cached, 'stale': True, 'error': str(exc), 'source': 'nas_cache',
-                        'error_code': 'permission_denied' if isinstance(exc, QuotePermissionError) else 'quote_unavailable'}
-    return {'bars': await asyncio.to_thread(read_bars, key, days, limit), 'stale': False, 'source': 'nas_cache'}
+    if prefer_cache:
+        known, success, _ = await asyncio.to_thread(sync_state, key)
+        cached = await asyncio.to_thread(read_bars, key, days, limit)
+        if cached:
+            stale = refresh or history_needs_refresh(key, days, known, success)
+            failure = history_failures.get(key)
+            if stale and not refresh and failure and failure[0] > time.monotonic() - 15:
+                return {'bars': cached, 'stale': True, 'error': failure[2], 'error_code': failure[1],
+                        'source': 'nas_cache', 'last_success': success}
+            return {'bars': cached, 'stale': stale, 'revalidate': stale, 'source': 'nas_cache',
+                    'last_success': success}
+    failure = await refresh_history(key, days, refresh)
+    rows = await asyncio.to_thread(read_bars, key, days, limit)
+    if failure:
+        if not rows:
+            raise HTTPException(503, f'OpenD 行情不可用：{failure[2]}')
+        return {'bars': rows, 'stale': True, 'error': failure[2], 'error_code': failure[1], 'source': 'nas_cache'}
+    return {'bars': rows, 'stale': False, 'source': 'nas_cache'}
 
 
 def remember_history_window(key, start, end):
@@ -944,6 +1064,7 @@ async def python_indicator(request: PythonIndicatorRequest):
 class Setting(BaseModel):
     value: object
     drawing_revision: int | None = None
+    initialize: bool = False
 
 
 class StrategyEvaluation(BaseModel):
@@ -1047,15 +1168,21 @@ async def import_moomoo_watchlists():
 
 @app.get('/api/settings/{key}')
 def get_setting(key: str, drawings_only: bool = False, since: int = -1):
-    if key not in ('workspace', 'templates') and not re.fullmatch(r'depth-US\.[A-Z][A-Z0-9.]{0,11}', key):
+    if key not in ('workspace', 'templates', 'theme') and not re.fullmatch(r'depth-US\.[A-Z][A-Z0-9.]{0,11}', key):
         raise HTTPException(404)
     with connect_db() as db:
         if key == 'workspace':
+            db.execute('BEGIN')
+            if drawings_only and since == drawing_api.drawing_revision(db):
+                return {'drawing_revision': since, 'changed': False}
             value, revision = drawing_api.load_workspace(db)
             if drawings_only:
                 return {'drawing_revision': revision, 'changed': since != revision, **({'value': drawing_api.drawing_view(value)} if since != revision else {})}
             return {'value': value, 'drawing_revision': revision}
         row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+    if key == 'theme':
+        return JSONResponse({'value': json.loads(row['value']) if row else None},
+                            headers={'Cache-Control': 'no-store'})
     if row:
         return {'value': json.loads(row['value'])}
     return {'value': {'symbols': os.getenv('DEFAULT_SYMBOLS', 'US.SNDK,US.SNXX,US.SNDQ').split(','), 'layout': 1} if key == 'workspace' else {}}
@@ -1063,8 +1190,20 @@ def get_setting(key: str, drawings_only: bool = False, since: int = -1):
 
 @app.put('/api/settings/{key}')
 def put_setting(key: str, setting: Setting):
-    if key not in ('workspace', 'templates') and not re.fullmatch(r'depth-US\.[A-Z][A-Z0-9.]{0,11}', key):
+    if key not in ('workspace', 'templates', 'theme') and not re.fullmatch(r'depth-US\.[A-Z][A-Z0-9.]{0,11}', key):
         raise HTTPException(404)
+    if key == 'theme':
+        if setting.value not in ('dark', 'light'):
+            raise HTTPException(422, '主题须为 dark 或 light')
+        with connect_db() as db:
+            payload = json.dumps(setting.value)
+            if setting.initialize:
+                db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)', (key, payload))
+            else:
+                db.execute('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                           (key, payload))
+            row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        return {'value': json.loads(row['value'])}
     if key == 'workspace':
         if not isinstance(setting.value, dict):
             raise HTTPException(422, '工作区应为对象')
@@ -1123,6 +1262,16 @@ async def stream(ws: WebSocket):
 
 
 drawing_api.install(app, connect_db)
+
+from .review import install as install_review
+install_review(app, connect_db)
+
+from .radar import install as install_radar
+radar_service = install_radar(app, bridge, connect_db)
+from .scan_service import ScanService
+from .scan_api import install as install_scan
+scan_service = ScanService(sys.modules[__name__], radar_service)
+install_scan(app, scan_service)
 
 STATIC = Path(__file__).parent / 'static'
 if STATIC.exists():

@@ -1,0 +1,56 @@
+.daily-review .review-tabs{flex-wrap:wrap}
+.book-panel{border:1px solid var(--review-line);border-radius:10px;background:var(--review-panel);padding:clamp(14px,2vw,28px);min-width:0}
+.book-header,.book-detail>header,.book-sync,.book-candidate,.book-actions,.book-toolbar,.book-toolbar form,.book-areas,.book-links{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.book-header,.book-detail>header,.book-sync,.book-candidate{justify-content:space-between}
+.book-panel header{height:auto;min-height:0;border:0;background:transparent;padding:0}
+.book-header>div,.book-detail>header>div,.book-candidate>div,.book-sync>div{min-width:0}
+.book-header h2{font-size:21px}
+.book-panel small,.book-table small,.book-candidate span,.book-sync small{display:block;color:var(--review-muted);font-size:12px}
+.book-areas{border-bottom:1px solid var(--review-line);margin:18px 0;gap:4px}
+.daily-review .book-areas button{border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;padding:9px 14px}
+.daily-review .book-areas button[aria-pressed=true]{color:var(--review-accent);border-bottom-color:var(--review-accent)}
+.book-toolbar{margin:16px 0}
+.book-toolbar form{flex:1 1 225px}
+.book-toolbar input{min-width:10ch;flex:1}
+.book-toolbar select,.book-toolbar button,.book-toolbar input{min-height:36px}
+.book-sync{padding:12px 14px;border:1px solid var(--review-line);border-radius:7px;background:var(--theme-surface-raised,#1a2b40)}
+.book-sync .book-warning{color:var(--theme-warning,#ebc17c)}
+.daily-review .book-list-row{width:100%;display:grid;grid-template-columns:minmax(150px,1fr) minmax(130px,1fr) auto 16px;text-align:left;align-items:center;border:0;border-bottom:1px solid var(--review-line);border-radius:0;background:transparent;white-space:normal;padding:12px 4px;gap:12px}
+.daily-review .book-list-row:hover{background:var(--theme-surface-raised,#1a2b40)}
+.book-list-row strong,.book-detail h3,.book-note,.book-metrics dd,.book-snapshot,.book-list-row span{overflow-wrap:anywhere}
+.book-table{overflow-x:auto}
+.book-table table{width:100%;border-collapse:collapse;text-align:left}
+.book-table th,.book-table td{padding:9px 10px;border-bottom:1px solid var(--review-line);vertical-align:top}
+.book-table th,.book-metrics dt{color:var(--review-muted);font-size:12px}
+.book-snapshot{margin:8px 0}
+.book-actions,.book-form,.book-detail,.book-relations{margin-top:16px}
+.book-actions{justify-content:flex-end}
+.book-detail,.book-relations,.book-form{border-top:1px solid var(--review-line);padding-top:16px}
+.book-detail>h3,.book-detail>section,.book-detail details{margin-top:18px}
+.book-metrics,.book-form fieldset{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,185px),1fr));gap:12px}
+.book-metrics{padding:12px 0;margin:0}
+.book-metrics dd{margin:2px 0;white-space:pre-wrap}
+.book-form fieldset{border:0;margin:12px 0;padding:0;min-width:0}
+.book-field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.book-field span{color:var(--review-muted);font-size:12px}
+.book-wide{grid-column:1/-1}
+.book-form summary,.book-detail summary{cursor:pointer;color:var(--review-accent)}
+.book-group{max-height:200px;overflow:auto}
+.book-group label{display:flex;gap:6px;align-items:center;padding:4px 0}
+.book-candidate,.book-version{border:1px solid var(--review-line);border-radius:6px;padding:10px;margin:8px 0}
+.book-note{white-space:pre-wrap}
+.book-links,.book-relations h3{margin:6px 0}
+@media(max-width:650px){
+ .daily-review .book-list-row{grid-template-columns:minmax(0,1fr) auto;gap:3px 8px}
+ .book-list-row>span:nth-child(2){grid-column:1;grid-row:2}
+ .book-list-row>span:nth-child(3){grid-column:2;grid-row:1}
+ .book-list-row>svg{grid-column:2;grid-row:2;justify-self:end}
+ .book-form fieldset{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .book-field input,.book-field select{width:100%}
+ .book-table td,.book-table th{padding:7px 5px}
+}
+.book-plan-actions,.book-plan-link,.book-plan-fill{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.book-plan-link{margin-top:12px}
+.book-plan-link select{min-width:220px;max-width:100%;flex:1;padding:8px;border:1px solid var(--theme-border-strong,#34465e);border-radius:5px;background:var(--theme-surface,#142338);color:var(--theme-text,#dce7f5)}
+.book-plan-fill{margin:3px 0}
+.book-plan-actions button:last-child{color:var(--theme-danger,#f3a4a9)}

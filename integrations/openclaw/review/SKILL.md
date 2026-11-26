@@ -35,3 +35,6 @@ description: 使用已有 NAS Market 复盘 API 记录 A 股与美股交易计�
 - 日记正文或周总结中写入 `[[plan:档案ID|计划简称]]`、`[[fill:档案ID|成交简称]]`，用服务端返回的真实 ID 替换占位。可在同一篇中引用多笔成交。追加或移除日记引用时用 `day` 读取最新版，保留其他正文，并通过 `sync-day --revision 当前版本` 写回。周总结用 `week` 读取，再用原有周更新接口保存。反查使用 `backlinks --kind plan --id ID` 或 `backlinks --kind fill --id ID`。移除正文标记并保存，也会同步移除反向引用。
 - `book` 按标的返回计划、成交、持仓，分页用 `--limit`、`--offset` 和返回的 `next_offset`；按完整合约查看时核对每行 `code`。断网、版本冲突或同步失败时先查询当前状态，再决定是否重试。
 
+查询计划每日点位、止损和止盈触及记录使用 `plan-daily --market CN --id <计划ID> --limit 30`。有下一页时，以返回的 `next_before` 传入 `--before`。null 表示尚无可判定结果。
+
+逐根收盘记录、失败原因和重试时间用 `plan-bars --market CN --id <计划ID>`。跟踪只在计划显式配置 tracking_period 且为进行中时启用。

@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {loadTS} from './test-load-ts.mjs';
+const {mergeFlow} = await loadTS('marketFlow');
+const tick=(sequence,time,price,volume,direction)=>({sequence,time,price,volume,direction});
+const a=tick('1','2026-11-09 09:30:00',100,10,'BUY');
+const b=tick('2','2026-11-09 09:30:01',100,3,'SELL');
+const c=tick('3','2026-11-09 09:31:00',101,5,'NEUTRAL');
+const first=mergeFlow(null,[b,a]);
+const next=mergeFlow(first,[b,c]);
+assert.equal(next.cvd,7);
+assert.deepEqual(next.bars.map(x=>[x.delta,x.cvd]),[[7,7],[0,7]]);
+assert.equal(next.bars[0].levels[0].buy,10);
+assert.equal(next.bars[1].levels[0].neutral,5);
+assert.equal(mergeFlow(next,[tick('6','2026-11-09 09:33:00',103,8,'SELL')]).gap,true);
+assert.equal(mergeFlow(next,[tick('1','2026-11-10 09:30:00',103,8,'SELL')]).cvd,-8);

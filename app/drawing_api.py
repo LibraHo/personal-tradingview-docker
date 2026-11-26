@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 FIELDS = ('drawings', 'trends', 'fibos', 'drawingsHidden')
 KINDS = {'horizontal': 'drawings', 'trend': 'trends', 'fib': 'fibos'}
 PERIODS = {'1m', '5m', '15m', '30m', '60m', '120m', '240m', '1d', '1w', '1mo'}
-SYMBOL = re.compile(r'^(US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.\d{6})$')
+SYMBOL = re.compile(r'^(US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.(?:\d{6}|(?:BK|LIST)[0-9]{1,10}))$')
 IDENTIFIER = re.compile(r'^[A-Za-z0-9_.:-]{1,128}$')
 COLOR = re.compile(r'^#[0-9a-fA-F]{6}$')
 
@@ -155,11 +155,15 @@ def merge_drawings(workspace, source):
     return result
 
 
+def drawing_revision(db):
+    revision = db.execute("SELECT value FROM settings WHERE key='drawing_revision'").fetchone()
+    return int(revision[0]) if revision else 0
+
+
 def load_workspace(db):
     row = db.execute("SELECT value FROM settings WHERE key='workspace'").fetchone()
     workspace = json.loads(row[0]) if row else {'symbols': os.getenv('DEFAULT_SYMBOLS', 'US.SNDK,US.SNXX,US.SNDQ').split(','), 'layout': 1}
-    revision = db.execute("SELECT value FROM settings WHERE key='drawing_revision'").fetchone()
-    return workspace, int(revision[0]) if revision else 0
+    return workspace, drawing_revision(db)
 
 
 def store_workspace(db, workspace, revision):
@@ -245,7 +249,8 @@ def install(app, connect_db):
             rows.append(obj);revision += 1;store_workspace(db, workspace, revision)
         return JSONResponse({'object': obj, 'revision': revision, 'created': True}, status_code=201)
 
-    @router.api_route('/objects/{identifier}', methods=['PATCH', 'DELETE'])
+    @router.patch('/objects/{identifier}')
+    @router.delete('/objects/{identifier}')
     def change_object(identifier: str, request: Request, symbol: str, period: str, kind: str, body: dict | None = None):
         market, key = scope(symbol, period)
         if kind not in KINDS:

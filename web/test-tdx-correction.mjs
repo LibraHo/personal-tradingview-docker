@@ -1,0 +1,11 @@
+import {loadTS} from './test-load-ts.mjs';
+import assert from 'node:assert/strict';
+const {indicatorPane}=await loadTS('indicators');
+const {tdxAvailable,computeTdx,tdxCatalog}=await loadTS('tdxIndicators');
+assert.equal(indicatorPane({name:'RED_GREEN_SWING',pane:'main'}),'separate');
+assert.equal(indicatorPane({name:'FULAI',pane:'separate'}),'main');
+assert.equal(tdxAvailable('FULAI','US.AAPL'),false);
+assert.equal(tdxAvailable('FULAI','SH.600519'),true);
+assert.equal(tdxCatalog.INSTITUTION_TREND,undefined);
+assert.throws(()=>computeTdx([{symbol:'US.AAPL'}],'FULAI'));
+console.log('Frontend market gates and fixed pane checks passed');

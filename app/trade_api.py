@@ -134,21 +134,24 @@ def create_app(data_dir=None, broker=None):
             length = int(request.headers.get('content-length', '0') or 0)
         except ValueError:
             return JSONResponse({'detail': '请求长度无效'}, status_code=400)
-        if length > 32768:
+        body_limit = 524288 if request.url.path.startswith(('/api/market/review/', '/api/v1/review/')) else 32768
+        if length > body_limit:
             return JSONResponse({'detail': '请求过大'}, status_code=413)
         drawing_agent = request.url.path.startswith('/api/drawings/')
+        market_agent = request.url.path.startswith('/api/v1/')
         if drawing_agent:
             from .drawing_api import authenticate
             try:
                 authenticate(request)
             except HTTPException as exc:
                 return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
-        if not drawing_agent and request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+        if not drawing_agent and not market_agent and request.method not in {'GET', 'HEAD', 'OPTIONS'}:
             origin = request.headers.get('origin', '')
             if origin != f'https://{request.headers.get("host", "")}' or request.headers.get('sec-fetch-site') == 'cross-site':
                 return JSONResponse({'detail': '请从交易页面发起操作'}, status_code=403)
         public = request.url.path in {'/api/trade/auth', '/api/trade/login', '/api/trade/setup', '/health'}
-        if request.url.path.startswith('/api/') and not public and not drawing_agent:
+        public = public or (request.url.path == '/api/market/settings/theme' and request.method in {'GET', 'PUT'})
+        if request.url.path.startswith('/api/') and not public and not drawing_agent and not market_agent:
             token = request.cookies.get(COOKIE, '')
             key = hashlib.sha256(token.encode()).hexdigest()
             session = sessions.get(key)
@@ -324,6 +327,9 @@ def create_app(data_dir=None, broker=None):
     @app.put('/api/trade/presets')
     async def save_presets(body: dict):
         return await rpc('preferences', body)
+
+    from .api_management import install as install_api_management
+    install_api_management(app)
 
     from .chart_gateway import register_chart_gateway
     register_chart_gateway(app, sessions, COOKIE)

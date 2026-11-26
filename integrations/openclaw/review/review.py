@@ -63,6 +63,8 @@ def sync_day(market, day, fields, expected_revision=None):
 
 LEDGER_COMMANDS = {
     'book': ('GET', 'book'), 'plan': ('GET', 'plans/{id}'), 'fill': ('GET', 'fills/{id}'),
+    'plan-bars': ('GET', 'plans/{id}/bars'),
+    'plan-daily': ('GET', 'plans/{id}/daily'),
     'add-plan': ('POST', 'plans'), 'update-plan': ('PUT', 'plans/{id}'),
     'delete-plan': ('DELETE', 'plans/{id}'),
     'link-plan-fill': ('PUT', 'plans/{id}/fills/{fill_id}'),
@@ -86,6 +88,10 @@ def ledger_command(args):
         if not args.kind:
             raise ValueError('请指定 --kind plan 或 --kind fill')
         params.update(kind=args.kind, id=args.id)
+    elif args.command in ('plan-daily','plan-bars'):
+        params['limit'] = args.limit
+        if args.before:
+            params['before'] = int(args.before) if args.command=='plan-bars' else date.fromisoformat(args.before).isoformat()
     elif args.command == 'book':
         params.update(limit=args.limit, offset=args.offset)
         if args.symbol:
@@ -133,6 +139,7 @@ def main():
     parser.add_argument('--day', help='YYYY-MM-DD in the market timezone')
     parser.add_argument('--revision', type=int, help='Require a previously read revision when appending to an existing list')
     parser.add_argument('--id')
+    parser.add_argument('--before', help='Read daily records strictly before YYYY-MM-DD')
     parser.add_argument('--fill-id', help='Existing fill ID for plan association')
     parser.add_argument('--kind', choices=('plan', 'fill'))
     parser.add_argument('--symbol')
@@ -173,4 +180,3 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
-

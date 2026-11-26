@@ -1,0 +1,20 @@
+.sixpulse-parameters{min-width:0;display:grid;gap:10px}
+.sixpulse-parameters .sixpulse-caption{margin:0;color:var(--theme-muted, #91a7c1);font-size:12px;line-height:1.7}
+.sixpulse-calculation{border:1px solid var(--theme-border, #304259);border-radius:8px;background:var(--theme-surface, #101c2d);overflow:hidden}
+.indicator-parameters .sixpulse-calculation>summary{display:flex;align-items:center;gap:10px;padding:12px 14px;color:var(--theme-text, #dce8f7);font-size:13px;list-style:none}
+.sixpulse-calculation>summary::-webkit-details-marker{display:none}
+.sixpulse-calculation>summary::before{content:'›';font-size:19px;line-height:1;color:var(--theme-muted, #8ca7c7);transition:transform .15s}
+.sixpulse-calculation[open]>summary::before{transform:rotate(90deg)}
+.sixpulse-calculation>summary small{margin-left:auto;color:var(--theme-muted, #8ca3bf);font-size:11px;text-align:right}
+.sixpulse-calculation>summary:focus-visible,.sixpulse-help>summary:focus-visible{outline:2px solid var(--theme-focus, #79acf0);outline-offset:-3px}
+.sixpulse-parameter-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:4px 14px 14px;border-top:1px solid var(--theme-border, #26394f)}
+.sixpulse-parameter-groups fieldset{margin:8px 0 0;padding:10px 12px 12px;min-width:0;border:1px solid var(--theme-border, #2c3e54);border-radius:6px}
+.sixpulse-parameter-groups legend{padding:0 5px;color:var(--theme-link, #b8d3f4);font-size:12px;font-weight:600;letter-spacing:.04em}
+.sixpulse-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.sixpulse-parameter-groups fieldset:nth-child(-n+2) .sixpulse-fields,.sixpulse-parameter-groups fieldset:nth-child(4) .sixpulse-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
+.indicator-parameters .sixpulse-fields label{font-size:11px;color:var(--theme-muted, #91a7c1);gap:6px}
+.indicator-parameters .sixpulse-fields input{padding:7px 9px;font-size:13px;background:var(--theme-surface, #142237)}
+.indicator-parameters .sixpulse-help>summary{padding:2px 0;color:var(--theme-muted, #8fa6c3);font-size:11px}
+.sixpulse-help>p{margin:8px 0 0;font-size:12px;line-height:1.8;color:var(--theme-muted, #91a7c1)}
+@media(max-width:600px){.sixpulse-parameter-groups{grid-template-columns:1fr}.sixpulse-calculation>summary small{font-size:10px}.sixpulse-parameter-groups{padding:4px 10px 10px}}
+@media(prefers-reduced-motion:reduce){.sixpulse-calculation>summary::before{transition:none}}

@@ -16,7 +16,7 @@ for(let t=0;t<cases.length;t++){
 }
 for(const [name,item] of Object.entries(advancedCatalog)){
  assert.equal(indicatorPane({name}),item.pane);
- for(const f of item.fields)for(const invalid of [null,'3',true,-1,0,Infinity,NaN,2001])assert.throws(()=>advancedParams(name,{[f.key]:invalid}),`${name} ${f.key}`);
+ for(const f of item.fields)for(const invalid of [null,'3',true,-1,...(f.min===0?[]:[0]),Infinity,NaN,2001])assert.throws(()=>advancedParams(name,{[f.key]:invalid}),`${name} ${f.key}`);
 }
 const supertrend=compute(rows,'SUPERTREND','{}');assert.ok(supertrend.direction.includes(1)&&supertrend.direction.includes(-1));
 assert.equal(compute(rows,'SAR','{}').main[0],null);

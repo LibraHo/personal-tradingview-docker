@@ -2,8 +2,10 @@
 import math
 from .extra_indicators import average, rolling_sum, extreme
 from .sixpulse import DEFAULTS as SIXPULSE_DEFAULTS, calculate_sixpulse, signal_settings, signal_values
+from .msigm8 import DEFAULTS as MSIGM8_DEFAULTS, calculate_msigm8
 
 DEFAULTS = {
+    'MSIGM8': MSIGM8_DEFAULTS,
     'SIXPULSE': SIXPULSE_DEFAULTS, 'SIXPULSE_SIGNAL': SIXPULSE_DEFAULTS,
     'KDJ': dict(period=9, smoothK=3, smoothD=3), 'MFI': dict(period=14),
     'KC': dict(period=20, atrPeriod=10, multiplier=2), 'SUPERTREND': dict(period=10, multiplier=3),
@@ -25,9 +27,10 @@ def parameters(name, inputs):
     result = {}
     for key, fallback in DEFAULTS[name].items():
         value = inputs.get(key, fallback)
-        fractional = key in ('multiplier', 'stddev', 'start', 'increment', 'maximum')
-        limit = 1 if name == 'SAR' else 100 if fractional else 2000
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= limit or (not fractional and int(value) != value):
+        fractional = key in ('multiplier', 'stddev', 'start', 'increment', 'maximum', 'bufferRate')
+        limit = 1 if name == 'SAR' or key == 'bufferRate' else 100 if fractional else 2000
+        in_range = 0 <= value <= limit if key == 'bufferRate' and isinstance(value, (int, float)) else isinstance(value, (int, float)) and 0 < value <= limit
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not in_range or (not fractional and int(value) != value):
             raise ValueError(f'{key} 参数无效（须为正数，最大 {limit}）')
         result[key] = value if fractional else int(value)
     if 'fast' in result and result['fast'] >= result['slow']:
@@ -97,6 +100,8 @@ def calculate_advanced(bars, name, inputs):
     p = parameters(name, inputs)
     if p is None:
         return None
+    if name == 'MSIGM8':
+        return calculate_msigm8(bars, p)
     if name in ('SIXPULSE', 'SIXPULSE_SIGNAL'):
         values = calculate_sixpulse(bars, p)
         return signal_values(values, inputs) if name == 'SIXPULSE_SIGNAL' else values

@@ -1,3 +1,11 @@
+import IndicatorLibrary from './IndicatorLibrary';
+import {drawTdx,resonanceColors} from './tdxChart';
+import {tdxCatalog,tdxAvailable,isChiefResonance} from './tdxIndicators';
+import ApiManagement from './ApiManagement';
+import ScannerPanel from './ScannerPanel';
+import MarketRadar, {type RadarItem} from './MarketRadar';
+import IndicatorPicker from './IndicatorPicker';
+import {msigm8Overlay} from './msigm8Overlay';
 import {advancedCatalog} from './advancedCatalog';
 import QuickIndicators from './QuickIndicators';
 import {openingRangeLines,type OpeningRangeData} from './OpeningRange';
@@ -8,23 +16,29 @@ import{trendExtension,drawingTimeCoordinate}from'./TrendExtensions';
 import{drawingTimeAtX,moveTrendEndpoint,hitTestTrendEndpoint,type TimeSample}from'./trendGeometry';
 import type{PointerEvent as ReactPointerEvent}from'react';
 import{backfillHistory,marketDateWindow}from'./historyTools';
-import{createSeriesMarkers,type SeriesMarker,createChart,CandlestickSeries,HistogramSeries,LineSeries,TickMarkType,type IChartApi,type ISeriesApi,type Time,type UTCTimestamp}from'lightweight-charts';
-import{Activity,Plus,Settings2,Trash2,Save,LayoutGrid,Wifi,WifiOff,RotateCw,Minus}from'lucide-react';
+import{createSeriesMarkers,type SeriesMarker,createChart,CandlestickSeries,HistogramSeries,LineSeries,CrosshairMode,TickMarkType,type IChartApi,type ISeriesApi,type MouseEventParams,type Time,type UTCTimestamp}from'lightweight-charts';
+import './analysis-tool.css';
+import{Activity,Sparkles,Plus,Settings2,Trash2,Save,LayoutGrid,Wifi,WifiOff,RotateCw,Minus}from'lucide-react';
 import{type Bar,type Indicator,compute,indicatorPane}from'./indicators';
 import{formula}from'./formula';
 import './style.css';
+import './workspace-navigation.css';
+import {ThemeProvider,ThemeToggle,useTheme} from './Theme';
 import TradeTerminal from './TradeTerminal';
 import {secureChart,setChartCsrf} from './secureChart';
+import MarketFlowPanel from './MarketFlowPanel';
 import DepthPanel,{type DepthLevel} from './DepthPanel';
 import CachePanel from './CachePanel';
 import StockSearch from './StockSearch';
 import {resetChartViewport,resetPriceScales,markViewportReady} from './chartViewport';
 import SettingsPanel,{type SettingsTab} from './SettingsPanel';
+import AgentSettings from './AgentSettings';
 import OpenDPanel from './OpenDPanel';
 import CandleSettings from './CandleSettings';
 import {defaultCandleAppearance,normalizeCandleAppearance,candleSeriesOptions,candleBodyColor,volumePalette,type CandleAppearance} from './candleAppearance';
 import type {CSSProperties} from 'react';
 import {sixPulsePanel} from './sixpulsePanel';
+import {sixPulseLevelsOverlay} from './sixpulseLevelsOverlay';
 import IndicatorParameters,{indicatorLabels,indicatorDefaults} from './IndicatorParameters';
 import {visibleExtremeLabels} from './VisibleExtremes';
 import {sessionBackground} from './SessionBackground';
@@ -32,7 +46,11 @@ import {macdHistogramColor,volumeColor,selectedColor,indicatorDefaultColor} from
 import IndicatorAppearance from './IndicatorAppearance';
 import DrawingsPanel from './DrawingsPanel';
 import {fibPrices,drawingStyle,normalizeDrawingRecords,drawingsForPeriod,updateDrawingRecords,newDrawingId,hitTestDrawing,type FibDrawing,type HorizontalDrawing,type TrendDrawing,type DrawingSelection} from './drawingTools';
+import type {AnalysisChart} from './MarketAnalysis';
+const MarketAnalysis=lazy(()=>import('./MarketAnalysis'));
 const StrategyPanel=lazy(()=>import('./StrategyPanel'));
+const DailyReview=lazy(()=>import('./DailyReview'));
+const ChartPlanDialog=lazy(()=>import('./ChartPlanDialog'));
 type Mode='all'|'extended'|'regular';type Period='1m'|'5m'|'15m'|'30m'|'60m'|'120m'|'240m'|'1d'|'1w'|'1mo';
 type Tile={symbol:string;period:Period};
 type StockQuote={symbol:string;name:string;price:number|null;change_percent:number|null;pre_price:number|null;pre_change_percent:number|null;after_price:number|null;after_change_percent:number|null;overnight_price:number|null;overnight_change_percent:number|null;update_time:string};
@@ -48,21 +66,26 @@ const chartSlots=[0,1,2,3];
 const pythonExample='fast = EMA(C, PARAMS["fast"])\nslow = EMA(C, PARAMS["slow"])\nmacd = fast - slow\nsignal = EMA(macd, PARAMS["signal"])\nresult = {"MACD": macd, "Signal": signal, "Histogram": macd - signal}';
 const appliesTo=(indicator:Indicator,index:number,period:Period)=>indicator.visible&&
   (!Array.isArray(indicator.charts)||indicator.charts.includes(index))&&
-  (!Array.isArray(indicator.periods)||indicator.periods.includes(period));
+  (tdxCatalog[indicator.name]?.period===undefined
+    ?(!Array.isArray(indicator.periods)||indicator.periods.includes(period))
+    :tdxCatalog[indicator.name].period===period);
 
 function IndicatorScope({indicator,onChange}:{indicator:Indicator;onChange:(patch:Partial<Indicator>)=>void}){
   const charts=Array.isArray(indicator.charts)?indicator.charts:chartSlots;
   const selectedPeriods=Array.isArray(indicator.periods)?indicator.periods:periods;
+  const fixedPeriod=tdxCatalog[indicator.name]?.period;
   const toggleChart=(index:number)=>onChange({charts:charts.includes(index)?charts.filter(x=>x!==index):chartSlots.filter(x=>x===index||charts.includes(x))});
   const togglePeriod=(period:Period)=>onChange({periods:selectedPeriods.includes(period)?selectedPeriods.filter(x=>x!==period):periods.filter(x=>x===period||selectedPeriods.includes(x))});
   return <div className="indicator-scope">
     <div className="scope-line"><span>适用图</span><div className="scope-chips"><button type="button" className={charts.length===4?'chosen':''} onClick={()=>onChange({charts:[...chartSlots]})}>全部</button>{chartSlots.map(i=><button type="button" key={i} aria-label={`${indicator.title||indicator.name} 图 ${i+1}`} aria-pressed={charts.includes(i)} className={charts.includes(i)?'chosen':''} onClick={()=>toggleChart(i)}>图 {i+1}</button>)}</div></div>
-    <div className="scope-line"><span>周期</span><div className="scope-chips"><button type="button" className={selectedPeriods.length===periods.length?'chosen':''} onClick={()=>onChange({periods:[...periods]})}>全部</button>{periods.map(period=><button type="button" key={period} aria-label={`${indicator.title||indicator.name} ${period}`} aria-pressed={selectedPeriods.includes(period)} className={selectedPeriods.includes(period)?'chosen':''} onClick={()=>togglePeriod(period)}>{periodLabel(period)}</button>)}</div></div>
+    <div className="scope-line"><span>周期</span>{fixedPeriod?<strong>{periodLabel(fixedPeriod)}</strong>:<div className="scope-chips"><button type="button" className={selectedPeriods.length===periods.length?'chosen':''} onClick={()=>onChange({periods:[...periods]})}>全部</button>{periods.map(period=><button type="button" key={period} aria-label={`${indicator.title||indicator.name} ${period}`} aria-pressed={selectedPeriods.includes(period)} className={selectedPeriods.includes(period)?'chosen':''} onClick={()=>togglePeriod(period)}>{periodLabel(period)}</button>)}</div>}</div>
   </div>;
 }
 
 function IndicatorSettings({indicator,onPatch,onDelete}:{indicator:Indicator;onPatch:(patch:Partial<Indicator>)=>void;onDelete:()=>void}){
   const [newInputName,setNewInputName]=useState(''),[validationError,setValidationError]=useState('');
+  const [expanded,setExpanded]=useState(false);
+  const displayName=indicator.title||indicatorLabels[indicator.name]||indicator.name;
   let settings:any={code:'',inputs:{}};
   if(indicator.name==='PYTHON')try{settings=JSON.parse(indicator.params)}catch{}
   const pythonCode=String(settings.code||''),pythonInputs:Record<string,number>=settings.inputs&&typeof settings.inputs==='object'?settings.inputs:{};
@@ -76,12 +99,14 @@ function IndicatorSettings({indicator,onPatch,onDelete}:{indicator:Indicator;onP
   },[indicator.name,indicator.params]);
   const addInput=()=>{const name=newInputName.trim();if(!/^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(name)||name in pythonInputs){setValidationError('参数名须以字母开头，且不能重复');return}patchPython({inputs:{...pythonInputs,[name]:1}});setNewInputName('')};
   return <div className="indicator-card">
-    <div className="indicator-row"><label><input type="checkbox" checked={indicator.visible} onChange={e=>onPatch({visible:e.target.checked})}/><strong>{indicator.title||indicator.name}</strong></label>{indicator.name==='PYTHON'?<span className="indicator-language">Python</span>:<span className="indicator-language">{indicatorLabels[indicator.name]?.split(' · ')[1]||indicator.name}</span>}<button className="icon-button" title={`删除 ${indicator.title||indicator.name}`} onClick={onDelete}><Trash2 size={15}/></button></div>
-    {indicator.name==='PYTHON'&&<><textarea className="python-code" aria-label={`${indicator.title||indicator.name} Python 代码`} value={pythonCode} spellCheck={false} onChange={e=>patchPython({code:e.target.value})}/><div className="python-inputs"><strong>可调参数</strong>{Object.entries(pythonInputs).map(([name,value])=><label key={`${name}:${value}`}>{name}<input aria-label={`${indicator.title||indicator.name} ${name}`} type="number" step="any" defaultValue={value} onBlur={e=>{const next=Number(e.target.value);if(!e.target.value||!Number.isFinite(next)){e.target.value=String(value);setValidationError(`${name} 须为数字`);return}patchPython({inputs:{...pythonInputs,[name]:next}})}}/><button title={`删除参数 ${name}`} onClick={()=>{const inputs={...pythonInputs};delete inputs[name];patchPython({inputs})}}>×</button></label>)}<div className="python-add-input"><input aria-label="新增参数名" placeholder="新增参数名" value={newInputName} onChange={e=>setNewInputName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addInput()}/><button onClick={addInput}>添加参数</button></div><small>代码中用 PARAMS["fast"] 读取参数；修改数值后离开输入框即生效。</small></div>{validationError&&<div className="side-error">{validationError}</div>}</>}
+    <div className="indicator-row"><label><input type="checkbox" checked={indicator.visible} onChange={e=>onPatch({visible:e.target.checked})}/><strong>{displayName}</strong></label>{indicator.name==='PYTHON'?<span className="indicator-language">Python</span>:<span className="indicator-language">{indicatorPane(indicator)==='main'?'主图':'副图'}</span>}<button type="button" className="indicator-configure" aria-label={`设置 ${displayName}`} aria-expanded={expanded} aria-controls={`indicator-settings-${indicator.id}`} onClick={()=>setExpanded(!expanded)}>{expanded?'收起':'设置'}</button><button className="icon-button" title={`删除 ${displayName}`} onClick={onDelete}><Trash2 size={15}/></button></div>
+    {expanded&&<div className="indicator-card-options" id={`indicator-settings-${indicator.id}`}>
+    {indicator.name==='PYTHON'&&<><textarea className="python-code" aria-label={`${displayName} Python 代码`} value={pythonCode} spellCheck={false} onChange={e=>patchPython({code:e.target.value})}/><div className="python-inputs"><strong>可调参数</strong>{Object.entries(pythonInputs).map(([name,value])=><label key={`${name}:${value}`}>{name}<input aria-label={`${displayName} ${name}`} type="number" step="any" defaultValue={value} onBlur={e=>{const next=Number(e.target.value);if(!e.target.value||!Number.isFinite(next)){e.target.value=String(value);setValidationError(`${name} 须为数字`);return}patchPython({inputs:{...pythonInputs,[name]:next}})}}/><button title={`删除参数 ${name}`} onClick={()=>{const inputs={...pythonInputs};delete inputs[name];patchPython({inputs})}}>×</button></label>)}<div className="python-add-input"><input aria-label="新增参数名" placeholder="新增参数名" value={newInputName} onChange={e=>setNewInputName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addInput()}/><button onClick={addInput}>添加参数</button></div><small>代码中用 PARAMS["fast"] 读取参数；修改数值后离开输入框即生效。</small></div>{validationError&&<div className="side-error">{validationError}</div>}</>}
     {indicator.name!=='PYTHON'&&<IndicatorParameters indicator={indicator} onChange={params=>onPatch({params})}/>}
-    <label className="indicator-pane-control">绘制位置<select aria-label={`${indicator.title||indicator.name} 绘制位置`} value={indicatorPane(indicator)} disabled={['ORB5','SIXPULSE','SIXPULSE_SIGNAL'].includes(indicator.name)} onChange={e=>onPatch({pane:e.target.value as 'main'|'separate'})}><option value="main">主图叠加</option><option value="separate">独立副图</option></select><span className="indicator-pane-badge">{indicatorPane(indicator)==='main'?'主图指标':'副图指标'}</span></label>
+    <label className="indicator-pane-control">绘制位置<select aria-label={`${displayName} 绘制位置`} value={indicatorPane(indicator)} disabled={!!tdxCatalog[indicator.name]||['ORB5','SIXPULSE','SIXPULSE_SIGNAL','MSIGM8'].includes(indicator.name)} onChange={e=>onPatch({pane:e.target.value as 'main'|'separate'})}><option value="main">主图叠加</option><option value="separate">独立副图</option></select><span className="indicator-pane-badge">{indicatorPane(indicator)==='main'?'主图指标':'副图指标'}</span></label>
     <IndicatorAppearance indicator={indicator} onChange={onPatch}/>
     <details className="indicator-scope-details"><summary>适用图与周期</summary><IndicatorScope indicator={indicator} onChange={onPatch}/></details>
+    </div>}
   </div>;
 }
 const toTime=(n:number)=>n as UTCTimestamp;
@@ -91,11 +116,13 @@ const etFull=new Intl.DateTimeFormat('en-GB',{timeZone:'America/New_York',year:'
 const cnClock=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const cnDay=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit'});
 const cnFull=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
-const chartGroup=new Map<number,{chart:IChartApi;candle:ISeriesApi<'Candlestick'>;ready:boolean;suppressSyncUntil:number}>();
+const chartGroup=new Map<number,{chart:IChartApi;candle:ISeriesApi<'Candlestick'>;ready:boolean;suppressSyncUntil:number;showFreeCrosshair:(x:number|null)=>void;freeCrosshair:HTMLDivElement}>();
 let syncingCharts=false;
-function ChartPane({drawingHost,index,tile,mode,appearance,indicators,onIndicatorToggle,active,onActivate,drawings,onDraw:commitHorizontal,trends,onTrend:commitTrends,fibos,onFibos:commitFibos,drawingsHidden,onDrawingsHidden,version,stockName,depthSettingsOpen,settingsHost}:{drawingHost:HTMLDivElement|null;index:number;tile:Tile;mode:Mode;appearance:CandleAppearance;indicators:Indicator[];onIndicatorToggle:(id:string,visible:boolean)=>void;active:boolean;onActivate:()=>void;drawings:HorizontalDrawing[];onDraw:(v:HorizontalDrawing[])=>void;trends:TrendDrawing[];onTrend:(v:TrendDrawing[])=>void;fibos:FibDrawing[];onFibos:(v:FibDrawing[])=>void;drawingsHidden:boolean;onDrawingsHidden:(value:boolean)=>void;version:number;stockName?:string;depthSettingsOpen:boolean;settingsHost:HTMLDivElement|null}){
- const [depthLines,setDepthLines]=useState<DepthLevel[]>([]),[depthStatus,setDepthStatus]=useState({enabled:false,ready:false}),[depthToggle,setDepthToggle]=useState(0);
+function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrosshairTime,indicators,onIndicatorToggle,active,onActivate,drawings,onDraw:commitHorizontal,trends,onTrend:commitTrends,fibos,onFibos:commitFibos,drawingsHidden,onDrawingsHidden,version,stockName,depthHost}:{drawingHost:HTMLDivElement|null;onAnalysis:(tile:Tile,mode:Mode)=>void;index:number;tile:Tile;mode:Mode;appearance:CandleAppearance;snapCrosshairTime:boolean;indicators:Indicator[];onIndicatorToggle:(id:string,visible:boolean)=>void;active:boolean;onActivate:()=>void;drawings:HorizontalDrawing[];onDraw:(v:HorizontalDrawing[])=>void;trends:TrendDrawing[];onTrend:(v:TrendDrawing[])=>void;fibos:FibDrawing[];onFibos:(v:FibDrawing[])=>void;drawingsHidden:boolean;onDrawingsHidden:(value:boolean)=>void;version:number;stockName?:string;depthHost:HTMLDivElement|null}){
+ const theme=useTheme();
+ const [depthLines,setDepthLines]=useState<DepthLevel[]>([]);
  const [drawingIssue,setDrawingIssue]=useState('');
+ const [showPlan,setShowPlan]=useState(false);
  const acceptDrawingRows=(rows:{id?:string;timeframeScope?:'current'|'all'}[])=>{if(rows.filter(row=>!row.id?.startsWith('@')||row.timeframeScope!=='all').length>100){setDrawingIssue('当前周期该类型画线已达 100 个，请先删除部分对象');return false}setDrawingIssue('');return true};
  const onDraw=(rows:HorizontalDrawing[])=>{if(acceptDrawingRows(rows))commitHorizontal(rows)};
  const onTrend=(rows:TrendDrawing[])=>{if(acceptDrawingRows(rows))commitTrends(rows)};
@@ -126,7 +153,7 @@ function ChartPane({drawingHost,index,tile,mode,appearance,indicators,onIndicato
  const historyInteraction=useRef(false),olderBusy=useRef(false),liveRef=useRef(false),pendingHistoryJump=useRef<{from:number;to:number}|null>(null);
  const key=`${tile.symbol}:${tile.period}:${mode}`;
  const currentKey=useRef(key);currentKey.current=key;const historyGeneration=useRef(0);
- const activeIndicators=useMemo(()=>indicators.filter(ind=>appliesTo(ind,index,tile.period)),[indicators,index,tile.period]);
+ const activeIndicators=useMemo(()=>indicators.filter(ind=>tdxAvailable(ind.name,tile.symbol)&&appliesTo(ind,index,tile.period)),[indicators,index,tile.period,tile.symbol]);
  const isUS=tile.symbol.startsWith('US.');
  const openingEnabled=activeIndicators.some(ind=>ind.name==='ORB5')&&!isLongPeriod(tile.period)&&(isUS||tile.period!=='240m');
  const [openingStyleError,setOpeningStyleError]=useState('');
@@ -144,15 +171,47 @@ function ChartPane({drawingHost,index,tile,mode,appearance,indicators,onIndicato
  },[openingEnabled,loadedKey,key]);
  const chartName=!isUS&&stockName&&/[\u3400-\u9fff]/.test(stockName)?stockName:tile.symbol.replace('US.','');
  const displayTime=isUS?{clock:etClock,day:etDay,full:etFull}:{clock:cnClock,day:cnDay,full:cnFull};
+ const previousRefresh=useRef(version);
+ const [cacheSyncTime,setCacheSyncTime]=useState(0);
  useEffect(()=>{let stop=false,ws:WebSocket|null=null,timer:number|undefined,initialized=false,openedOnce=false,retryDelay=5000;
   const group=chartGroup.get(index);if(group&&loadedKey!==key){group.ready=false;group.suppressSyncUntil=Infinity}pendingHistoryJump.current=null;
   historyGeneration.current++;historicView.current=false;historyInteraction.current=false;olderBusy.current=false;setLoadingOlder(false);setHistoryCursor(null);setHasMore(true);setHistoryError('');
-  const load=async(force=false)=>{try{const r=await fetch(`/api/bars?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}${force?'&refresh=true':''}`);const data=await r.json();if(!r.ok)throw Error(data.detail);if(!stop&&!historicView.current){const wasInitialized=initialized;initialized=true;setBars(old=>wasInitialized?mergeBars(old,data.bars):data.bars);if(!wasInitialized)setHistoryCursor(data.bars[0]?.time||null);setLoadedKey(key);setStale(data.stale);setError(data.error||'')}}catch(e){if(!stop)setError(String(e))}};
-  const open=()=>{if(stop)return;ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/${secureChart?'market/':''}stream?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}`);ws.onopen=()=>{setLive(false);liveRef.current=false};ws.onmessage=e=>{if(stop||currentKey.current!==key)return;const msg=JSON.parse(e.data);if(msg.type==='status'&&msg.connected){setLive(true);liveRef.current=true;retryDelay=5000;if(openedOnce)load(true);openedOnce=true}if(msg.type==='heartbeat'){setLive(!!msg.connected);liveRef.current=!!msg.connected}if(msg.type==='bar'&&!historicView.current)setBars(old=>mergeBars(old,[msg.bar]));if(msg.type==='error'){setError(msg.message);setLive(false);liveRef.current=false;if(msg.code==='permission_denied'){retryDelay=300000;setStale(true)}}};ws.onclose=()=>{setLive(false);liveRef.current=false;if(!stop)timer=window.setTimeout(open,retryDelay)}};
+  const controller=new AbortController();
+  const barsUrl=`/api/bars?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}`;
+  let requestId=0;
+  let pushedDuringLoad:Map<number,Bar>|null=null;
+  const load=async(force=false,preferCache=false)=>{
+   const id=++requestId;
+   const pushes=new Map<number,Bar>();
+   pushedDuringLoad=pushes;
+   const read=async(cacheFirst:boolean)=>{
+    const response=await fetch(barsUrl+(force?'&refresh=true':'')+(cacheFirst?'&prefer_cache=true':''),{signal:controller.signal});
+    const data=await response.json();
+    if(!response.ok)throw Error(data.detail||'读取 K 线失败');
+    if(stop||id!==requestId||historicView.current)return false;
+    const first=!initialized;
+    initialized=true;
+    const incoming=pushes.size?mergeBars(data.bars,[...pushes.values()]):data.bars;
+    setBars(old=>first?incoming:mergeBars(old,incoming));
+    if(first)setHistoryCursor(data.bars[0]?.time||null);
+    setLoadedKey(key);setStale(data.stale);setError(data.error||'');
+    if(cacheFirst||data.last_success)setCacheSyncTime(data.last_success||0);
+    return data.revalidate===true;
+   };
+   try{
+    const revalidate=await read(preferCache);
+    if(preferCache&&!stop&&!ws)open();
+    if(revalidate&&!stop&&id===requestId)await read(false);
+   }catch(e){if(!stop&&id===requestId)setError(String(e))}
+   finally{if(pushedDuringLoad===pushes)pushedDuringLoad=null}
+  };
+  const open=()=>{if(stop)return;ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/${secureChart?'market/':''}stream?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}`);ws.onopen=()=>{setLive(false);liveRef.current=false};ws.onmessage=e=>{if(stop||currentKey.current!==key)return;const msg=JSON.parse(e.data);if(msg.type==='status'&&msg.connected){setLive(true);liveRef.current=true;retryDelay=5000;if(openedOnce)load(true);openedOnce=true}if(msg.type==='heartbeat'){setLive(!!msg.connected);liveRef.current=!!msg.connected}if(msg.type==='bar'&&!historicView.current){pushedDuringLoad?.set(msg.bar.time,msg.bar);setBars(old=>mergeBars(old,[msg.bar]))}if(msg.type==='error'){setError(msg.message);setLive(false);liveRef.current=false;if(msg.code==='permission_denied'){retryDelay=300000;setStale(true)}}};ws.onclose=()=>{if(stop)return;setLive(false);liveRef.current=false;timer=window.setTimeout(open,retryDelay)}};
   const returnLive=(event:Event)=>{if((event as CustomEvent).detail!==index)return;historyGeneration.current++;historyInteraction.current=false;olderBusy.current=false;setLoadingOlder(false);initialized=false;historicView.current=false;pendingHistoryJump.current=null;fittedKey.current='';setHasMore(true);setHistoryError('');load(true)};window.addEventListener('market-return-live',returnLive);
-  load(version>0).then(open);
+  const force=previousRefresh.current!==version;
+  previousRefresh.current=version;
+  void load(force,true).then(()=>{if(!stop&&!ws)open()});
   const poll=window.setInterval(()=>{if(document.visibilityState==='visible'&&(isLongPeriod(tile.period)||!liveRef.current))load(true)},300000);
-  return()=>{window.removeEventListener('market-return-live',returnLive);historyGeneration.current++;stop=true;clearTimeout(timer);clearInterval(poll);ws?.close()}
+  return()=>{window.removeEventListener('market-return-live',returnLive);historyGeneration.current++;stop=true;controller.abort();clearTimeout(timer);clearInterval(poll);ws?.close()}
  },[key,version]);
  const requestOlder=async(jumpToOlder=false,target?:{from:number;to:number})=>{
   if(olderBusy.current||historyCursor===null||loadedKey!==key)return;
@@ -189,6 +248,11 @@ function ChartPane({drawingHost,index,tile,mode,appearance,indicators,onIndicato
   return()=>{clearTimeout(timer);chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange)};
  },[key,historyCursor,hasMore,loadingOlder,loadedKey,historyError]);
  const filtered=useMemo(()=>bars.filter(x=>mode==='all'||x.session!=='overnight').filter(x=>mode!=='regular'||x.session==='regular'),[bars,mode]);
+ const resonanceName=activeIndicators.find(ind=>isChiefResonance(ind.name))?.name;
+ const resonanceValues=useMemo(()=>resonanceName&&loadedKey===key?compute(filtered,resonanceName,'{}'):null,[resonanceName,loadedKey,key,filtered]);
+ const resonanceIndex=resonanceValues?.['共振'].lastIndexOf(1)??-1;
+ const resonanceBar=filtered[resonanceIndex];
+ const resonanceUnavailable=indicators.some(ind=>isChiefResonance(ind.name)&&appliesTo(ind,index,tile.period)&&!tdxAvailable(ind.name,tile.symbol));
  updateViewport.current=()=>{};
  useEffect(()=>{const candle=candleRef.current;if(!candle||!isUS||isLongPeriod(tile.period)||mode==='regular')return;const primitive=sessionBackground(filtered);candle.attachPrimitive(primitive);return()=>{if(candleRef.current===candle)candle.detachPrimitive(primitive)}},[filtered,key,isUS,mode,tile.period]);
  useEffect(()=>{const candle=candleRef.current;if(!candle||!showExtremes)return;const primitive=visibleExtremeLabels(filtered);candle.attachPrimitive(primitive);return()=>{if(candleRef.current===candle)candle.detachPrimitive(primitive)}},[showExtremes,filtered,key]);
@@ -221,13 +285,63 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
   },delay);
   return()=>{stopped=true;clearTimeout(timer);controller.abort()};
  },[key,loadedKey,pythonIndicators,pythonCodeKey,pythonFingerprint]);
- useEffect(()=>{if(!box.current)return;const chart=createChart(box.current,{autoSize:true,layout:{background:{color:'#0e1624'},textColor:'#9aa9be',fontFamily:'Inter, system-ui, sans-serif',fontSize:11,panes:{separatorColor:'#263449',enableResize:true}},grid:{vertLines:{color:'#1c283a'},horzLines:{color:'#1c283a'}},crosshair:{vertLine:{color:'#6c829d'},horzLine:{color:'#6c829d'}},rightPriceScale:{borderColor:'#263449'},localization:{timeFormatter:(time:Time)=>typeof time==='number'?displayTime.full.format(time*1000):String(time)},timeScale:{borderColor:'#263449',timeVisible:true,secondsVisible:false,tickMarkFormatter:(time:Time,kind:TickMarkType)=>typeof time==='number'?(kind<=TickMarkType.DayOfMonth?displayTime.day.format(time*1000):displayTime.clock.format(time*1000)):null},handleScroll:true,handleScale:true});chartRef.current=chart;const candle=chart.addSeries(CandlestickSeries,candleSeriesOptions(appearance));candleRef.current=candle;chartGroup.set(index,{chart,candle,ready:false,suppressSyncUntil:Infinity});
-  const cross=(p:any)=>{if(syncingCharts)return;drawingHover.current(p);syncingCharts=true;for(const[id,target]of chartGroup){if(id===index)continue;if(p.time&&p.point){const source=p.seriesData.get(candle) as {close:number}|undefined;target.chart.setCrosshairPosition(source?.close||0,p.time,target.candle)}else target.chart.clearCrosshairPosition()}syncingCharts=false};
+ useEffect(()=>{if(!box.current)return;const chart=createChart(box.current,{autoSize:true,layout:{fontFamily:'Inter, system-ui, sans-serif',fontSize:11,panes:{enableResize:true}},localization:{timeFormatter:(time:Time)=>typeof time==='number'?displayTime.full.format(time*1000):String(time)},timeScale:{timeVisible:true,secondsVisible:false,tickMarkFormatter:(time:Time,kind:TickMarkType)=>typeof time==='number'?(kind<=TickMarkType.DayOfMonth?displayTime.day.format(time*1000):displayTime.clock.format(time*1000)):null},handleScroll:true,handleScale:true});chartRef.current=chart;const candle=chart.addSeries(CandlestickSeries,candleSeriesOptions(appearance));candleRef.current=candle;const freeCrosshair=document.createElement('div');
+  freeCrosshair.className='chart-free-crosshair';
+  freeCrosshair.hidden=true;
+  freeCrosshair.setAttribute('aria-hidden','true');
+  chart.chartElement().append(freeCrosshair);
+  const showFreeCrosshair=(x:number|null)=>{
+   const scale=chart.timeScale();
+   freeCrosshair.hidden=x===null||x<0||x>=scale.width()||chart.options().crosshair.vertLine.visible;
+   if(x!==null&&!freeCrosshair.hidden){
+    freeCrosshair.style.left=`${chart.priceScale('left').width()+x}px`;
+    freeCrosshair.style.bottom=`${scale.height()}px`;
+   }
+  };
+  chartGroup.set(index,{chart,candle,ready:false,suppressSyncUntil:Infinity,showFreeCrosshair,freeCrosshair});
+  const cross=(p:MouseEventParams<Time>)=>{
+   if(syncingCharts)return;
+   showFreeCrosshair(p.point?.x??null);
+   drawingHover.current(p);
+   syncingCharts=true;
+   try{
+    for(const [id,target] of chartGroup){
+     if(id===index)continue;
+     const x=p.time===undefined?null:target.chart.timeScale().timeToCoordinate(p.time);
+     const price=p.point&&target.ready?target.candle.coordinateToPrice(p.point.y):null;
+     if(price!==null&&x!==null&&p.time!==undefined){
+      target.chart.setCrosshairPosition(price,p.time,target.candle);
+      target.showFreeCrosshair(x);
+     }else{
+      target.chart.clearCrosshairPosition();
+      target.showFreeCrosshair(null);
+     }
+    }
+   }finally{syncingCharts=false}
+  };
   const range=(r:any)=>{updateViewport.current(r);const source=chartGroup.get(index);if(syncingCharts||!r||!source?.ready||!historyInteraction.current||performance.now()<source.suppressSyncUntil)return;syncingCharts=true;try{for(const[id,target]of chartGroup){if(id!==index&&target.ready){target.suppressSyncUntil=performance.now()+350;try{target.chart.timeScale().setVisibleRange(r)}catch{}}}}finally{syncingCharts=false}};
   chart.subscribeCrosshairMove(cross);chart.timeScale().subscribeVisibleTimeRangeChange(range);
   return()=>{chart.unsubscribeCrosshairMove(cross);chart.timeScale().unsubscribeVisibleTimeRangeChange(range);chartGroup.delete(index);chart.remove();chartRef.current=null;candleRef.current=null}},[index]);
+ useEffect(()=>{
+  const light=theme==='light', chart=chartRef.current;
+  const entry=chartGroup.get(index);
+  if(!chart||!entry)return;
+  const axis=light?'#c6d2e1':'#263449';
+  const grid=light?'#e7edf5':'#1c283a';
+  const crosshair=light?'#61758c':'#6c829d';
+  entry.freeCrosshair.hidden=true;
+  entry.freeCrosshair.style.borderColor=crosshair;
+  chart.applyOptions({
+   layout:{background:{color:light?'#ffffff':'#0e1624'},textColor:light?'#41566f':'#9aa9be',panes:{separatorColor:axis}},
+   grid:{vertLines:{color:grid},horzLines:{color:grid}},
+   crosshair:{mode:CrosshairMode.Normal,vertLine:{color:crosshair,visible:snapCrosshairTime,labelVisible:snapCrosshairTime},horzLine:{color:crosshair}},
+   rightPriceScale:{borderColor:axis},
+   timeScale:{borderColor:axis},
+  });
+ },[theme,index,snapCrosshairTime]);
  useEffect(()=>{const candle=candleRef.current;if(!candle)return;candle.applyOptions(candleSeriesOptions(appearance));if(loadedKey!==key)return;candle.setData(filtered.map(x=>({time:toTime(x.time),open:x.open,high:x.high,low:x.low,close:x.close,color:candleBodyColor(x.open,x.close,appearance)})));for(const item of volumeSeries.current){const colors=volumePalette(appearance,item.colors);item.series.setData(filtered.map(x=>({time:toTime(x.time),value:x.volume,color:volumeColor(x.open,x.close,colors)})))}},[appearance,filtered,key,loadedKey]);
- useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||loadedKey!==key)return;const data=filtered;const series:ISeriesApi<any>[]=[];const lines:any[]=[];const primitives:ReturnType<typeof trendExtension>[]=[];const signalMarkers:SeriesMarker<Time>[]=[];const sixPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sixPulsePanel>}[]=[];const sessionPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sessionBackground>}[]=[];
+ useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||loadedKey!==key)return;const data=filtered;const series:ISeriesApi<any>[]=[];const lines:any[]=[];const primitives:ReturnType<typeof trendExtension>[]=[];const signalMarkers:SeriesMarker<Time>[]=[];const tdxCleanup:(()=>void)[]=[];const msigPrimitives:ReturnType<typeof msigm8Overlay>[]=[];const sixPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sixPulsePanel>}[]=[];const sessionPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sessionBackground>}[]=[];
+  const levelPrimitives:ReturnType<typeof sixPulseLevelsOverlay>[]=[];
   if(!drawingsHidden){
    for(const item of drawings){const style=drawingStyle(item,'horizontal');if(!style.visible)continue;const selected=selectedDrawing?.kind==='horizontal'&&selectedDrawing.id===item.id;lines.push(candle.createPriceLine({price:item.price,color:style.color,lineWidth:(selected?Math.min(4,style.lineWidth+2):style.lineWidth) as 1|2|3|4,lineStyle:style.lineStyle,axisLabelVisible:true,title:`${selected?'✓ ':''}水平线 ${drawings.indexOf(item)+1}`}))}
    for(const trend of trends){const style=drawingStyle(trend,'trend');if(!style.visible||trend.points.length!==2)continue;const selected=selectedDrawing?.kind==='trend'&&selectedDrawing.id===trend.id;const shown=dragState.current?.id===trend.id?dragState.current.draft:trend;const primitive=trendExtension(shown,selected,time=>drawingTimeCoordinate(chart,time,barTimes,drawingStep));candle.attachPrimitive(primitive);primitives.push(primitive);trendVisuals.current.set(trend.id,primitive)}
@@ -239,11 +353,14 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
     const result=pythonResults[ind.id];if(!result)continue;
     const times=new Map(result.time.map((time,i)=>[time,i]));
     values=Object.fromEntries(Object.entries(result.values).map(([name,row])=>[name,filtered.map(bar=>{const i=times.get(bar.time);return i===undefined?null:row[i]??null})]));
-   }else values=compute(filtered,ind.name,ind.params);
+   }else values=ind.name===resonanceName&&resonanceValues?resonanceValues:compute(filtered,ind.name,ind.params);
   }catch(e){indicatorIssue=`${ind.title||ind.name}: ${String(e)}`;continue}const overlay=indicatorPane(ind)==='main';const target=overlay?0:pane++;const effectiveColors=ind.name==='VOLUME'?volumePalette(appearance,ind.colors):ind.colors;
+   if(drawTdx(chart,filtered,ind,values,target,series,signalMarkers,tdxCleanup))continue;
+   if(ind.name==='MSIGM8'){const primitive=msigm8Overlay(filtered,values,ind.colors);candle.attachPrimitive(primitive);msigPrimitives.push(primitive);continue}
    if(ind.name==='SIXPULSE_SIGNAL'){
-    const settings=JSON.parse(ind.params);
-    for(let i=0;i<filtered.length;i++)for(const side of ['ENTRY','EXIT'] as const)if(values[side][i]===1){const entry=side==='ENTRY';signalMarkers.push({time:toTime(filtered[i].time),position:entry?'belowBar':'aboveBar',shape:entry?'arrowUp':'arrowDown',color:selectedColor(ind.colors,entry?'entry':'exit',entry?'#ef5350':'#26a69a'),text:`${entry?'上车':'下车'}${settings.confirm==='live'&&i===filtered.length-1?'（盘中）':''}`,id:`${ind.id}:${side}:${filtered[i].time}`})}
+    const input=JSON.parse(ind.params);
+    if(input.showLevels!==false){const primitive=sixPulseLevelsOverlay(filtered,input,candle.options().priceFormat.minMove,ind.colors);candle.attachPrimitive(primitive);levelPrimitives.push(primitive)}
+    for(let i=0;i<filtered.length;i++)for(const side of ['ENTRY','EXIT'] as const)if(values[side][i]===1){const entry=side==='ENTRY';signalMarkers.push({time:toTime(filtered[i].time),position:entry?'belowBar':'aboveBar',shape:entry?'arrowUp':'arrowDown',color:selectedColor(ind.colors,entry?'entry':'exit',entry?'#ef5350':'#26a69a'),id:`${ind.id}:${side}:${filtered[i].time}`})}
     continue;
    }
    if(ind.name==='SIXPULSE'){
@@ -259,8 +376,8 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
   const entry=chartGroup.get(index);if(entry)markViewportReady(entry,data.length>0,performance.now());
   if(data.length&&fittedKey.current!==key){historyInteraction.current=false;if(entry)entry.suppressSyncUntil=performance.now()+350;resetChartViewport(chart,data.length);fittedKey.current=key}
   if(pendingHistoryJump.current){historyInteraction.current=false;if(entry)entry.suppressSyncUntil=performance.now()+350;resetPriceScales(chart);const jump=pendingHistoryJump.current;pendingHistoryJump.current=null;chart.timeScale().setVisibleRange({from:toTime(jump.from),to:toTime(jump.to)})}
-  return()=>{if(chartRef.current!==chart)return;volumeSeries.current=[];signalPlugin?.detach();for(const {series,primitive} of sixPrimitives)series.detachPrimitive(primitive);for(const {series,primitive} of sessionPrimitives)series.detachPrimitive(primitive);for(const primitive of primitives)candle.detachPrimitive(primitive);trendVisuals.current.clear();for(const line of lines)candle.removePriceLine(line);for(const s of series)chart.removeSeries(s)}
- },[filtered,activeIndicators,pythonResults,drawings,trends,fibos,drawingsHidden,selectedDrawing,key,loadedKey]);
+  return()=>{if(chartRef.current!==chart)return;volumeSeries.current=[];signalPlugin?.detach();for(const cleanup of tdxCleanup)cleanup();for(const primitive of msigPrimitives)candle.detachPrimitive(primitive);for(const primitive of levelPrimitives)candle.detachPrimitive(primitive);for(const {series,primitive} of sixPrimitives)series.detachPrimitive(primitive);for(const {series,primitive} of sessionPrimitives)series.detachPrimitive(primitive);for(const primitive of primitives)candle.detachPrimitive(primitive);trendVisuals.current.clear();for(const line of lines)candle.removePriceLine(line);for(const s of series)chart.removeSeries(s)}
+ },[filtered,activeIndicators,pythonResults,drawings,trends,fibos,drawingsHidden,selectedDrawing,key,loadedKey,resonanceName,resonanceValues]);
  useEffect(()=>{
   const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||loadedKey!==key||!openingEnabled)return;
   const primitives:ReturnType<typeof openingRangeLines>[]=[];let issue='';
@@ -324,9 +441,24 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
  const createDrawingFromClick=(event:React.MouseEvent<HTMLDivElement>)=>{if(draw==='off')return;event.preventDefault();event.stopPropagation();const start=drawingPointerStart.current;if(start&&Math.hypot(event.clientX-start.x,event.clientY-start.y)>5)return;const rect=event.currentTarget.getBoundingClientRect();drawingClick.current({point:{x:event.clientX-rect.left,y:event.clientY-rect.top},paneIndex:0})};
  const last=filtered.at(-1),previous=filtered.at(-2),change=last&&previous?(last.close-previous.close)/previous.close*100:0;
  const resetView=()=>{const chart=chartRef.current;if(!chart||loadedKey!==key)return;historyInteraction.current=false;const entry=chartGroup.get(index);if(entry)entry.suppressSyncUntil=performance.now()+350;resetChartViewport(chart,filtered.length)};
- const tools=<><div className="chart-tools"><span>{draw!=='off'?(draw==='horizontal'?'在主图选择水平线价格':trendStart?'在主图选择另一横向位置作为终点 · Esc 取消':'在主图选择起点 · Esc 取消'):isUS?(isLongPeriod(tile.period)?'常规时段':mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div className="drawing-toolbar" role="toolbar" aria-label="画图工具"><label className="chart-date">日期<input type="date" aria-label="定位日期" value={dateTarget} onChange={e=>setDateTarget(e.target.value)}/></label><button disabled={!dateTarget||loadingOlder} onClick={jumpToDate}>{loadingOlder?'补载中…':'前往'}</button><button onClick={()=>{historicView.current=false;setHistoryNotice('');setDateTarget('');window.dispatchEvent(new CustomEvent('market-return-live',{detail:index}))}}>实时</button><button aria-label="重置视图" title="恢复适量近期 K 线，并自动适配各图价格轴" disabled={loadedKey!==key||!filtered.length} onClick={resetView}>重置视图</button><button aria-pressed={showExtremes} onClick={()=>{const next=!showExtremes;setShowExtremes(next);try{localStorage.setItem('chart-visible-extremes',next?'on':'off')}catch{}}}>区间高低</button>{isUS&&<button aria-label="挂档密集线" aria-pressed={depthStatus.enabled} disabled={!depthStatus.ready} title="点击开关；金额、股数等阈值在右上角设置中调整" onClick={()=>setDepthToggle(n=>n+1)}>挂档密集线{depthStatus.enabled?' · 开':' · 关'}</button>}<button aria-pressed={draw==='off'} onClick={()=>{setDraw('off');setTrendStart(null)}}>选择 / 编辑</button><button aria-pressed={draw==='horizontal'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='horizontal'?'off':'horizontal')}}>水平线</button><button aria-pressed={draw==='trend'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>趋势线</button><button aria-pressed={draw==='fib'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='fib'?'off':'fib')}}>斐波那契</button>{draw!=='off'&&<button onClick={()=>{setDraw('off');setTrendStart(null)}}>取消绘制</button>}<button disabled={!drawingUndo} onClick={()=>{if(!drawingUndo)return;onDraw(drawingUndo.horizontal);onTrend(drawingUndo.trends);onFibos(drawingUndo.fibos);onDrawingsHidden(drawingUndo.hidden);setSelectedDrawing(null);setDrawingUndo(null)}}>撤销</button><button aria-pressed={drawingsHidden} title="整体隐藏不改变单个对象的显隐设置" onClick={()=>toggleAllDrawings(!drawingsHidden)}>{drawingsHidden?'全部显示':'全部隐藏'}</button><QuickIndicators indicators={indicators} index={index} period={tile.period} symbol={tile.symbol} onToggle={onIndicatorToggle}/><DrawingsPanel hidden={drawingsHidden} onHidden={toggleAllDrawings} selected={selectedDrawing} onSelect={setSelectedDrawing} editorRequest={editorRequest} horizontal={drawings} trends={trends} fibos={fibos} onHorizontal={saveHorizontal} onTrends={saveTrends} onFibos={saveFibos}/></div></div><div className="drawing-interaction-row">{selectedDrawing?<div className="drawing-selection-actions" role="toolbar" aria-label="选中画线操作"><strong>已选：{drawingLabel(selectedDrawing)}</strong>{selectedDrawing.kind==='trend'&&<span className="trend-drag-help">{draggingTrend?'正在拖动 · 松开保存 · Esc 取消':'拖动两端圆点可调整长度与角度'}</span>}<button onClick={()=>setEditorRequest(n=>n+1)}>编辑样式</button><button aria-label="删除选中画线" onClick={deleteSelectedDrawing}>删除此对象</button><button onClick={()=>setSelectedDrawing(null)}>取消选择</button></div>:<div className="drawing-interaction-help" role="status">{draw!=='off'?(draw==='horizontal'?'绘制水平线：在主图点击目标价格':trendStart?'已选起点，请点击另一横向位置完成绘制 · Esc 取消':'绘制：先点击起点，再点击另一横向位置作为终点 · Esc 取消'):drawingsHidden?'画线已隐藏，点击“全部显示”恢复':hoveredDrawing?`可选：${drawingLabel(hoveredDrawing)} · 点击打开编辑`:'选择模式：靠近自己画的线，出现手形后点击；也可打开“画线管理”'}</div>}</div></>;
- return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div>{active&&<span className="current-chart-tag">当前图</span>}<strong>{chartName}</strong><span className="chart-symbol-code">{tile.symbol}</span><span className="market-tag">{isUS?"美股":`${tile.symbol} · 沪深 A 股`} · {periodLabel(tile.period)}</span>{stale&&<span className="warning">NAS 缓存 · 未同步最新行情</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'OpenD 实时订阅成功':'实时行情未连接；可能正在重试或等待权限'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div>{active&&drawingHost&&createPortal(tools,drawingHost)}{isUS&&<DepthPanel symbol={tile.symbol} onLines={setDepthLines} open={depthSettingsOpen} settingsHost={settingsHost} toggleRequest={depthToggle} onStateChange={setDepthStatus}/>}
-{(drawingIssue||error||formulaError||pythonError||(openingEnabled&&(openingStyleError||(opening.key===key&&opening.error))))&&<div className="chart-error">{drawingIssue||error||formulaError||pythonError||openingStyleError||opening.error}</div>}<div className={`chart-canvas ${draw!=='off'?'drawing-mode':hoveredDrawing?'drawing-hit':''} ${draggingTrend?'trend-dragging':hoveredHandle?'trend-handle-hover':''}`} ref={box} onClickCapture={createDrawingFromClick} onPointerDownCapture={startTrendDrag} onPointerMoveCapture={moveTrendDrag} onPointerUpCapture={e=>endTrendDrag(e,true)} onPointerCancelCapture={e=>endTrendDrag(e,false)} onLostPointerCapture={()=>{if(dragState.current)cancelDrag.current()}} onPointerLeave={()=>{setHoveredDrawing(null);setHoveredHandle(false)}} onPointerDown={()=>{historyInteraction.current=true}} onWheel={()=>{historyInteraction.current=true}}/><div className="chart-foot"><span>NAS 缓存 · {filtered.length} 根 K 线{live?' · 实时更新中':''}</span><button className="older-button" disabled={!hasMore||loadingOlder||historyCursor===null} onClick={()=>void requestOlder(true)}>{loadingOlder?'加载中…':hasMore?'← 更早 K 线':'已到历史保留范围'}</button><span>{historyError||historyNotice||(openingEnabled&&opening.key===key&&opening.data?.message)||`OHLC ${last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}`}</span></div></div>
+ const locateResonance=()=>{
+  if(!resonanceBar||loadedKey!==key)return;
+  const from=Math.max(0,resonanceIndex-25);
+  historyInteraction.current=true;
+  chartRef.current?.timeScale().setVisibleLogicalRange({from,to:Math.min(filtered.length+3,Math.max(resonanceIndex+10,from+35))});
+ };
+ const resonanceInfo=resonanceUnavailable?<div className="chart-resonance-info">主力共振仅用于个股价量分析，此标的暂不显示。</div>:resonanceName?<div className="chart-resonance-info" aria-label="主力共振图例">
+  <strong>主力共振</strong>
+  {activeIndicators.some(ind=>ind.name==='CHIEF_RESONANCE')&&<span><i style={{background:resonanceColors.strong}}/>金线＝动能 · 金点＝放量突破</span>}
+  {activeIndicators.some(ind=>ind.name==='CHIEF_RESONANCE_PANE')&&<>
+   <span><i style={{background:resonanceColors.below}}/>低于 0%</span><span><i style={{background:resonanceColors.neutral}}/>0–5%</span><span><i style={{background:resonanceColors.strong}}/>超过 5%</span>
+  </>}
+  <span><i style={{background:resonanceColors.buy}}/>共振买点</span>
+  {resonanceBar?<button type="button" onClick={locateResonance}>定位最近买点 · {resonanceBar.trade_date}{!isLongPeriod(tile.period)&&` ${((isUS?etClock:cnClock).format(resonanceBar.time*1000))}`}</button>:<span>{resonanceValues?.['共振'].includes(0)?'已载入 K 线暂无共振':'等待有效量价数据'}</span>}
+ </div>:null;
+ const tools=<><div className="chart-tools"><span>{draw!=='off'?(draw==='horizontal'?'在主图选择水平线价格':trendStart?'在主图选择另一横向位置作为终点 · Esc 取消':'在主图选择起点 · Esc 取消'):isUS?(isLongPeriod(tile.period)?'常规时段':mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div className="drawing-toolbar" role="toolbar" aria-label="画图工具"><label className="chart-date">日期<input type="date" aria-label="定位日期" value={dateTarget} onChange={e=>setDateTarget(e.target.value)}/></label><button disabled={!dateTarget||loadingOlder} onClick={jumpToDate}>{loadingOlder?'补载中…':'前往'}</button><button onClick={()=>{historicView.current=false;setHistoryNotice('');setDateTarget('');window.dispatchEvent(new CustomEvent('market-return-live',{detail:index}))}}>实时</button><button aria-label="重置视图" title="恢复适量近期 K 线，并自动适配各图价格轴" disabled={loadedKey!==key||!filtered.length} onClick={resetView}>重置视图</button><button aria-pressed={showExtremes} onClick={()=>{const next=!showExtremes;setShowExtremes(next);try{localStorage.setItem('chart-visible-extremes',next?'on':'off')}catch{}}}>区间高低</button><button aria-pressed={draw==='off'} onClick={()=>{setDraw('off');setTrendStart(null)}}>选择 / 编辑</button><button aria-pressed={draw==='horizontal'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='horizontal'?'off':'horizontal')}}>水平线</button><button aria-pressed={draw==='trend'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>趋势线</button><button aria-pressed={draw==='fib'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='fib'?'off':'fib')}}>斐波那契</button>{draw!=='off'&&<button onClick={()=>{setDraw('off');setTrendStart(null)}}>取消绘制</button>}<button disabled={!drawingUndo} onClick={()=>{if(!drawingUndo)return;onDraw(drawingUndo.horizontal);onTrend(drawingUndo.trends);onFibos(drawingUndo.fibos);onDrawingsHidden(drawingUndo.hidden);setSelectedDrawing(null);setDrawingUndo(null)}}>撤销</button><button aria-pressed={drawingsHidden} title="整体隐藏不改变单个对象的显隐设置" onClick={()=>toggleAllDrawings(!drawingsHidden)}>{drawingsHidden?'全部显示':'全部隐藏'}</button><button type="button" className="chart-plan-create" onClick={()=>setShowPlan(true)}>创建交易计划</button><QuickIndicators indicators={indicators} index={index} period={tile.period} symbol={tile.symbol} onToggle={onIndicatorToggle}/><div className="drawing-analysis-tools"><DrawingsPanel hidden={drawingsHidden} onHidden={toggleAllDrawings} selected={selectedDrawing} onSelect={setSelectedDrawing} editorRequest={editorRequest} horizontal={drawings} trends={trends} fibos={fibos} onHorizontal={saveHorizontal} onTrends={saveTrends} onFibos={saveFibos}/><button className="chart-analysis-tool" type="button" aria-haspopup="dialog" onClick={()=>onAnalysis(tile,mode)}><Sparkles size={14} strokeWidth={1.7} aria-hidden="true"/>AI 盘面分析</button></div></div></div><div className="drawing-interaction-row">{selectedDrawing?<div className="drawing-selection-actions" role="toolbar" aria-label="选中画线操作"><strong>已选：{drawingLabel(selectedDrawing)}</strong>{selectedDrawing.kind==='trend'&&<span className="trend-drag-help">{draggingTrend?'正在拖动 · 松开保存 · Esc 取消':'拖动两端圆点可调整长度与角度'}</span>}<button onClick={()=>setEditorRequest(n=>n+1)}>编辑样式</button><button aria-label="删除选中画线" onClick={deleteSelectedDrawing}>删除此对象</button><button onClick={()=>setSelectedDrawing(null)}>取消选择</button></div>:<div className="drawing-interaction-help" role="status">{draw!=='off'?(draw==='horizontal'?'绘制水平线：在主图点击目标价格':trendStart?'已选起点，请点击另一横向位置完成绘制 · Esc 取消':'绘制：先点击起点，再点击另一横向位置作为终点 · Esc 取消'):drawingsHidden?'画线已隐藏，点击“全部显示”恢复':hoveredDrawing?`可选：${drawingLabel(hoveredDrawing)} · 点击打开编辑`:'选择模式：靠近自己画的线，出现手形后点击；也可打开“画线管理”'}</div>}</div></>;
+ return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div>{active&&<span className="current-chart-tag">当前图</span>}<strong>{chartName}</strong><span className="chart-symbol-code">{tile.symbol}</span><span className="market-tag">{isUS?"美股":`${tile.symbol} · 沪深 A 股`} · {periodLabel(tile.period)}</span>{stale&&<span className="warning">NAS 缓存 · 未同步最新行情{cacheSyncTime>0?' · 上次同步 '+new Date(cacheSyncTime*1000).toLocaleString('zh-CN'):''}</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'OpenD 实时订阅成功':'实时行情未连接；可能正在重试或等待权限'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div>{active&&drawingHost&&createPortal(tools,drawingHost)}{active&&isUS&&<MarketFlowPanel key={tile.symbol} symbol={tile.symbol}/>}{isUS&&<DepthPanel symbol={tile.symbol} onLines={setDepthLines} settingsHost={depthHost}/>}
+{showPlan&&<Suspense fallback={<p role="status">正在打开交易计划…</p>}><ChartPlanDialog market={isUS?'US':'CN'} symbol={tile.symbol} period={tile.period} mode={mode} indicators={activeIndicators} bars={filtered} stockName={stockName} onClose={()=>setShowPlan(false)}/></Suspense>}{resonanceInfo}{(drawingIssue||error||formulaError||pythonError||(openingEnabled&&(openingStyleError||(opening.key===key&&opening.error))))&&<div className="chart-error">{drawingIssue||error||formulaError||pythonError||openingStyleError||opening.error}</div>}<div className={`chart-canvas ${draw!=='off'?'drawing-mode':hoveredDrawing?'drawing-hit':''} ${draggingTrend?'trend-dragging':hoveredHandle?'trend-handle-hover':''}`} ref={box} style={activeIndicators.some(ind=>tdxCatalog[ind.name])?{height:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length,minHeight:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length}:undefined} onClickCapture={createDrawingFromClick} onPointerDownCapture={startTrendDrag} onPointerMoveCapture={moveTrendDrag} onPointerUpCapture={e=>endTrendDrag(e,true)} onPointerCancelCapture={e=>endTrendDrag(e,false)} onLostPointerCapture={()=>{if(dragState.current)cancelDrag.current()}} onPointerLeave={()=>{setHoveredDrawing(null);setHoveredHandle(false)}} onPointerDown={()=>{historyInteraction.current=true}} onWheel={()=>{historyInteraction.current=true}}/><div className="chart-foot"><span>NAS 缓存 · {filtered.length} 根 K 线{live?' · 实时更新中':''}</span><button className="older-button" disabled={!hasMore||loadingOlder||historyCursor===null} onClick={()=>void requestOlder(true)}>{loadingOlder?'加载中…':hasMore?'← 更早 K 线':'已到历史保留范围'}</button><span>{historyError||historyNotice||(openingEnabled&&opening.key===key&&opening.data?.message)||`OHLC ${last?`${last.open.toFixed(2)} / ${last.high.toFixed(2)} / ${last.low.toFixed(2)} / ${last.close.toFixed(2)}`:'—'}`}</span></div></div>
 }
 type Market = 'US' | 'CN';
 type WatchGroup = {id:string; name:string; symbols:string[]};
@@ -369,7 +501,7 @@ function restoreMarket(raw:any,market:Market):MarketWorkspace {
     layout:[1,2,4].includes(raw?.layout)?raw.layout:1,
     mode:market==='CN'?'regular':(['all','extended','regular'].includes(raw?.mode)?raw.mode:base.mode),
     tiles:tiles.length?tiles:base.tiles,
-    indicators:Array.isArray(raw?.indicators)?raw.indicators.map((ind:Indicator)=>Array.isArray(ind.periods)&&((ind.periods.length===6&&['1m','5m','15m','30m','60m','1d'].every(p=>ind.periods!.includes(p)))||(ind.periods.length===8&&['1m','5m','15m','30m','60m','1d','1w','1mo'].every(p=>ind.periods!.includes(p))))?{...ind,periods:[...periods]}:ind):base.indicators,
+    indicators:Array.isArray(raw?.indicators)?raw.indicators.filter((ind:Indicator)=>tdxAvailable(ind.name,market)).map((ind:Indicator)=>Array.isArray(ind.periods)&&((ind.periods.length===6&&['1m','5m','15m','30m','60m','1d'].every(p=>ind.periods!.includes(p)))||(ind.periods.length===8&&['1m','5m','15m','30m','60m','1d','1w','1mo'].every(p=>ind.periods!.includes(p))))?{...ind,periods:[...periods]}:ind):base.indicators,
     drawings:normalizeDrawingRecords(raw?.drawings,'horizontal'),
     trends:normalizeDrawingRecords(raw?.trends,'trend'),
     fibos:normalizeDrawingRecords(raw?.fibos,'fib'),
@@ -390,28 +522,98 @@ function mergeRemoteDrawings(current:WorkspaceV2,raw:any):WorkspaceV2{
  return {...current,markets};
 }
 function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
+  const [workspaceView,setWorkspaceView]=useState<'chart'|'radar'|'emotion'|'scanner'|'api'|'review'>(()=>{const view=new URLSearchParams(location.search).get('view');return view==='review'?'review':view==='api'?'api':'chart'});
+  const showReview=workspaceView==='review',showApi=workspaceView==='api',showScanner=workspaceView==='scanner',showRadar=workspaceView==='radar'||workspaceView==='emotion';
+  const [emotionBoard,setEmotionBoard]=useState<RadarItem|null>(null);
+  const [scanSelection,setScanSelection]=useState<{id:string;name:string;symbols:string[]}|null>(null);
   const [showStrategies,setShowStrategies]=useState(new URLSearchParams(location.search).get('strategy')==='1');
   const [manageGroups,setManageGroups]=useState(false);
   const groupRail=useRef<HTMLDivElement>(null);
-  const [tradeDock,setTradeDock]=useState(secureChart&&new URLSearchParams(location.search).has('symbol'));
-  const [dockProduct,setDockProduct]=useState<'stocks'|'options'>(new URLSearchParams(location.search).get('intent')==='options'?'options':'stocks');
+  const [tradeDock,setTradeDock]=useState(secureChart&&new URLSearchParams(location.search).has('symbol')&&new URLSearchParams(location.search).has('intent'));
+  const [dockRequest,setDockRequest]=useState<{product:'stocks'|'options'}>(()=>({product:new URLSearchParams(location.search).get('intent')==='options'?'options':'stocks'}));
   const [dockSymbol,setDockSymbol]=useState(new URLSearchParams(location.search).get('symbol')||'US.SNDK');
+  const tradeDockRef=useRef<HTMLElement>(null);
+  useEffect(()=>{if(tradeDock)tradeDockRef.current?.scrollIntoView({block:'start'})},[tradeDock,dockRequest]);
   const [appearanceMarket,setAppearanceMarket]=useState<Market>('US');
-  const [settingsTab,setSettingsTab]=useState<SettingsTab|null>(new URLSearchParams(location.search).get('settings')==='connection'?'connection':null),[settingsHost,setSettingsHost]=useState<HTMLDivElement|null>(null);
+  const [settingsTab,setSettingsTab]=useState<SettingsTab|null>(()=>{
+    const tab=new URLSearchParams(location.search).get('settings');
+    if (tab==='agents'||tab==='plans') return 'agents';
+    return tab==='connection'?'connection':null;
+  }),[depthHost,setDepthHost]=useState<HTMLDivElement|null>(null);
  const [drawingHost,setDrawingHost]=useState<HTMLDivElement|null>(null);
+  const [snapCrosshairTime,setSnapCrosshairTime]=useState(()=>{
+    try{return localStorage.getItem('chart-snap-crosshair-time-v2')!=='off'}catch{return true}
+  });
+  const changeCrosshairSnap=(enabled:boolean)=>{
+    setSnapCrosshairTime(enabled);
+    try{localStorage.setItem('chart-snap-crosshair-time-v2',enabled?'on':'off')}catch{}
+  };
  const [watchCollapsed,setWatchCollapsed]=useState(()=>{try{return localStorage.getItem('chart-watch-collapsed')==='yes'}catch{return false}});
  const toggleWatch=()=>{if(matchMedia('(max-width:700px)').matches){setMobileWatchOpen(v=>!v);return}setWatchCollapsed(v=>{try{localStorage.setItem('chart-watch-collapsed',v?'no':'yes')}catch{}return !v})};
   const [mobileWatchOpen,setMobileWatchOpen]=useState(false);
   const [stockNames,setStockNames]=useState<Record<string,string>>({});
   const [tradingUrl,setTradingUrl]=useState(`https://${location.hostname}:8443/trade`);
   useEffect(()=>{fetch('/api/trading-config').then(r=>r.json()).then(c=>{if(c.url?.startsWith('https://'))setTradingUrl(c.url)}).catch(()=>{})},[]);
-  const openTrading=(symbol:string,action='overview')=>{if(secureChart){if(action==='strategy')setShowStrategies(v=>!v);else{setDockSymbol(symbol);setDockProduct(action==='options'?'options':'stocks');setTradeDock(true)}return}const url=new URL(tradingUrl);url.pathname='/chart';url.searchParams.set('symbol',symbol);url.searchParams.set('intent',action);if(action==='strategy')url.searchParams.set('strategy','1');location.assign(url.toString())};
+  const openTrading=(symbol:string,action='overview')=>{if(secureChart){if(action==='strategy')setShowStrategies(v=>!v);else{setDockSymbol(symbol);setDockRequest({product:action==='options'?'options':'stocks'});setTradeDock(true)}return}const url=new URL(tradingUrl);url.pathname='/chart';url.searchParams.set('symbol',symbol);url.searchParams.set('intent',action);if(action==='strategy')url.searchParams.set('strategy','1');location.assign(url.toString())};
   const [state,setState]=useState<WorkspaceV2>(initialV2),[ready,setReady]=useState(false),[active,setActive]=useState(0);
+  const [loadError,setLoadError]=useState('');
+  const [loadAttempt,setLoadAttempt]=useState(0);
+  const [templatesReady,setTemplatesReady]=useState(false);
+  const [templateError,setTemplateError]=useState(false);
+  const [templateAttempt,setTemplateAttempt]=useState(0);
+  const [savedScanGroups,setSavedScanGroups]=useState<Record<Market,string>>({US:'',CN:''});
+  const [analysisChart,setAnalysisChart]=useState<AnalysisChart|null>(null);
+  function openAnalysis(tile:Tile,mode:Mode){
+    const chart:AnalysisChart={...tile,mode:tile.symbol.startsWith('US.')&&!isLongPeriod(tile.period)?mode:'regular'};
+    if(secureChart){setAnalysisChart(chart);return}
+    const url=new URL('/chart',tradingUrl);
+    url.search=new URLSearchParams({...chart,analysis:'1'}).toString();
+    location.assign(url.href);
+  }
+  const chartLinkApplied=useRef(false);
+  useEffect(()=>{
+    if(!ready||chartLinkApplied.current)return;
+    chartLinkApplied.current=true;
+    const query=new URLSearchParams(location.search),symbol=query.get('symbol')||'',period=query.get('period')||'1d';
+    if(/^(US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.(?:\d{6}|(?:BK|LIST)\d{1,10}))$/.test(symbol)&&['1m','5m','15m','30m','60m','120m','240m','1d','1w','1mo'].includes(period)){
+      const analysis=secureChart&&query.get('analysis')==='1';
+      const session=query.get('mode');
+      const mode=analysis&&symbol.startsWith('US.')&&!isLongPeriod(period)&&(session==='all'||session==='extended')?session:'regular';
+      openRadar({symbol,name:symbol},period as Period,mode);
+      if(analysis){
+        setAnalysisChart({symbol,period:period as Period,mode});
+        const url=new URL(location.href);url.searchParams.delete('analysis');history.replaceState(null,'',url);
+      }
+    }
+  },[ready]);
+  function openRadar(item:RadarItem,period:Period='1d',mode:Mode='regular'){
+    const target:Market=item.symbol.startsWith('US.')?'US':'CN';
+    setPreviewSymbol(item.symbol);
+    setStockNames(names=>({...names,[item.symbol]:item.name}));
+    setState(previous=>({...previous,activeMarket:target,markets:{...previous.markets,[target]:{...previous.markets[target],mode,tiles:previous.markets[target].tiles.map((tile,index)=>index===0?{...tile,symbol:item.symbol,period}:tile)}}}));
+    setActive(0);setWorkspaceView('chart');
+  }
+  function favoriteRadar(item:RadarItem){
+    const target:Market=item.symbol.startsWith('US.')?'US':'CN';
+    setStockNames(names=>({...names,[item.symbol]:item.name}));
+    setState(previous=>{
+      const workspace=previous.markets[target];
+      const existing=workspace.groups.find(group=>group.id==='radar-favorites');
+      const symbols=existing?.symbols||[];
+      const group={id:'radar-favorites',name:'关注板块',symbols:symbols.includes(item.symbol)?symbols.filter(code=>code!==item.symbol):[...symbols,item.symbol]};
+      return {...previous,markets:{...previous.markets,[target]:{...workspace,groups:existing?workspace.groups.map(value=>value.id===group.id?group:value):[...workspace.groups,group]}}};
+    });
+  }
+  function scanRadar(name:string,items:RadarItem[]){
+    setStockNames(names=>({...names,...Object.fromEntries(items.map(item=>[item.symbol,item.name]))}));
+    setScanSelection({id:'radar-selection-'+Date.now(),name,symbols:items.map(item=>item.symbol)});
+    setWorkspaceView('scanner');
+  }
   const drawingRevision=useRef(0),currentWorkspace=useRef(state),lastSavedWorkspace=useRef(''),workspaceSaving=useRef(false),saveQueue=useRef(Promise.resolve()),syncMounted=useRef(true);
  currentWorkspace.current=state;
  const [drawingSyncNotice,setDrawingSyncNotice]=useState(''),[workspaceRetry,setWorkspaceRetry]=useState(0);const saveRetryCount=useRef(0),saveRetryTimer=useRef<number|undefined>(undefined);
  useEffect(()=>()=>{syncMounted.current=false;clearTimeout(saveRetryTimer.current)},[]);
- const [newSymbol,setNewSymbol]=useState(''),[symbolError,setSymbolError]=useState('');
+ const [newSymbol,setNewSymbol]=useState(''),[symbolError,setSymbolError]=useState(''),[previewSymbol,setPreviewSymbol]=useState<string|null>(null);
   const [newGroupName,setNewGroupName]=useState(''),[groupError,setGroupError]=useState('');
   const [importingGroups,setImportingGroups]=useState(false),[importMessage,setImportMessage]=useState('');
   const [editingGroup,setEditingGroup]=useState(''),[groupDraft,setGroupDraft]=useState('');
@@ -426,33 +628,80 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   const current=ws.tiles[active]||ws.tiles[0];
   const drawingViews=useMemo(()=>ws.tiles.map(tile=>({horizontal:drawingsForPeriod(ws.drawings,tile.symbol,tile.period),trends:drawingsForPeriod(ws.trends,tile.symbol,tile.period),fibos:drawingsForPeriod(ws.fibos,tile.symbol,tile.period)})),[ws.drawings,ws.trends,ws.fibos,ws.tiles]);
   const quoteSymbols=selectedGroup.symbols.join(',');
-  useEffect(()=>{if(!ready||market!=='CN'||!quoteSymbols)return;let stopped=false;const chunks=selectedGroup.symbols.reduce<string[][]>((all,s,i)=>{if(i%100===0)all.push([]);all[all.length-1].push(s);return all},[]);Promise.all(chunks.map(chunk=>fetch('/api/symbols/names?symbols='+encodeURIComponent(chunk.join(','))).then(r=>r.json()))).then(rows=>{if(!stopped)setStockNames(old=>({...old,...Object.assign({},...rows.map(r=>r.names||{}))}))}).catch(()=>{});return()=>{stopped=true}},[ready,market,quoteSymbols]);
+  useEffect(()=>{
+    if(!ready||market!=='CN'||!quoteSymbols)return;
+    const controller=new AbortController();
+    const read=async(codes:string[],preferCache:boolean)=>{
+      const r=await fetch('/api/symbols/names?symbols='+encodeURIComponent(codes.join(','))+(preferCache?'&prefer_cache=true':''),{signal:controller.signal});
+      if(!r.ok)throw Error('名称读取失败');
+      const data=await r.json();
+      if(!controller.signal.aborted)setStockNames(old=>({...old,...data.names}));
+      return data.missing as string[]|undefined;
+    };
+    const symbols=quoteSymbols.split(',');
+    for(let i=0;i<symbols.length;i+=100){
+      void read(symbols.slice(i,i+100),true).then(missing=>{
+        if(missing?.length&&!controller.signal.aborted)return read(missing,false);
+      }).catch(()=>{});
+    }
+    return ()=>controller.abort();
+  },[ready,market,quoteSymbols]);
 
   useEffect(()=>{
     setQuotes({});setQuotesStale(false);setQuoteError('');
     if(!ready||!quoteSymbols)return;
-    let cancelled=false;
+    let cancelled=false,busy=false;
+    const controller=new AbortController();
     const load=()=>{
-      if(document.visibilityState!=='visible')return;
+      if(busy||document.visibilityState!=='visible')return;
+      busy=true;
       const chunks=selectedGroup.symbols.reduce<string[][]>((all,s,i)=>{if(i%100===0)all.push([]);all[all.length-1].push(s);return all},[]);
       Promise.all(chunks.map(async chunk=>{
-        const r=await fetch(`/api/quotes?symbols=${encodeURIComponent(chunk.join(','))}`);
+        const r=await fetch(`/api/quotes?symbols=${encodeURIComponent(chunk.join(','))}`,{signal:controller.signal});
         if(!r.ok)throw Error((await r.json()).detail||'快照不可用');
         return r.json();
       }))
         .then(data=>{if(!cancelled){setQuotes(Object.fromEntries(data.flatMap(x=>x.quotes as StockQuote[]).map((q:StockQuote)=>[q.symbol,q])));setQuotesStale(data.some(x=>x.stale));setQuoteError('')}})
-        .catch(e=>{if(!cancelled)setQuoteError(String(e.message||e))});
+        .catch(e=>{if(!cancelled)setQuoteError(String(e.message||e))}).finally(()=>{busy=false});
     };
     load();
     const timer=setInterval(load,20000);
     document.addEventListener('visibilitychange',load);
-    return()=>{cancelled=true;clearInterval(timer);document.removeEventListener('visibilitychange',load)};
+    return()=>{cancelled=true;controller.abort();clearInterval(timer);document.removeEventListener('visibilitychange',load)};
   },[ready,market,selectedGroup.id,quoteSymbols]);
 
   useEffect(()=>{
-    Promise.all([fetch('/api/settings/workspace').then(r=>r.json()),fetch('/api/settings/templates').then(r=>r.json())])
-      .then(([a,b])=>{drawingRevision.current=Number(a.drawing_revision)||0;setState(restoreWorkspace(a.value));setTemplates(b.value||{});setReady(true)})
-      .catch(()=>setReady(true));
+    const controller=new AbortController();
+    setLoadError('');
+    fetch('/api/settings/workspace',{signal:controller.signal}).then(async r=>{
+      if(!r.ok)throw Error('工作区读取失败');
+      const data=await r.json();
+      if(!data.value||typeof data.value!=='object'||Array.isArray(data.value))throw Error('工作区数据无效');
+      if(controller.signal.aborted)return;
+      const restored=restoreWorkspace(data.value);
+      drawingRevision.current=Number(data.drawing_revision)||0;
+      const groups={US:JSON.stringify(restored.markets.US.groups),CN:JSON.stringify(restored.markets.CN.groups)};
+      const groupsOnDisk=data.value.markets;
+      if(JSON.stringify(groupsOnDisk?.US?.groups)===groups.US&&JSON.stringify(groupsOnDisk?.CN?.groups)===groups.CN){
+        lastSavedWorkspace.current=JSON.stringify(restored);
+        setSavedScanGroups(groups);
+      }
+      setState(restored);setReady(true);
+    }).catch(()=>{if(!controller.signal.aborted)setLoadError('工作区读取失败，请重试。')});
+    return ()=>controller.abort();
+  },[loadAttempt]);
+  useEffect(()=>{
+    const controller=new AbortController();
+    setTemplateError(false);
+    fetch('/api/settings/templates',{signal:controller.signal}).then(async r=>{
+      if(!r.ok)throw Error('模板读取失败');
+      const data=await r.json();
+      if(!data.value||typeof data.value!=='object'||Array.isArray(data.value))throw Error('模板数据无效');
+      if(!controller.signal.aborted){setTemplates(data.value);setTemplatesReady(true)}
+    }).catch(()=>{if(!controller.signal.aborted)setTemplateError(true)});
+    return ()=>controller.abort();
+  },[templateAttempt]);
+  useEffect(()=>{
     const loadStatus=()=>fetch('/api/status').then(r=>r.json()).then(setStatus).catch(()=>{});
     loadStatus();
     const t=setInterval(loadStatus,5000);
@@ -470,6 +719,8 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
         saveRetryCount.current=0;if(Number.isInteger(data.drawing_revision))drawingRevision.current=data.drawing_revision;
         if(data.drawings_conflict&&data.value){const next=mergeRemoteDrawings(currentWorkspace.current,data.value);lastSavedWorkspace.current=JSON.stringify(mergeRemoteDrawings(snapshot,data.value));setState(next);setDrawingSyncNotice('画线已被外部更新，已保留远端版本；本次修改请重新操作。')}
         else{lastSavedWorkspace.current=payload;setDrawingSyncNotice('')}
+        const US=JSON.stringify(snapshot.markets.US.groups),CN=JSON.stringify(snapshot.markets.CN.groups);
+        setSavedScanGroups(old=>old.US===US&&old.CN===CN?old:{US,CN});
       }catch(e){if(syncMounted.current){setDrawingSyncNotice(String(e));saveRetryCount.current++;if(saveRetryCount.current<=5)saveRetryTimer.current=window.setTimeout(()=>setWorkspaceRetry(v=>v+1),Math.min(30000,1000*2**saveRetryCount.current))}}finally{workspaceSaving.current=false}
     })},700);
     return()=>clearTimeout(timer);
@@ -494,7 +745,19 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
     }catch(e:any){setImportMessage(String(e.message||e))}
     finally{setImportingGroups(false)}
   };
-  const switchMarket=(next:Market)=>{setState(old=>({...old,activeMarket:next}));setActive(0);setNewSymbol('');setSymbolError('')};
+  const switchMarket=(next:Market)=>{
+    setScanSelection(null);
+    if(next===market)return;
+    setState(old=>{
+      const target=old.markets[next];
+      const group=target.groups.find(g=>g.id===target.selectedGroupId)||target.groups[0];
+      const primary=target.tiles[0];
+      const symbol=group.symbols.includes(primary.symbol)?primary.symbol:group.symbols[0]||freshMarket(next).tiles[0].symbol;
+      const workspace=symbol===primary.symbol?target:{...target,tiles:[{...primary,symbol},...target.tiles.slice(1)]};
+      return {...old,activeMarket:next,markets:{...old.markets,[next]:workspace}};
+    });
+    setActive(0);setNewSymbol('');setSymbolError('');setPreviewSymbol(null);
+  };
   const selectGroup=(id:string)=>{
     updateMarket(w=>{const g=w.groups.find(x=>x.id===id);return g?{...w,selectedGroupId:id,tiles:w.tiles.map((t,i)=>g.symbols.length?{...t,symbol:g.symbols[i%g.symbols.length]}:t)}:w});
     setActive(0);
@@ -503,11 +766,12 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
     let s=input.trim().toUpperCase();
     if(market==='US')s=s.startsWith('US.')?s:`US.${s}`;
     // Bare CN codes must be resolved by the directory: 000001 is ambiguous.
-    return belongs(s,market)&&(market==='US'?/^US\.[A-Z0-9.]{1,12}$/.test(s):/^(SH|SZ)\.\d{6}$/.test(s))?s:null;
+    return belongs(s,market)&&(market==='US'?/^US\.[A-Z0-9.]{1,12}$/.test(s):/^(SH|SZ)\.(?:\d{6}|(?:BK|LIST)\d{1,10})$/.test(s))?s:null;
   };
   const viewSymbol=(candidate=newSymbol,name?:string)=>{
     const symbol=normalizeSymbol(candidate);if(!symbol){setSymbolError(market==='US'?'请输入 AAPL 或 US.AAPL':'请输入 SH.600519 或 SZ.000001');return}
     if(name)setStockNames(old=>({...old,[symbol]:name}));
+    setPreviewSymbol(symbol);
     updateMarket(w=>({...w,tiles:w.tiles.map((t,i)=>i===active?{...t,symbol}:t)}));setNewSymbol('');setSymbolError('');
   };
   const addSymbol=(candidate=newSymbol,name?:string)=>{
@@ -562,7 +826,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
     updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:customLanguage==='python'?'PYTHON':'CUSTOM',title:customName.trim(),pane:customPane,params:JSON.stringify(customLanguage==='python'?{code:customFormula.trim(),inputs}:{formula:customFormula.trim()}),visible:true}]}));
     setCustomError('');setCustomName('');
   }catch(e){setCustomError(String(e))}};
-  const saveTemplate=()=>{if(!templateName.trim())return;const next={...templates,[templateName.trim()]:ws.indicators};setTemplates(next);fetch('/api/settings/templates',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:next})});setTemplateName('')};
+  const saveTemplate=()=>{if(!templatesReady||!templateName.trim())return;const next={...templates,[templateName.trim()]:ws.indicators};setTemplates(next);fetch('/api/settings/templates',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:next})});setTemplateName('')};
   const patchIndicator=(id:string,patch:Partial<Indicator>)=>updateMarket(w=>({...w,indicators:w.indicators.map(ind=>ind.id===id?{...ind,...patch}:ind)}));
   const selectCustomLanguage=(next:'formula'|'python')=>{
     if(next===customLanguage)return;
@@ -571,7 +835,13 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
     setCustomLanguage(next);setCustomError('');
   };
 
-  const indicatorSettings=<div className="indicator-panel"><div className="settings-section-heading"><h3>主图与副图指标</h3><p>主图指标叠加在 K 线上；副图指标使用独立面板。各指标可调整位置。</p></div><div className="add-indicator"><select value={newIndicator} onChange={e=>{setNewIndicator(e.target.value);setNewIndicatorPane(indicatorPane({name:e.target.value}))}}>{names.map(n=><option key={n} value={n}>{indicatorLabels[n]||n}</option>)}</select><select aria-label="新指标绘制位置" disabled={['ORB5','SIXPULSE','SIXPULSE_SIGNAL'].includes(newIndicator)} value={newIndicatorPane} onChange={e=>setNewIndicatorPane(e.target.value as 'main'|'separate')}><option value="main">主图叠加</option><option value="separate">独立副图</option></select><button className="primary" onClick={()=>updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name:newIndicator,pane:newIndicatorPane,params:JSON.stringify(indicatorDefaults[newIndicator]||{}),visible:true}]}))}><Plus size={14}/> 添加指标</button></div><div className="indicator-list">{(['main','separate'] as const).map(pane=><section className="indicator-pane-group" key={pane}><h3>{pane==='main'?'主图叠加指标':'独立副图指标'} <small>{ws.indicators.filter(ind=>indicatorPane(ind)===pane).length}</small></h3>{ws.indicators.filter(ind=>indicatorPane(ind)===pane).map(ind=><IndicatorSettings key={ind.id} indicator={ind} onPatch={patch=>patchIndicator(ind.id,patch)} onDelete={()=>updateMarket(w=>({...w,indicators:w.indicators.filter(x=>x.id!==ind.id)}))}/>)}{!ws.indicators.some(ind=>indicatorPane(ind)===pane)&&<p className="settings-empty">暂无此类指标，可从上方添加。</p>}</section>)}</div><div className="custom-editor"><h3>新建自定义指标</h3>
+  const hasDepthIndicator=Boolean(current?.symbol.startsWith('US.'));
+  const indicatorSettings=<div className="indicator-panel"><div className="settings-section-heading"><h3>主图与副图指标</h3><p>搜索并添加指标；下方可开关显示，点击“设置”调整参数。</p></div><IndicatorPicker onConfigureDepth={hasDepthIndicator?()=>{
+    const options=depthHost?.querySelector('details');
+    if(options){options.open=true;options.querySelector('summary')?.focus()}
+  }:undefined} marketLabel={market==='CN'?'A 股':'美股'} names={names.filter(name=>tdxAvailable(name,market))} value={newIndicator} pane={newIndicatorPane} onSelect={name=>{setNewIndicator(name);setNewIndicatorPane(indicatorPane({name}))}} onPaneChange={setNewIndicatorPane} onAdd={(name,pane)=>updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name,title:name==='MSIGM8'?'MACD突破':undefined,pane,params:JSON.stringify(indicatorDefaults[name]||{}),visible:true}]}))}/><div className="indicator-list">{(['main','separate'] as const).map(pane=><section className="indicator-pane-group" key={pane}><h3>{pane==='main'?'主图叠加指标':'独立副图指标'} <small>{ws.indicators.filter(ind=>indicatorPane(ind)===pane).length+Number(pane==='main'&&hasDepthIndicator)}</small></h3>
+  {pane==='main'&&hasDepthIndicator&&<div ref={setDepthHost}/>}
+  {ws.indicators.filter(ind=>indicatorPane(ind)===pane).map(ind=><IndicatorSettings key={ind.id} indicator={ind} onPatch={patch=>patchIndicator(ind.id,patch)} onDelete={()=>updateMarket(w=>({...w,indicators:w.indicators.filter(x=>x.id!==ind.id)}))}/>)}{!(pane==='main'&&hasDepthIndicator)&&!ws.indicators.some(ind=>indicatorPane(ind)===pane)&&<p className="settings-empty">暂无此类指标，可从上方添加。</p>}</section>)}</div><details className="indicator-advanced-tools"><summary>自定义指标与模板</summary><div className="custom-editor"><h3>新建自定义指标</h3>
   <div className="custom-language" role="tablist" aria-label="自定义指标语言"><button role="tab" aria-selected={customLanguage==='formula'} className={customLanguage==='formula'?'chosen':''} onClick={()=>selectCustomLanguage('formula')}>简易公式</button><button role="tab" aria-selected={customLanguage==='python'} className={customLanguage==='python'?'chosen':''} onClick={()=>selectCustomLanguage('python')}>Python</button></div>
   <input placeholder="名称，如双均线差" value={customName} onChange={e=>setCustomName(e.target.value)}/>
   <textarea aria-label={customLanguage==='python'?'Python 指标代码':'指标公式'} value={customFormula} onChange={e=>setCustomFormula(e.target.value)} spellCheck={false}/>
@@ -579,11 +849,23 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   <div className="custom-options"><select value={customPane} onChange={e=>setCustomPane(e.target.value as 'main'|'separate')}><option value="separate">独立副图</option><option value="main">叠加主图</option></select><button onClick={addCustom}><Plus size={14}/> 添加</button></div>
   <small>{customLanguage==='python'?'Python：示例用 PARAMS["fast"] 等读取可调参数；支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、math 和 statistics。添加后可直接调整参数数值；语法错误显示在此，运行错误显示在图表。':'简易公式：支持 O/H/L/C/V、SMA、EMA、REF、HHV、LLV、ABS、MAX、MIN 和四则运算。'}</small>
   {customError&&<p className="custom-error">{customError}</p>}
-</div><div className="template"><h3>指标模板</h3><div className="template-save"><input placeholder="模板名称" value={templateName} onChange={e=>setTemplateName(e.target.value)}/><button onClick={saveTemplate}><Save size={14}/> 保存</button></div>{Object.entries(templates).map(([name,value])=><button className="template-item" key={name} onClick={()=>updateMarket(w=>({...w,indicators:value}))}>{name} <span>{value.length} 项</span></button>)}</div></div>;
+</div><div className="template"><h3>指标模板</h3>{templateError&&<button onClick={()=>setTemplateAttempt(n=>n+1)}>模板读取失败，重试</button>}<div className="template-save"><input placeholder="模板名称" value={templateName} onChange={e=>setTemplateName(e.target.value)}/><button disabled={!templatesReady} onClick={saveTemplate}><Save size={14}/> 保存</button></div>{Object.entries(templates).map(([name,value])=><button className="template-item" key={name} onClick={()=>updateMarket(w=>({...w,indicators:value}))}>{name} <span>{value.length} 项</span></button>)}</div></details></div>;
+  if(!ready)return <main className="trade-login" role="status">{loadError||'正在读取工作区…'}{loadError&&<button onClick={()=>setLoadAttempt(n=>n+1)}>重新读取</button>}</main>;
   return <div style={{'--market-up':ws.chartAppearance.upColor,'--market-down':ws.chartAppearance.downColor} as CSSProperties} className={`shell chart-workspace ${watchCollapsed?'watch-collapsed':''}`}>
     <header><div className="brand"><div className="brand-mark"><Activity size={20}/></div><div><strong>NAS MARKET</strong><small>私人多市场看盘终端</small></div></div>
       <div className="current-instrument" aria-label="当前查看股票"><span>当前查看</span><strong title={stockNames[current.symbol]||quotes[current.symbol]?.name||current.symbol}>{stockNames[current.symbol]||quotes[current.symbol]?.name||current.symbol.replace('US.','')}</strong><code>{current.symbol}</code><small>图 {active+1} · {periodLabel(current.period)}</small></div>
-      <div className="workspace-actions"><button className="secondary" aria-label="设置" disabled={!ready} onClick={()=>setSettingsTab('indicators')}><Settings2 size={16}/> 设置</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>{setActive(i=>Math.min(i,n-1));updateMarket(w=>({...w,layout:n,tiles:Array.from({length:Math.max(n,w.tiles.length)},(_,i)=>w.tiles[i]||{symbol:w.tiles[0]?.symbol||'US.SNDK',period:(["5m","15m","60m","1d"] as Period[])[i]})}))}}>{n}</button>)}</div></div><div className="header-right"><button className="watch-toggle" aria-label="切换自选侧栏" aria-expanded={!watchCollapsed} onClick={toggleWatch}>自选</button><button className="connection" aria-label="OpenD 连接与登录" title="管理 OpenD 连接与登录" onClick={()=>setSettingsTab('connection')}>{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:status.last_error?<><span className="dot red"/> OpenD 连接异常</>:<><span className="dot idle"/> OpenD 按需连接</>}</button><button className="icon-button" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
+      <nav className="market-navigation" aria-label="工作区视图">
+        <select className="workspace-view-select" aria-label="切换工作区" value={workspaceView} onChange={e=>{setWorkspaceView(e.target.value as typeof workspaceView);if(e.target.value==='scanner')setScanSelection(null);if(e.target.value==='emotion')setEmotionBoard(null)}}>
+          <option value="chart">图表</option><option value="radar">板块雷达</option><option value="emotion">市场情绪</option><option value="scanner">条件扫描</option><option value="review">每日复盘</option><option value="api">API 管理</option>
+        </select>
+        <button aria-pressed={workspaceView==='chart'} onClick={()=>setWorkspaceView('chart')}>图表</button>
+        <button aria-pressed={workspaceView==='radar'} onClick={()=>setWorkspaceView('radar')}>板块雷达</button>
+        <button aria-pressed={workspaceView==='emotion'} onClick={()=>{setEmotionBoard(null);setWorkspaceView('emotion')}}>市场情绪</button>
+        <button aria-pressed={showScanner} onClick={()=>{setScanSelection(null);setWorkspaceView('scanner')}}>条件扫描</button>
+        <button aria-pressed={showReview} onClick={()=>setWorkspaceView('review')}>每日复盘</button>
+        <button aria-pressed={showApi} onClick={()=>setWorkspaceView('api')}>API 管理</button>
+      </nav>
+      <div className="workspace-actions"><a className="guide-library-link" href="?view=indicator-guide" target="_blank" rel="noopener">指标说明</a><button className="secondary" aria-label="设置" disabled={!ready} onClick={()=>setSettingsTab('indicators')}><Settings2 size={16}/> 设置</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>{setActive(i=>Math.min(i,n-1));updateMarket(w=>({...w,layout:n,tiles:Array.from({length:Math.max(n,w.tiles.length)},(_,i)=>w.tiles[i]||{symbol:w.tiles[0]?.symbol||'US.SNDK',period:(["5m","15m","60m","1d"] as Period[])[i]})}))}}>{n}</button>)}</div></div><div className="header-right"><button className="watch-toggle" aria-label="切换自选侧栏" aria-expanded={!watchCollapsed} onClick={toggleWatch}>自选</button><button className="connection" aria-label="OpenD 连接与登录" title="管理 OpenD 连接与登录" onClick={()=>setSettingsTab('connection')}>{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:status.last_error?<><span className="dot red"/> OpenD 连接异常</>:<><span className="dot idle"/> OpenD 按需连接</>}</button><ThemeToggle/><button className="icon-button" aria-label="刷新行情" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
     </header>
     <div className="app-body"><aside className={mobileWatchOpen?'mobile-open':''}>
       <div className="side-title"><span>自选行情</span><span className="side-title-caption">WATCHLIST</span></div>
@@ -605,7 +887,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
         <div className="group-label selected-label">股票 · {selectedGroup.name} <span>{selectedGroup.symbols.length}</span></div>
         {quoteError&&<div className="quote-notice" title={quoteError}>报价暂不可用，图表仍可查看</div>}
         {quotesStale&&<div className="quote-notice">报价为上次缓存数据</div>}
-        {!selectedGroup.symbols.includes(current.symbol)&&<div className="preview-instrument" aria-label="临时查看股票"><span>正在查看 · 未加入当前分组</span><strong>{stockNames[current.symbol]||quotes[current.symbol]?.name||current.symbol.replace('US.','')}</strong><div><code>{current.symbol}</code><button onClick={()=>addSymbol(current.symbol,stockNames[current.symbol]||quotes[current.symbol]?.name)}>＋ 加入本组</button></div></div>}
+        {!selectedGroup.symbols.includes(current.symbol)&&(selectedGroup.symbols.length>0||previewSymbol===current.symbol)&&<div className="preview-instrument" aria-label="临时查看股票"><span>正在查看 · 未加入当前分组</span><strong>{stockNames[current.symbol]||quotes[current.symbol]?.name||current.symbol.replace('US.','')}</strong><div><code>{current.symbol}</code><button onClick={()=>addSymbol(current.symbol,stockNames[current.symbol]||quotes[current.symbol]?.name)}>＋ 加入本组</button></div></div>}
         <div className="symbol-list" role="region" aria-label="自选股票列表" tabIndex={0}>{selectedGroup.symbols.map(s=><div key={s} className={`symbol ${current?.symbol===s?'active':''}`}>
           <button className="stock-select" onClick={()=>{setTile({symbol:s});setMobileWatchOpen(false)}} title={quotes[s]?.update_time?`OpenD 更新：${quotes[s].update_time}`:s}>
             <span className="symbol-icon">{s.split('.')[1].slice(0,1)}</span>
@@ -620,21 +902,31 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
         {symbolError&&<div className="side-error">{symbolError}</div>}
       </div>
       <div className="side-bottom"><div className="resource"><span>实时订阅</span><strong>{status.active_streams||0} / {status.max_streams||32}</strong></div><p>行情由本机 OpenD 提供。美股交易使用独立 HTTPS 入口。</p></div>
-    </aside><main>
+    </aside><main className={showRadar||showScanner||showApi||showReview?"workspace-panel-view":undefined}>
+
+      {showApi&&<ApiManagement/>}
+      {showReview&&ready&&<Suspense fallback={<p role="status">正在打开每日复盘…</p>}><DailyReview key={market} market={market} currentSymbol={current.symbol} names={stockNames} onMarketChange={switchMarket} onOpen={(symbol,name)=>openRadar({symbol,name})}/></Suspense>}
+      {showRadar&&<MarketRadar key={market} market={market} view={workspaceView==='emotion'?'emotion':'radar'} emotionBoard={emotionBoard&&(emotionBoard.symbol.startsWith('US.')?'US':'CN')===market?emotionBoard:null} onShowEmotion={item=>{setEmotionBoard(item);setWorkspaceView('emotion')}} favorites={ws.groups.filter(g=>g.id==='radar-favorites').flatMap(g=>g.symbols)} onFavorite={favoriteRadar} onOpen={openRadar} onScan={scanRadar}/>}
+      {showScanner&&<ScannerPanel key={market+":"+(scanSelection?.id||'watchlists')} market={market} groups={[...ws.groups.map(g=>({...g,id:market+":"+g.id})),...(scanSelection?[scanSelection]:[])]} savedGroups={savedScanGroups[market]} initialScope={scanSelection?.id} names={stockNames} onClose={()=>setWorkspaceView('chart')} onOpen={(symbol,period)=>openRadar({symbol,name:stockNames[symbol]||symbol},period as Period)}/>}
+      <div className="chart-view" hidden={showRadar||showScanner||showApi||showReview}>
+
 
 
       {market==='CN'&&status.permission_errors?.CN&&<div className="market-permission-note" role="status"><strong>A 股实时行情权限不足</strong><span>继续显示 NAS 已有历史数据。请在 OpenD 检查 A 股行情授权及登录网络地区；moomoo App 的权限不一定等同于 API。</span><button onClick={async()=>{await fetch('/api/quote/retry?symbol='+encodeURIComponent(current?.symbol||'SH.600584'),{method:'POST'});setRefresh(x=>x+1)}}>已检查权限，重试</button></div>}
-      <div className="toolbar"><div className="toolbar-section"><span>周期</span>{periods.map(p=><button key={p} className={current?.period===p?'on':''} onClick={()=>setTile({period:p})}>{periodLabel(p)}</button>)}</div><div className="toolbar-line"/><div className="toolbar-section"><span>时段</span>{market==='US'?<><button className={!isLongPeriod(current?.period||'5m')&&ws.mode!=='regular'?'on':''} aria-label="扩展时段" aria-pressed={!isLongPeriod(current?.period||'5m')&&ws.mode!=='regular'} disabled={isLongPeriod(current?.period||'5m')} title="开关盘前/盘后；右侧可选择是否包括隔夜，重新开启恢复上次范围" onClick={()=>updateMarket(w=>({...w,mode:w.mode==='regular'?lastExtendedMode.current:'regular'}))}>扩展时段</button><select aria-label="图表交易时段" disabled={isLongPeriod(current?.period||'5m')} value={isLongPeriod(current?.period||'5m')?'regular':ws.mode} onChange={e=>updateMarket(w=>({...w,mode:e.target.value as Mode}))}><option value="all">24H 全时段</option><option value="extended">盘前 + 常规 + 盘后</option><option value="regular">仅常规</option></select>{!isLongPeriod(current?.period||'5m')&&ws.mode!=='regular'&&<span className="session-legend" aria-label="扩展时段背景图例"><i className="pre"/>盘前<i className="post"/>盘后{ws.mode==='all'&&<><i className="overnight"/>隔夜</>}</span>}</>:<span className="cn-session">沪深常规时段 · 北京时间</span>}</div><div className="toolbar-end">{ws.indicators.filter(i=>current&&appliesTo(i,active,current.period)).length} 个指标用于当前图</div></div>
-      {drawingSyncNotice&&<div className="drawing-sync-notice" role="status">{drawingSyncNotice}<button onClick={()=>{saveRetryCount.current=0;lastSavedWorkspace.current='';setWorkspaceRetry(v=>v+1)}}>重试保存</button><button onClick={()=>setDrawingSyncNotice('')}>知道了</button></div>}<div className="workspace-drawing-host" ref={setDrawingHost}/>{ws.tiles.some(t=>Boolean(t.symbol))?<div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane drawingHost={drawingHost} key={`${market}-${i}-${tile.symbol}`} index={i} tile={tile} mode={ws.mode} appearance={ws.chartAppearance} indicators={ws.indicators} onIndicatorToggle={(id,visible)=>patchIndicator(id,{visible})} active={active===i} onActivate={()=>setActive(i)} drawings={drawingViews[i].horizontal} onDraw={v=>updateMarket(w=>({...w,drawings:updateDrawingRecords(w.drawings,tile.symbol,tile.period,v)}))} trends={drawingViews[i].trends} onTrend={v=>updateMarket(w=>({...w,trends:updateDrawingRecords(w.trends,tile.symbol,tile.period,v)}))} fibos={drawingViews[i].fibos} onFibos={v=>updateMarket(w=>({...w,fibos:updateDrawingRecords(w.fibos,tile.symbol,tile.period,v)}))} drawingsHidden={ws.drawingsHidden[`${tile.symbol}:${tile.period}`]===true} onDrawingsHidden={value=>updateMarket(w=>({...w,drawingsHidden:{...w.drawingsHidden,[`${tile.symbol}:${tile.period}`]:value}}))} version={refresh} stockName={stockNames[tile.symbol]||quotes[tile.symbol]?.name} depthSettingsOpen={settingsTab==='depth'&&active===i} settingsHost={settingsHost}/>)}</div>:
-        <div className="empty-watchlist"><strong>{selectedGroup.name}还是空的</strong><p>在左侧输入股票代码，就能开始看盘。</p><small>{market==='US'?'示例：AAPL、US.SNDK':'示例：SH.600519、SZ.000001'}</small></div>}
-      {market==='US'&&<div className="market-trade-strip"><div><strong>{current?.symbol||'US.SNDK'}</strong><span>当前图表 · 快捷交易</span></div><div className="market-trade-buttons"><button className="buy" onClick={()=>openTrading(current?.symbol||'US.SNDK','buy')}>买入</button><button className="close" onClick={()=>openTrading(current?.symbol||'US.SNDK','close')}>平仓</button><button className="stop" onClick={()=>openTrading(current?.symbol||'US.SNDK','stop')}>设置止损</button><button onClick={()=>openTrading(current?.symbol||'US.SNDK','options')}>期权</button><button className="strategy-entry" onClick={()=>openTrading(current?.symbol||'US.SNDK','strategy')}>自定义策略</button></div><small>图内交易面板 · 自定义快捷方案 · 实盘需解锁</small></div>}
+      <div className="toolbar"><div className="toolbar-section"><span>周期</span>{periods.map(p=><button key={p} className={current?.period===p?'on':''} onClick={()=>setTile({period:p})}>{periodLabel(p)}</button>)}</div><div className="toolbar-line"/><div className="toolbar-section"><span>时段</span>{market==='US'?<><button className={!isLongPeriod(current?.period||'5m')&&ws.mode!=='regular'?'on':''} aria-label="扩展时段" aria-pressed={!isLongPeriod(current?.period||'5m')&&ws.mode!=='regular'} disabled={isLongPeriod(current?.period||'5m')} title="开关盘前/盘后；右侧可选择是否包括隔夜，重新开启恢复上次范围" onClick={()=>updateMarket(w=>({...w,mode:w.mode==='regular'?lastExtendedMode.current:'regular'}))}>扩展时段</button><select aria-label="图表交易时段" disabled={isLongPeriod(current?.period||'5m')} value={isLongPeriod(current?.period||'5m')?'regular':ws.mode} onChange={e=>updateMarket(w=>({...w,mode:e.target.value as Mode}))}><option value="all">24H 全时段</option><option value="extended">盘前 + 常规 + 盘后</option><option value="regular">仅常规</option></select>{!isLongPeriod(current?.period||'5m')&&ws.mode!=='regular'&&<span className="session-legend" aria-label="扩展时段背景图例"><i className="pre"/>盘前<i className="post"/>盘后{ws.mode==='all'&&<><i className="overnight"/>隔夜</>}</span>}</>:<span className="cn-session">沪深常规时段 · 北京时间</span>}</div><div className="toolbar-end">{ws.indicators.filter(i=>current&&tdxAvailable(i.name,current.symbol)&&appliesTo(i,active,current.period)).length} 个指标用于当前图</div></div>
+      {drawingSyncNotice&&<div className="drawing-sync-notice" role="status">{drawingSyncNotice}<button onClick={()=>{saveRetryCount.current=0;lastSavedWorkspace.current='';setWorkspaceRetry(v=>v+1)}}>重试保存</button><button onClick={()=>setDrawingSyncNotice('')}>知道了</button></div>}<div className="workspace-drawing-host" ref={setDrawingHost}/>{workspaceView==='chart'&&(ws.tiles.some(t=>Boolean(t.symbol))?<div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane drawingHost={drawingHost} onAnalysis={openAnalysis} key={`${market}-${i}-${tile.symbol}`} index={i} tile={tile} mode={ws.mode} appearance={ws.chartAppearance} snapCrosshairTime={snapCrosshairTime} indicators={ws.indicators} onIndicatorToggle={(id,visible)=>patchIndicator(id,{visible})} active={active===i} onActivate={()=>setActive(i)} drawings={drawingViews[i].horizontal} onDraw={v=>updateMarket(w=>({...w,drawings:updateDrawingRecords(w.drawings,tile.symbol,tile.period,v)}))} trends={drawingViews[i].trends} onTrend={v=>updateMarket(w=>({...w,trends:updateDrawingRecords(w.trends,tile.symbol,tile.period,v)}))} fibos={drawingViews[i].fibos} onFibos={v=>updateMarket(w=>({...w,fibos:updateDrawingRecords(w.fibos,tile.symbol,tile.period,v)}))} drawingsHidden={ws.drawingsHidden[`${tile.symbol}:${tile.period}`]===true} onDrawingsHidden={value=>updateMarket(w=>({...w,drawingsHidden:{...w.drawingsHidden,[`${tile.symbol}:${tile.period}`]:value}}))} version={refresh} stockName={stockNames[tile.symbol]||quotes[tile.symbol]?.name} depthHost={active===i?depthHost:null}/>)}</div>:
+        <div className="empty-watchlist"><strong>{selectedGroup.name}还是空的</strong><p>在左侧输入股票代码，就能开始看盘。</p><small>{market==='US'?'示例：AAPL、US.SNDK':'示例：SH.600519、SZ.000001'}</small></div>)}
+      {market==='US'&&!/^US\.(BK|LIST)\d+$/.test(current?.symbol||'')&&<div className="market-trade-strip"><div><strong>{current?.symbol||'US.SNDK'}</strong><span>当前图表 · 快捷交易</span></div><div className="market-trade-buttons"><button className="buy" onClick={()=>openTrading(current?.symbol||'US.SNDK','buy')}>买入</button><button className="close" onClick={()=>openTrading(current?.symbol||'US.SNDK','close')}>平仓</button><button className="stop" onClick={()=>openTrading(current?.symbol||'US.SNDK','stop')}>设置止损</button><button onClick={()=>openTrading(current?.symbol||'US.SNDK','options')}>期权</button><button className="strategy-entry" onClick={()=>openTrading(current?.symbol||'US.SNDK','strategy')}>自定义策略</button></div><small>图内交易面板 · 自定义快捷方案 · 实盘需解锁</small></div>}
       {market==='US'&&secureChart&&showStrategies&&<Suspense fallback={<p>正在打开策略编辑器…</p>}><StrategyPanel symbol={current?.symbol||'US.SNDK'} period={current?.period||'5m'} mode={ws.mode} indicators={ws.indicators} onClose={()=>setShowStrategies(false)} onOpenTrading={()=>openTrading(current?.symbol||'US.SNDK','overview')}/></Suspense>}
       {market==='CN'&&<div className="market-trade-strip market-trade-readonly"><strong>A 股 · 看盘模式</strong><small>当前平台未开放 A 股交易</small></div>}
-    {market==='US'&&secureChart&&tradeDock&&<section className="chart-trade-dock" aria-label="图内交易面板"><div className="chart-trade-dock-head"><strong>快捷交易</strong><button onClick={()=>setDockSymbol(current?.symbol||dockSymbol)} disabled={market!=='US'}>带入当前图表</button><button onClick={()=>setTradeDock(false)} aria-label="关闭图内交易">×</button></div><TradeTerminal embedded product={dockProduct} chartSymbol={dockSymbol} onSessionEnd={onSessionEnd}/></section>}
+    {market==='US'&&secureChart&&tradeDock&&<section ref={tradeDockRef} className="chart-trade-dock" aria-label="图内交易面板"><div className="chart-trade-dock-head"><strong>快捷交易</strong><button onClick={()=>setDockSymbol(current?.symbol||dockSymbol)} disabled={market!=='US'}>带入当前图表</button><button onClick={()=>setTradeDock(false)} aria-label="关闭图内交易">×</button></div><TradeTerminal embedded productRequest={dockRequest} chartSymbol={dockSymbol} onSessionEnd={onSessionEnd}/></section>}
 
+      </div>
     </main></div>
 
-    {settingsTab&&<SettingsPanel tab={settingsTab} onTab={tab=>{if(tab==='appearance')setAppearanceMarket(market);setSettingsTab(tab)}} onClose={()=>setSettingsTab(null)} onContentHost={setSettingsHost}>{settingsTab==='connection'?<OpenDPanel tradingUrl={tradingUrl} onReady={()=>setRefresh(v=>v+1)}/>:settingsTab==='appearance'?<CandleSettings market={appearanceMarket} onMarket={setAppearanceMarket} appearance={state.markets[appearanceMarket].chartAppearance} onChange={patch=>setState(old=>({...old,markets:{...old.markets,[appearanceMarket]:{...old.markets[appearanceMarket],chartAppearance:{...old.markets[appearanceMarket].chartAppearance,...patch}}}}))}/>:settingsTab==='indicators'?indicatorSettings:settingsTab==='cache'?<CachePanel embedded symbol={current?.symbol} onClose={()=>setSettingsTab(null)}/>:market==='CN'?<p>A 股暂不支持美股盘口密集线。</p>:<p className="settings-depth-caption">{current.symbol} · 参数按股票保存；工具栏“挂档密集线”可直接开关。</p>}</SettingsPanel>}
+    {analysisChart&&<Suspense fallback={<p role="status">正在打开盘面分析…</p>}><MarketAnalysis chart={analysisChart} onClose={()=>setAnalysisChart(null)} onSettings={()=>{setAnalysisChart(null);setSettingsTab('agents')}}/></Suspense>}
+    {workspaceView!=='chart'&&hasDepthIndicator&&depthHost&&<DepthPanel key={current.symbol} symbol={current.symbol} settingsHost={depthHost}/>}
+    {settingsTab&&<SettingsPanel tab={settingsTab} onTab={tab=>{if(tab==='appearance')setAppearanceMarket(market);setSettingsTab(tab)}} onClose={()=>setSettingsTab(null)}>{settingsTab==='agents'?<AgentSettings secureUrl={new URL('/chart?settings=agents',secureChart?location.origin:tradingUrl).href}/>:settingsTab==='connection'?<OpenDPanel tradingUrl={tradingUrl} onReady={()=>setRefresh(v=>v+1)}/>:settingsTab==='appearance'?<CandleSettings snapCrosshairTime={snapCrosshairTime} onCrosshairSnapChange={changeCrosshairSnap} market={appearanceMarket} onMarket={setAppearanceMarket} appearance={state.markets[appearanceMarket].chartAppearance} onChange={patch=>setState(old=>({...old,markets:{...old.markets,[appearanceMarket]:{...old.markets[appearanceMarket],chartAppearance:{...old.markets[appearanceMarket].chartAppearance,...patch}}}}))}/>:settingsTab==='indicators'?indicatorSettings:<CachePanel embedded symbol={current?.symbol} onClose={()=>setSettingsTab(null)}/>}</SettingsPanel>}
 
   </div>;
 }
@@ -644,4 +936,4 @@ function SecureChart(){
  if(auth===null)return <div className="trade-login">正在检查交易平台登录状态…</div>;
  return auth?<App onSessionEnd={()=>{setChartCsrf('');setAuth(false)}}/>:<TradeTerminal onAuthenticated={token=>{setChartCsrf(token);setAuth(true)}}/>;
 }
-createRoot(document.getElementById('root')!).render(location.pathname.startsWith('/trade')?<TradeTerminal/>:secureChart?<SecureChart/>:<App/>);
+createRoot(document.getElementById('root')!).render(<ThemeProvider>{new URLSearchParams(location.search).get('view')==='indicator-guide'?<IndicatorLibrary/>:location.pathname.startsWith('/trade')?<TradeTerminal/>:secureChart?<SecureChart/>:<App/>}</ThemeProvider>);

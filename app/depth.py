@@ -4,6 +4,8 @@ import os
 import threading
 import time
 
+from .market_flow import ticker_rows
+
 
 def levels(book):
     result = []
@@ -22,7 +24,8 @@ def levels(book):
 
 
 class DepthFeed:
-    def __init__(self):
+    def __init__(self, subtype="ORDER_BOOK"):
+        self.subtype = subtype
         self.lock = threading.Lock()
         self.ctx = None
         self.subscriptions = {}
@@ -41,20 +44,34 @@ class DepthFeed:
                 port=int(os.getenv('OPEND_PORT', '11111')), is_encrypt=bool(rsa))
         return self.ctx
 
+    def subscribe(self, ctx, symbol, now, mm):
+        if symbol not in self.subscriptions:
+            if len(self.subscriptions) >= 4:
+                raise ValueError('最多同时订阅四只股票，关闭其他面板后约一分钟释放额度')
+            session = mm.Session.RTH if self.subtype == 'TICKER' else mm.Session.ALL
+            ret, data = ctx.subscribe([symbol], [getattr(mm.SubType, self.subtype)],
+                                      subscribe_push=False, session=session)
+            if ret != mm.RET_OK:
+                raise ValueError('行情订阅失败：' + str(data)[:220])
+            self.subscriptions[symbol] = [now, now]
+        self.subscriptions[symbol][1] = now
+
+    def read_ticks(self, symbol):
+        import moomoo as mm
+        with self.lock:
+            now = time.monotonic()
+            ctx = self.ensure()
+            self.subscribe(ctx, symbol, now, mm)
+            if symbol not in self.cache or now - self.cache[symbol][0] >= 0.8:
+                self.cache[symbol] = (now, ticker_rows(ctx, symbol))
+            return self.cache[symbol][1]
+
     def read(self, symbol):
         import moomoo as mm
         with self.lock:
             now = time.monotonic()
             ctx = self.ensure()
-            if symbol not in self.subscriptions:
-                if len(self.subscriptions) >= 4:
-                    raise ValueError('最多同时订阅四只股票的盘口，关闭其他盘口后约一分钟释放额度')
-                ret, data = ctx.subscribe([symbol], [mm.SubType.ORDER_BOOK], subscribe_push=False,
-                                          session=mm.Session.ALL)
-                if ret != mm.RET_OK:
-                    raise ValueError('盘口订阅失败：' + str(data)[:220])
-                self.subscriptions[symbol] = [now, now]
-            self.subscriptions[symbol][1] = now
+            self.subscribe(ctx, symbol, now, mm)
             if symbol in self.cache and now-self.cache[symbol][0] < 2:
                 return self.cache[symbol][1]
             try:
@@ -78,12 +95,14 @@ class DepthFeed:
                 raise
 
     def cleanup(self):
-        import moomoo as mm
         with self.lock:
+            if self.ctx is None:
+                return
+            import moomoo as mm
             now = time.monotonic()
             for symbol, (start, used) in list(self.subscriptions.items()):
                 if now-start >= 65 and now-used >= 65:
-                    ret, _ = self.ctx.unsubscribe([symbol], [mm.SubType.ORDER_BOOK])
+                    ret, _ = self.ctx.unsubscribe([symbol], [getattr(mm.SubType, self.subtype)])
                     if ret == mm.RET_OK:
                         self.subscriptions.pop(symbol, None)
                         self.cache.pop(symbol, None)

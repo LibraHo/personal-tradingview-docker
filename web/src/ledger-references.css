@@ -1,0 +1,5 @@
+.ledger-citation-picker{margin:.75rem 0}
+.ledger-citation-picker section{margin-top:.5rem;padding:.7rem;border:1px solid var(--review-line);border-radius:6px}
+.ledger-citation-picker input{max-width:12rem}
+.ledger-citation-list{display:grid;gap:.35rem;max-height:15rem;overflow:auto;margin:.5rem 0}
+.daily-review .ledger-citation-list button{justify-content:flex-start;text-align:left;white-space:normal;overflow-wrap:anywhere}

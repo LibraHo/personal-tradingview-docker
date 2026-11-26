@@ -2,6 +2,7 @@ from __future__ import annotations
 import math
 from .extra_indicators import calculate_extra
 from .advanced_indicators import calculate_advanced
+from .tdx_indicators import calculate_tdx
 
 
 def sma(values, n):
@@ -30,6 +31,9 @@ def calculate(bars, name, params=None, reset='session'):
     if params is not None and not isinstance(params, dict):
         raise ValueError('指标参数须为对象')
     p = params or {}
+    tdx = calculate_tdx(bars, name, p)
+    if tdx is not None:
+        return tdx
     advanced = calculate_advanced(bars, name, p)
     if advanced is not None:
         return advanced

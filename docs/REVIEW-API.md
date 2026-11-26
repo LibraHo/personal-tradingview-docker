@@ -95,3 +95,16 @@ A 股、美股图表工具栏提供「创建交易计划」，沿用 `/ledger/pl
 
 旧客户端省略 `details` 修订计划时，系统保留已有结构化内容；同时修改 `trigger` 会更新入场补充文字。显式传入 `details:null` 可清除结构化内容。历次版本与成交时的计划快照保留各自的原值。
 
+A 股打板计划使用 `details.strategy="limit_up"`，入场、失效和退出条件分别记录于 `entry_note` 和 `exit_note`，指标列表留空。新建计划默认按计划周期识别前高、前低和震荡平台，识别依据的 K 线时间随 `references` 保存。已有手填计划可以在编辑器启用 `structure_mode="auto"`。
+
+选择跟随防守价时，`details.risk.defense_reference` 保存参考周期与来源名称，编辑器打开或刷新行情时重算。保存后的 `stop` 属于该修订版本。计划页可以补关联同方向、同标的的历史成交。成交时有生效版本就保留该版本的快照，仅用于事后复盘的关联保存 `plan_id` 和空的 `plan_snapshot`。
+
+## 按周期跟踪与每日汇总
+
+计划详情的 `details.tracking_period` 指定后台记录周期，支持计划编辑器的各个 K 线周期，默认空。已有计划保持关闭，只有显式开启且状态为 active 才进入后台行情跟踪。跟随防守位使用 `risk.defense_reference.period` 指定的数据周期。跟踪只读行情，独立于 Agent 配置。
+
+`GET /api/v1/review/ledger/plans/{id}/bars?market=CN&limit=30` 返回收盘记录、止损止盈触及状态、本次尝试次数、失败原因和下次重试时间。分页传 `before=next_before`（UTC 秒）。`GET /api/v1/review/ledger/plans/{id}/daily?market=CN` 返回每日汇总，分页游标是交易日期。两个接口均使用 `review:read`，页面使用同源 `/api/review/ledger` 路径。计划详情还返回 `latest_bar` 和 `latest_daily`。OpenClaw 复盘客户端支持 `plan-bars` 和 `plan-daily`，均接受 `--market`、`--id`、`--limit`、`--before`。
+
+调度按交易日历和常规交易时段划分已收盘 K 线，跳过午休、休市和未收盘的区间。每次轮询先检查本地到期时间，同标的同周期的计划在同一轮复用行情。日线收盘后检查一次，失败记录在下个交易日收盘后一起重试。分钟级失败按 5 分钟、30 分钟、2 小时和 1 天退避。恢复后在最近 30 个自然日范围内补缺，按计划与收盘时间去重。历史记录持续保留。
+
+止损和止盈分别判断，依据该根 K 线开始时的有效点位。买入计划向下判断止损、向上判断止盈，卖出计划相反。本根收盘产生的新防守价供后续使用。行情不足、点位缺失或计划在本根中途生效时，相应触及结论可以为 null。分钟级计划在收盘后按逐根结果生成日汇总，出现过明确触及即记录为 true。缺失记录可能影响结论时显示待确认。周、月级别另有每日常规时段观察。

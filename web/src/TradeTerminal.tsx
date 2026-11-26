@@ -2,6 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import {ArrowLeft,LockKeyhole,ShieldCheck,RefreshCw,LogOut,Settings2,ArrowUpRight,ArrowDownRight} from 'lucide-react';
 import './trading.css';
 import './workflow.css';
+import {ThemeToggle} from './Theme';
 import OptionsPanel,{isOptionCode} from './OptionsPanel';
 
 type Row=Record<string,any>;
@@ -14,8 +15,8 @@ const money=(v:any)=>v==null?'—':new Intl.NumberFormat('en-US',{style:'currenc
 const roundPrice=(v:number)=>Number(v.toFixed(v>=1?2:4));
 const clock=(v:number)=>new Date(v*1000).toLocaleTimeString('zh-CN',{hour12:false});
 
-export default function TradeTerminal({chartSymbol,embedded=false,onAuthenticated,onSessionEnd,product}:{product?:'stocks'|'options';chartSymbol?:string;embedded?:boolean;onAuthenticated?:(csrf:string)=>void;onSessionEnd?:()=>void}={}){
- const [activeProduct,setActiveProduct]=useState<'stocks'|'options'>(product||((new URLSearchParams(location.search).get('intent')==='options')?'options':'stocks'));
+export default function TradeTerminal({chartSymbol,embedded=false,onAuthenticated,onSessionEnd,productRequest}:{productRequest?:{product:'stocks'|'options'};chartSymbol?:string;embedded?:boolean;onAuthenticated?:(csrf:string)=>void;onSessionEnd?:()=>void}={}){
+ const [activeProduct,setActiveProduct]=useState<'stocks'|'options'>(productRequest?.product||((new URLSearchParams(location.search).get('intent')==='options')?'options':'stocks'));
  const [shortcut,setShortcut]=useState<'close'|'stop'|null>(null),[closeKind,setCloseKind]=useState('NORMAL'),[closePrice,setClosePrice]=useState(''),[closeSession,setCloseSession]=useState('RTH');
  const [stopConfig,setStopConfig]=useState<Row>({percent:2.5,mode:'STOP',tolerance:0});
  const [auth,setAuth]=useState<Row|null>(null),[password,setPassword]=useState(''),[setup,setSetup]=useState('');
@@ -35,7 +36,7 @@ export default function TradeTerminal({chartSymbol,embedded=false,onAuthenticate
  const pendingEdit=useRef<Row|null>(null),ticketGeneration=useRef(0);
  accountRef.current=account;authRef.current=!!auth?.authenticated;
  const selectedOption=isOptionCode(symbol);
- useEffect(()=>{if(product){setActiveProduct(product);setQuick(false);ticketGeneration.current++}},[product]);
+ useEffect(()=>{if(productRequest){setActiveProduct(productRequest.product);setQuick(false);setPreview(null);ticketGeneration.current++}},[productRequest]);
  const acc=accounts.find(a=>a.acc_id===account),env=acc?.trd_env||'SIMULATE';
  const unlocked=env==='REAL'&&state.unlock?.acc_id===account&&state.unlock.expires>now;
  const canTrade=!!acc&&(env==='SIMULATE'||unlocked),funds=snapshot.funds?.[0]||{};
@@ -152,6 +153,7 @@ export default function TradeTerminal({chartSymbol,embedded=false,onAuthenticate
  const logout=()=>perform(async()=>{const r=await api('logout',{});setAuth({authenticated:false});setQuick(false);setState({});setNotice(r.message);onSessionEnd?.()});
 
  if(!auth?.authenticated)return <div className="trade-terminal trade-login"><div className="trade-login-card">
+  {!embedded&&<ThemeToggle/>}
   <div className="trade-brand"><ShieldCheck size={25}/><span>NAS MARKET <b>TRADE</b></span></div>
   <h1>{auth?.setup_required?'设置交易平台':'登录交易平台'}</h1>
   <p>连接你的 OpenD，在浏览器中管理美股持仓和订单。</p>
@@ -165,7 +167,7 @@ export default function TradeTerminal({chartSymbol,embedded=false,onAuthenticate
 
  return <div className={`trade-terminal ${embedded?"trade-embedded":""}`}>
   <header className="trade-header"><div className="trade-brand"><ShieldCheck size={24}/><span>NAS MARKET <b>TRADE</b></span></div>
-   <div className="trade-header-actions"><a href="/chart"><ArrowLeft size={15}/> 看盘</a><button onClick={()=>void refresh()} disabled={busy}><RefreshCw size={15}/> 刷新</button><button onClick={()=>void logout()} disabled={busy}><LogOut size={15}/> 退出</button></div></header>
+   <div className="trade-header-actions">{!embedded&&<ThemeToggle/>}<a href="/chart"><ArrowLeft size={15}/> 看盘</a><button onClick={()=>void refresh()} disabled={busy}><RefreshCw size={15}/> 刷新</button><button onClick={()=>void logout()} disabled={busy}><LogOut size={15}/> 退出</button></div></header>
   <div className="trade-shell"><section className="trade-intro"><div><div className="trade-eyebrow">US STOCKS & OPTIONS · EXECUTION DESK</div><h1>美股交易台</h1><p>持仓、订单和快捷操作，在一个页面完成。</p></div><div className={`trade-env ${env==='REAL'?'real':'paper'}`}>{acc?(env==='REAL'?'实盘账户':'模拟账户'):'请选择账户'}<small>{env==='REAL'?(unlocked?`已解锁 · ${Math.max(0,Math.ceil((state.unlock.expires-now)/60))} 分钟`:'交易已锁定'):'不使用真实资金'}</small></div></section>
    {error&&<div role="alert" className="trade-error">{error}<button onClick={()=>setError('')}>×</button></div>}
    {notice&&<div role="status" className="trade-notice">{notice}</div>}

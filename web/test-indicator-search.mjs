@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {moduleUrl} from './test-load-ts.mjs';
+const {searchIndicators}=await import(moduleUrl('indicatorSearch'));
+const labels={MSIGM8:'MACD突破',SIXPULSE:'六脉神剑 · 六项共振',SIXPULSE_SIGNAL:'六脉神剑 · 主图上下车',MACD:'MACD · 平滑异同移动平均',EMA:'EMA · 指数移动平均线'};
+const names=Object.keys(labels);
+assert.deepEqual(searchIndicators(names,labels,'突破'),['MSIGM8']);
+assert.deepEqual(searchIndicators(names,labels,'MacD'),['MSIGM8','MACD']);
+assert.deepEqual(searchIndicators(names,labels,'macd short'),['MSIGM8']);
+assert.deepEqual(searchIndicators(names,labels,'六脉'),['SIXPULSE','SIXPULSE_SIGNAL']);
+assert.deepEqual(searchIndicators(names,labels,'六脉主图'),['SIXPULSE_SIGNAL']);
+assert.deepEqual(searchIndicators(names,labels,'不存在的指标'),[]);
+assert.deepEqual(searchIndicators(names,labels,'  '),names);
+console.log('Indicator search: Chinese, mixed case, aliases, main/pane variants and empty results passed');

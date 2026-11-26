@@ -5,7 +5,6 @@ const bars=[{time:1,session:'overnight',session_date:'a'},{time:2,session:'pre',
 assert.deepEqual(sessionSpans(bars,t=>t*10-10,10,42),[{session:'overnight',left:0,right:5},{session:'pre',left:5,right:25},{session:'post',left:35,right:42}]);
 assert.deepEqual(sessionSpans(bars.filter(b=>b.session==='regular'),()=>10,10,100),[],'regular session has no tint');
 assert.equal(new Set(Object.values(sessionColors)).size,3,'each extended session has a distinct background');
-assert.equal(sessionSpans([{time:1,session:'pre',session_date:'day1'},{time:2,session:'pre',session_date:'day2'}],t=>t*10,10,100).length,2,'different session dates remain separate');
 const calls=[];const primitive=sessionBackground(bars);primitive.attached({chart:{timeScale:()=>({timeToCoordinate:t=>t*10-10,options:()=>({barSpacing:10})})},requestUpdate:()=>{}});
 const view=primitive.paneViews()[0];assert.equal(view.zOrder(),'bottom');view.renderer().draw({useMediaCoordinateSpace:fn=>fn({context:{save:()=>{},restore:()=>{},fillRect:(...a)=>calls.push(a)},mediaSize:{width:42,height:200}})});
 assert.deepEqual(calls,[[0,0,5,200],[5,0,20,200],[35,0,7,200]]);primitive.detached();

@@ -19,6 +19,7 @@ OpenAPI：`http://192.168.101.103:8088/openapi.json`，交互文档 `/docs`。�
 | 路径（相对 /api/v1） | 方法与用途 |
 | --- | --- |
 | `/markets` | GET 市场、实际支持分类、复权和时段 |
+| `/limit-up?day=YYYY-MM-DD` | GET 沪深封板、回封和炸板快照。省略 day 读取最新交易日，使用 read 权限。 |
 | `/sectors?market=CN&kind=industry&q=` | GET 动态目录；industry/concept 为 SDK 完整列表，无分页参数 |
 | `/sectors/heatmap?market=US&kind=theme&page=` | GET 热力图，按 next_page 继续直到空，包含 total；不得只取首100项 |
 | `/sectors/members?symbol=SH.LIST0002` | GET 去重成分及来源、抓取时间、失效状态 |
@@ -158,3 +159,11 @@ execution_plan 保存本次实际使用的全部条件和展开后的默认参�
 
 提交回执不明确但已保存 request_id 时，可用只读 GET /api/v1/requests/{request_id} 找回已接受的 job_id 和进度；未曾接受该编号返回404。该接口不创建或重提扫描，适用于只读取结果的续查任务。
 
+
+## 沪深打板行情
+
+A 股板块雷达中的「打板行情」读取 `GET /api/radar/limit-up`，Agent 对应 `GET /api/v1/limit-up`（read）。默认最近交易日，09:25 前沿用上一交易日。可用 `day=YYYY-MM-DD` 选择响应 `dates` 中的最近五个交易日。
+
+`sealed` 为当前封板名单，`broken` 为剔除已封板标的后的炸板名单。开板次数大于零且当前封板表示回封。首板、连板按连续涨停天数划分。首次和最近封板时间为北京时间 HHMMSS 数字，封单金额单位为元，缺失为 null。两池的同日快照缓存 120 秒，上游故障时返回带 stale 和 error 的同日缓存；没有可用快照时返回错误。
+
+个股的 `turnover_amount` 和 `float_market_cap` 分别是当日成交额和流通市值（元）。`turnover_pct` 是换手率，`seal_to_turnover_pct` 和 `seal_to_float_pct` 分别是封单金额占成交额、流通市值的百分比。数值 1 表示 1%。缺少分子、分母或分母为零时，占比为 null。查询超出可选交易日返回 422，行情暂不可用且没有当日缓存时返回 503。

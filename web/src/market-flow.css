@@ -1,0 +1,15 @@
+.market-flow { margin: 4px 10px; font-size: .85rem; }
+.market-flow summary { cursor: pointer; width: fit-content; }
+.market-flow-body { padding: 8px 0; }
+.market-flow p { margin: 6px 0; }
+.market-flow button, .market-flow select { margin-right: 6px; }
+.flow-tabs { margin-bottom: 8px; }
+.flow-tabs button[aria-pressed="true"] { outline: 1px solid var(--theme-focus, #3da5ee); }
+.market-flow-scroll { max-height: 15rem; overflow: auto; }
+.market-flow table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+.market-flow th, .market-flow td { text-align: center; padding: 4px; }
+.market-flow tr { border-bottom: 1px solid #80808044; }
+.flow-buy { background: linear-gradient(to left,var(--theme-flow-buy, #168b7060) var(--fill),transparent var(--fill)); }
+.flow-sell { background: linear-gradient(to right,var(--theme-flow-sell, #d14f5660) var(--fill),transparent var(--fill)); }
+.flow-poc { background: var(--theme-accent-wash, #3da5ee30); }
+.flow-chart { display: block; width: min(100%,600px); max-height: 120px; }

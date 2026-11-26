@@ -1,0 +1,16 @@
+.guide-library{max-width:1240px;margin:auto;padding:0 clamp(14px,3vw,42px);color:var(--theme-text);background:var(--theme-page);height:100dvh;display:flex;flex-direction:column}
+.guide-library header{display:flex;align-items:center;justify-content:space-between;padding:20px 0;border-bottom:1px solid var(--theme-border)}
+.guide-library h1,.guide-library header a,.guide-query,.guide-library-link{display:inline-flex;align-items:center;gap:8px}
+.guide-library h1{margin:0;font-size:22px}.guide-library a,.guide-library-link{color:var(--theme-link)}
+.workspace-actions .guide-library-link{white-space:nowrap;text-decoration:none;font-size:13px;padding:5px}
+.guide-columns{display:grid;grid-template-columns:minmax(220px,29%) 1fr;min-height:0;flex:1}
+.guide-columns aside{padding:20px 14px 16px 0;display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--theme-border)}
+.guide-query{border:1px solid var(--theme-border);padding:6px 10px;border-radius:6px;color:var(--theme-muted)}
+.guide-query input{background:transparent;color:var(--theme-text);border:0;min-width:0;width:100%;font:inherit}
+.guide-columns nav{display:flex;flex-direction:column;gap:3px;overflow:auto;margin-top:12px}
+.guide-columns nav button{text-align:left;padding:8px 10px;color:var(--theme-text-secondary);background:transparent;border:0;border-radius:5px;line-height:1.45}
+.guide-columns nav button[aria-current=page]{background:var(--theme-accent-wash);color:var(--theme-link);font-weight:600}
+.guide-reading{overflow:auto;padding:clamp(18px,3vw,44px);line-height:1.85;font-size:16px}
+.guide-reading h2{font-size:clamp(20px,2.4vw,30px);line-height:1.4;margin:0 0 1em}
+.guide-reading p{margin:0 0 1em}.guide-reading strong{display:block;margin:1.6em 0 .6em}.guide-reading small{display:block;margin-bottom:1em}.guide-mobile-select{display:none}
+@media(max-width:680px){.guide-library header{padding:12px 0}.guide-columns{display:flex;flex-direction:column}.guide-columns aside{border-right:0;border-bottom:1px solid var(--theme-border);padding:10px 0;gap:8px}.guide-columns nav{display:none}.guide-mobile-select{display:block;width:100%}.guide-reading{padding:16px 2px;min-height:0}}

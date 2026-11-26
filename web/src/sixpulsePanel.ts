@@ -30,11 +30,12 @@ export function sixPulsePanel(bars:Bar[],values:Record<string,(number|null)[]>,c
      ctx.lineTo(x+radius,y-direction*radius*.35);ctx.closePath();ctx.fill();
     });
    }
-   ctx.fillStyle='#0e1624';ctx.fillRect(0,0,w,24);ctx.fillRect(0,24,54,Math.max(0,h-24));
-   ctx.font='11px system-ui';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillStyle='#aebdd1';
+   const {background,textColor}=chart.options().layout;
+   ctx.fillStyle='color' in background?background.color:background.topColor;ctx.fillRect(0,0,w,24);ctx.fillRect(0,24,54,Math.max(0,h-24));
+   ctx.font='11px system-ui';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillStyle=textColor;
    sixPulseRows.forEach((name,j)=>{const y=ys[j];if(y!==null&&y>=25&&y<h-3)ctx.fillText(name,5,y)});
    const i=hover??bars.length-1,score=values.SCORE[i],caption=score===null||score===undefined?'数据不足':`${score}/6`;
-   ctx.fillStyle='#d6e2f2';ctx.fillText(`六脉神剑 · ${hover===null?'最新':'光标'}共振 ${caption}`,7,12);
+   ctx.fillText(`六脉神剑 · ${hover===null?'最新':'光标'}共振 ${caption}`,7,12);
    ctx.restore();
   });
  }})};

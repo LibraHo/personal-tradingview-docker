@@ -1,0 +1,31 @@
+.drawing-toolbar .drawing-analysis-tools {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  gap: 4px;
+}
+.chart-tools .chart-analysis-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: auto;
+  padding: 0 8px;
+  border: 1px solid var(--theme-border, #324258);
+  border-radius: 5px;
+  background: var(--theme-surface-raised, #152235);
+  color: var(--theme-link, #b5c7de);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chart-analysis-tool svg { color: var(--theme-focus, #80b7f4); }
+.chart-tools .chart-analysis-tool:hover {
+  background: var(--theme-surface-active, #2a4870);
+  border-color: var(--theme-border-active, #739ad0);
+}
+.chart-tools .chart-analysis-tool:focus-visible {
+  outline: 2px solid var(--theme-focus, #80b7f4);
+  outline-offset: 2px;
+}

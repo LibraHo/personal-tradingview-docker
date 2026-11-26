@@ -1,6 +1,7 @@
 export const secureChart=location.pathname==='/chart';
 let csrf='';
 export function setChartCsrf(value:string){csrf=value}
+export function getChartCsrf(){return csrf}
 // Keep trade requests on their existing origin and authentication path.
 // Only the chart's API calls use the authenticated, read-only-service gateway.
 if(secureChart){

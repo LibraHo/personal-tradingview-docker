@@ -49,6 +49,33 @@ class TradeApiTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/trade/lock', headers={**self.headers,'Origin':'https://evil.test'}, json={}).status_code, 403)
         self.assertEqual(self.client.post('/api/trade/lock', headers=self.headers, json={}).status_code, 200)
 
+    def test_api_management_requires_session_and_csrf_and_revokes(self):
+        import sqlite3
+        path=str(Path(self.tmp.name)/'market.sqlite3')
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE scan_tokens(id TEXT PRIMARY KEY,digest TEXT,name TEXT,scopes TEXT,created REAL,revoked INTEGER)')
+        db.close()
+        prefix='/api/trade/api-management'
+        self.assertEqual(self.client.get(prefix+'/tokens').status_code,401)
+        self.setup_account()
+        with patch.dict(os.environ,{'DB_PATH':path}),patch('app.api_management.market_schema',return_value={'paths':{'/api/v1/events':{'get':{'summary':'Events'}}}}):
+            inv=self.client.get(prefix+'/inventory');self.assertEqual(inv.status_code,200,inv.text)
+            self.assertTrue(any(r['path']=='/api/v1/events' and r['auth']=='Bearer · read' for r in inv.json()['items']))
+            self.assertTrue(any(r['path']=='/api/trade/preview' for r in inv.json()['items']))
+            self.assertEqual(self.client.post(prefix+'/tokens',headers=self.origin,json={'name':'test'}).status_code,403)
+            self.assertEqual(self.client.post(prefix+'/tokens',headers=self.headers,json={'name':'test','scopes':['trade']}).status_code,422)
+            created=self.client.post(prefix+'/tokens',headers=self.headers,json={'name':'test','scopes':['read']})
+            self.assertEqual(created.status_code,200,created.text);token=created.json()
+            listed=self.client.get(prefix+'/tokens');self.assertNotIn(token['token'],listed.text);self.assertNotIn('digest',listed.text)
+            self.assertEqual(listed.json()['items'][0]['scopes'],['read'])
+            self.assertEqual(self.client.delete(prefix+'/tokens/'+token['id'],headers=self.headers).status_code,200)
+            self.assertEqual(self.client.get(prefix+'/tokens').json()['items'][0]['revoked'],1)
+            with sqlite3.connect(path) as db:self.assertNotEqual(db.execute('SELECT digest FROM scan_tokens').fetchone()[0],token['token'])
+            db.close()
+            with patch('app.api_management.market_schema',side_effect=OSError('offline')):
+                degraded=self.client.get(prefix+'/inventory').json()
+                self.assertEqual(len(degraded['errors']),1);self.assertTrue(degraded['items'])
+
     def test_one_time_setup_stores_only_password_derivation(self):
         self.setup_account()
         stored = Path(self.tmp.name, 'auth.json').read_text()
@@ -104,8 +131,91 @@ class TradeApiTests(unittest.TestCase):
             self.assertEqual(self.client.get('/api/market/opening-range?symbol=US.AAPL').status_code,200)
             self.assertTrue(forward.call_args.args[0].full_url.endswith('/api/opening-range?symbol=US.AAPL'))
             self.assertNotIn('Cookie',forward.call_args.args[0].headers)
+            self.assertEqual(self.client.post('/api/market/scanner/scope-preview',headers=self.origin,json={'kind':'all','market':'CN'}).status_code,403)
+            self.assertEqual(self.client.post('/api/market/scanner/scope-preview',headers=self.headers,json={'kind':'all','market':'CN'}).status_code,200)
+            self.assertTrue(forward.call_args.args[0].full_url.endswith('/api/scanner/scope-preview'))
+            self.assertEqual(json.loads(forward.call_args.args[0].data)['market'],'CN')
         self.assertEqual(self.client.put('/api/market/settings/workspace', headers=self.origin, json={'value':{}}).status_code, 403)
         self.assertFalse(self.broker.rows)
+
+    def test_review_gateway_authentication_and_methods(self):
+        self.assertEqual(self.client.get('/api/market/review/dashboard?market=CN&day=2026-11-18').status_code, 401)
+        self.setup_account()
+        reply = MagicMock()
+        reply.__enter__.return_value = reply
+        reply.status = 200
+        reply.read.return_value = b'{}'
+        with patch('app.chart_gateway.urllib.request.urlopen', return_value=reply) as forward:
+            self.assertEqual(self.client.get('/api/market/review/dashboard?market=CN&day=2026-11-18').status_code, 200)
+            self.assertTrue(forward.call_args.args[0].full_url.endswith('/api/review/dashboard?market=CN&day=2026-11-18'))
+            for path, method in [('rules', 'POST'), ('rules/cn-default-0', 'PUT'), ('days/2026-11-18', 'PUT'), ('weeks/2026-11-16', 'PUT')]:
+                self.assertEqual(self.client.request(method, '/api/market/review/'+path+'?market=CN', headers=self.origin, json={}).status_code, 403)
+                self.assertEqual(self.client.request(method, '/api/market/review/'+path+'?market=CN', headers=self.headers, json={}).status_code, 200)
+            self.assertEqual(self.client.delete('/api/market/review/days/2026-11-18', headers=self.headers).status_code, 404)
+            self.assertEqual(self.client.post('/api/market/review/export', headers=self.headers, json={}).status_code, 404)
+            ident = 'a'*32
+            ledger = '/api/market/review/ledger/'
+            for method,path in [('get','book'), ('get','fills/'+ident), ('get','backlinks'),
+                                ('post','positions'), ('post','reconcile'), ('post','opend/sync'),
+                                ('put','plans/'+ident), ('put','plans/'+ident+'/fills/'+ident),
+                                ('delete','plans/'+ident), ('delete','plans/'+ident+'/fills/'+ident),
+                                ('put','fills/'+ident+'/review')]:
+                url = ledger+path+'?market=US'
+                if method != 'get':
+                    self.assertEqual(self.client.request(method,url,headers=self.origin).status_code,403)
+                self.assertEqual(self.client.request(method,url,headers=self.headers).status_code,200)
+            self.assertEqual(self.client.post(ledger+'book',headers=self.headers).status_code,404)
+            large = {'context': '复盘内容' * 6000}
+            self.assertEqual(self.client.put('/api/market/review/days/2026-11-18?market=CN', headers=self.headers, json=large).status_code, 200)
+            self.assertEqual(self.client.put('/api/market/settings/workspace', headers=self.headers, json=large).status_code, 413)
+        self.assertFalse(self.broker.rows)
+
+    def test_agent_review_patch_forwards_bearer_without_browser_session(self):
+        reply = MagicMock()
+        reply.__enter__.return_value = reply
+        reply.status = 200
+        reply.read.return_value = b'{}'
+        with patch('app.chart_gateway.urllib.request.urlopen', return_value=reply) as forward:
+            path = '/api/v1/review/days/2026-11-18?market=CN'
+            response = self.client.patch(path, headers={'Authorization': 'Bearer test-only'},
+                json={'revision': 0, 'lesson': '同步内容' * 3000})
+            self.assertEqual(response.status_code, 200, response.text)
+            request = forward.call_args.args[0]
+            self.assertEqual(request.method, 'PATCH')
+            self.assertEqual(request.full_url, 'http://market:8000' + path)
+            self.assertEqual(request.get_header('Authorization'), 'Bearer test-only')
+            self.assertNotIn('Cookie', request.headers)
+
+    def test_shared_theme_is_available_on_the_login_page(self):
+        reply = MagicMock()
+        reply.__enter__.return_value = reply
+        reply.status = 200
+        reply.read.return_value = b'{"value":"light"}'
+        with patch('app.chart_gateway.urllib.request.urlopen', return_value=reply) as forward:
+            self.assertEqual(self.client.get('/api/market/settings/theme').json()['value'], 'light')
+            saved = self.client.put('/api/market/settings/theme', headers=self.origin, json={'value': 'light'})
+            self.assertEqual(saved.status_code, 200, saved.text)
+            self.assertTrue(forward.call_args.args[0].full_url.endswith('/api/settings/theme'))
+            self.assertEqual(self.client.put('/api/market/settings/theme', headers={'Origin': 'https://other.example'},
+                                             json={'value': 'dark'}).status_code, 403)
+        self.assertEqual(self.client.get('/api/market/settings/workspace').status_code, 401)
+        self.assertEqual(self.client.get('/api/trade/accounts').status_code, 401)
+
+    def test_scanner_gateway_keeps_the_idempotency_key(self):
+        reply=MagicMock()
+        reply.__enter__.return_value=reply
+        reply.status=202
+        reply.read.return_value=b'{"id":"job","status":"queued"}'
+        with patch('app.chart_gateway.urllib.request.urlopen',return_value=reply) as forward:
+            response=self.client.post('/api/v1/plans/'+'a'*32+'/run',
+                headers={'Authorization':'Bearer temporary','Idempotency-Key':'intent-1'},json={'force':True})
+            self.assertEqual(response.status_code,202,response.text)
+            self.assertEqual(forward.call_args.args[0].get_header('Idempotency-key'),'intent-1')
+            self.setup_account()
+            for path in ['scanner/jobs/'+'a'*32+'/pause','scanner/jobs/'+'a'*32+'/resume']:
+                response=self.client.post('/api/market/'+path,headers=self.headers)
+                self.assertEqual(response.status_code,202,response.text)
+            self.assertEqual(self.client.get('/api/market/scanner/plans/'+'a'*32+'/results').status_code,202)
 
     def test_drawing_agent_is_scoped_and_needs_no_trade_session(self):
         token = 'drawing-agent-test-token-longer-than-32'
