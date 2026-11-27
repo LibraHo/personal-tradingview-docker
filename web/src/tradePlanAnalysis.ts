@@ -14,8 +14,16 @@ export const planSources = {
   MACD: 'MACD',
   RSI: 'RSI',
   PRICE: '指定价格',
+  TREND: '趋势线',
 };
 export type PlanSource = keyof typeof planSources;
+type TrendAnchors = {time1:number; price1:number; time2:number; price2:number};
+export function validTrendAnchors(p: Record<string, unknown>): p is TrendAnchors {
+  return Object.keys(p).length === 4 && ['time1','time2','price1','price2'].every(k =>
+    typeof p[k] === 'number' && Number.isFinite(p[k]) && Number(p[k]) > 0) &&
+    Number.isSafeInteger(p.time1) && Number.isSafeInteger(p.time2) &&
+    Number(p.time1) < Number(p.time2) && Number(p.time2) <= 8640000000000;
+}
 export type PlanCondition = {
   id: string;
   source: PlanSource;
@@ -163,6 +171,9 @@ export function newPlanDetails(
 
 export function conditionLabel(condition: PlanCondition): string {
   const prefix = periodNames[condition.period] + ' · ';
+  if (condition.source === 'TREND')
+    return prefix + (condition.signal === 'above' ? '突破趋势线' : '跌破趋势线') +
+      (validTrendAnchors(condition.params) ? `（${condition.params.price1} → ${condition.params.price2}）` : '');
   if (condition.source === 'SIXPULSE')
     return prefix + `六脉至少 ${condition.threshold} ${condition.signal === 'reds' ? '红' : '绿'}`;
   if (condition.source === 'MACD')
@@ -194,6 +205,28 @@ export function estimatePlanCondition(bars: Bar[], condition: PlanCondition, tic
   const last = bars.at(-1);
   const empty = { price: null, value: null, met: null, bar_time: last?.time ?? 0, note: '历史数据不足' };
   if (!last) return empty;
+  if (condition.source === 'TREND') {
+    const p = condition.params;
+    if (!validTrendAnchors(p)) return {...empty, note:'请选择趋势线'};
+    const previous = bars.at(-2);
+    if (!previous || p.time1 < bars[0].time || p.time2 > previous.time)
+      return {...empty, note:'需要覆盖两个锚点及之后的 K 线'};
+    // The chart spaces candles evenly, including across weekends and session breaks.
+    const position = (time:number) => {
+      const i = bars.findIndex(bar => bar.time >= time);
+      if (bars[i].time === time) return i;
+      return i - 1 + (time - bars[i-1].time) / (bars[i].time - bars[i-1].time);
+    };
+    const start = position(p.time1), end = position(p.time2);
+    const slope = (p.price2 - p.price1) / (end - start);
+    const lineAt = (index:number) => p.price2 + (index - end) * slope;
+    const prevLine = lineAt(bars.length - 2), line = lineAt(bars.length - 1);
+    if (!(prevLine > 0 && line > 0 && Number.isFinite(line))) return {...empty, note:'趋势线超出有效价格范围'};
+    const met = condition.signal === 'above'
+      ? previous.close <= prevLine && last.close > line
+      : previous.close >= prevLine && last.close < line;
+    return {price:line, value:last.close, met, bar_time:last.time, note:'按相邻两根 K 线各自的线位判断穿越'};
+  }
   if (condition.source === 'SIXPULSE') {
     const params = advancedParams('SIXPULSE', condition.params)!;
     const prepared = prepareSixPulsePrice(bars, params);

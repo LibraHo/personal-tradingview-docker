@@ -2,6 +2,8 @@ import { Plus, Trash2 } from 'lucide-react';
 import type { Indicator } from './indicators';
 import { periodNames, type PlanPeriod } from './tradeBookClient';
 import AdvancedParameters from './AdvancedParameters';
+import PlanTrendPicker from './PlanTrendPicker';
+import type {ReviewMarket} from './reviewClient';
 import {
   conditionLabel,
   newPlanCondition,
@@ -13,6 +15,8 @@ import {
 } from './tradePlanAnalysis';
 
 type Props = {
+  market: ReviewMarket;
+  symbol: string;
   label: string;
   group: PlanConditions;
   period: PlanPeriod;
@@ -24,6 +28,7 @@ type Props = {
 };
 
 export default function PlanConditionsEditor({
+  market, symbol,
   label,
   group,
   period,
@@ -82,7 +87,8 @@ export default function PlanConditionsEditor({
                 <select
                   aria-label={name + '周期'}
                   value={condition.period}
-                  onChange={(e) => patch(condition.id, { period: e.target.value as PlanPeriod })}
+                  onChange={(e) => patch(condition.id, { period: e.target.value as PlanPeriod,
+                    ...(condition.source === 'TREND' ? {params:{}} : {}) })}
                 >
                   {Object.entries(periodNames).map(([key, title]) => (
                     <option key={key} value={key}>
@@ -110,8 +116,8 @@ export default function PlanConditionsEditor({
                     </>
                   ) : (
                     <>
-                      <option value="above">{priceBased ? '站上' : '大于等于'}</option>
-                      <option value="below">{priceBased ? '跌破' : '小于等于'}</option>
+                      <option value="above">{condition.source === 'TREND' ? '突破趋势线' : priceBased ? '站上' : '大于等于'}</option>
+                      <option value="below">{condition.source === 'TREND' ? '跌破趋势线' : priceBased ? '跌破' : '小于等于'}</option>
                     </>
                   )}
                 </select>
@@ -183,6 +189,8 @@ export default function PlanConditionsEditor({
                 </select>
               </label>
             </div>
+            {condition.source === 'TREND' && <PlanTrendPicker market={market} symbol={symbol} condition={condition}
+              name={name} onChange={params=>patch(condition.id,{params})}/>}
             <div className="plan-condition-result">
               <span>
                 {estimate
@@ -198,9 +206,11 @@ export default function PlanConditionsEditor({
                   {exit ? '设为防守位' : '设为入场参考'} {estimate.price.toFixed(2)}
                 </button>
               )}
+              {condition.source === 'TREND' && estimate?.met != null && condition.confirmation === 'close' &&
+                <small>使用最新 K 线试算，收线后确认。</small>}
               {estimate && estimate.met !== null && estimate.price === null && <small>{estimate.note}</small>}
             </div>
-            {condition.source !== 'PRICE' && (
+            {condition.source !== 'PRICE' && condition.source !== 'TREND' && (
               <details className="plan-condition-parameters">
                 <summary>计算参数</summary>
                 {condition.source === 'SIXPULSE' ? (

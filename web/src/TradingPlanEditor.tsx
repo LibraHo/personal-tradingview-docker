@@ -26,6 +26,7 @@ import {
   structureLabels,
   structureReferences,
   planSources,
+  validTrendAnchors,
   type PlanCondition,
   type PlanDetails,
   type PlanEstimate,
@@ -321,8 +322,11 @@ export default function TradingPlanEditor({
   const snapshotDetails = { ...details, levels, references: [...snapshotReferences, ...(autoStructure ? structure : [])] };
   function changeContext(next:Partial<Pick<Draft,'period'|'symbol'|'side'>>, nextMode=details.mode) {
     const nextPeriod = next.period || draft.period;
-    const shift = (group:PlanDetails['entry']) => ({...group,items:group.items.map(item=>
-      item.period===draft.period ? {...item,period:nextPeriod} : item)});
+    const shift = (group:PlanDetails['entry']) => ({...group,items:group.items.map(item=>{
+      const period = item.period === draft.period ? nextPeriod : item.period;
+      const resetTrend = item.source === 'TREND' && (next.symbol !== undefined || item.period !== period);
+      return {...item,period,...(resetTrend ? {params:{}} : {})};
+    })});
     const generated = draft.autofilled || {};
     const clean = (value:string, previous:string|undefined) => previous!==undefined && value===previous ? '' : value;
     const generatedStop = generated.stop!==undefined && draft.stop===generated.stop && !following;
@@ -551,6 +555,8 @@ export default function TradingPlanEditor({
     }
   }
   function newPlanConditionForImport(item: PlanCondition): PlanCondition {
+    if (item.source === 'TREND' && !validTrendAnchors(item.params))
+      throw Error('趋势线需要两个不同时间的有效价格锚点。');
     if (
       !['reds', 'greens', 'above', 'below', 'bullish', 'bearish'].includes(item.signal) ||
       !Number.isFinite(item.threshold) ||
@@ -701,6 +707,7 @@ export default function TradingPlanEditor({
               <div className={board ? 'plan-board-notes' : 'plan-indicator-notes'}>
             {indicatorEntry && <PlanConditionsEditor
               label="入场理由"
+              market={market} symbol={canonical}
               group={details.entry}
               period={draft.period}
               indicators={indicators}
@@ -721,6 +728,7 @@ export default function TradingPlanEditor({
             </label>
             {!board && <PlanConditionsEditor
               label="出场条件"
+              market={market} symbol={canonical}
               group={details.exit}
               period={draft.period}
               exit

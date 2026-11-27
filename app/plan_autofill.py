@@ -57,6 +57,10 @@ def agent_text(url, token, agent_id, facts, blanks):
 def condition_summary(group):
     labels = []
     for item in group.items:
+        if item.source == 'TREND':
+            action = '突破趋势线' if item.signal == 'above' else '跌破趋势线'
+            labels.append(f"{item.period} {action}（{item.params['price1']:g} → {item.params['price2']:g}）")
+            continue
         if item.source=='SIXPULSE':
             signal = f'至少 {item.threshold:g} ' + ('红' if item.signal=='reds' else '绿')
         elif item.source=='MACD':

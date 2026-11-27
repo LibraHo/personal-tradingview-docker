@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import sys
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -56,7 +57,7 @@ Note = Annotated[str, StringConstraints(max_length=5000)]
 
 class PlanCondition(Input):
     id: Key
-    source: Literal['SIXPULSE', 'BOLL', 'SMA', 'EMA', 'BBI', 'VWAP', 'MACD', 'RSI', 'PRICE']
+    source: Literal['SIXPULSE', 'BOLL', 'SMA', 'EMA', 'BBI', 'VWAP', 'MACD', 'RSI', 'PRICE', 'TREND']
     period: PlanPeriod
     signal: Literal['reds', 'greens', 'above', 'below', 'bullish', 'bearish']
     line: Literal['main', 'upper', 'mid', 'lower'] = 'main'
@@ -66,6 +67,16 @@ class PlanCondition(Input):
 
     @model_validator(mode='after')
     def valid_indicator_condition(self):
+        if self.source == 'TREND':
+            p = self.params
+            if (self.signal not in ('above', 'below') or self.line != 'main'
+                    or set(p) != {'time1', 'price1', 'time2', 'price2'}
+                    or not all(type(p[k]) is int and 0 < p[k] <= 8640000000000 for k in ('time1', 'time2'))
+                    or p['time1'] >= p['time2']
+                    or not all(type(p[k]) in (float, int) and 0 < p[k] <= sys.float_info.max
+                               for k in ('price1', 'price2'))):
+                raise ValueError('趋势线需要两个按时间排列的有效价格锚点和穿越方向')
+            return self
         from .sixpulse import DEFAULTS
         allowed = {'SIXPULSE': set(DEFAULTS), 'BOLL': {'period', 'stddev'}, 'SMA': {'period'},
                    'EMA': {'period'}, 'BBI': {'periods'}, 'VWAP': {'reset'},

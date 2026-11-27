@@ -143,6 +143,20 @@ class LedgerTests(unittest.TestCase):
         body['details']['entry'] = {'items': [dict(id='x', source='SIXPULSE', period='1d', signal='reds')]}
         self.call('plans', body, status=422)
 
+    def test_trend_crossings_save_anchors_and_reject_invalid_lines(self):
+        anchors = dict(time1=1700000000, price1=10.5, time2=1700086400, price2=11)
+        entry = dict(id='up', source='TREND', signal='above', period='1d', params=anchors)
+        exit_rule = dict(entry, id='down', signal='below')
+        details = dict(entry={'items':[entry]}, exit={'items':[exit_rule]})
+        body = dict(symbol=CN['symbol'], period='1d', side='BUY', trigger='突破趋势线', request_id='trend', details=details)
+        saved = self.call('plans', body)
+        stored = self.call('plans/'+saved['id'])['details']
+        self.assertEqual(stored['entry']['items'][0]['params'], anchors)
+        self.assertEqual(stored['exit']['items'][0]['signal'], 'below')
+        for invalid in [{}, dict(anchors,time2=anchors['time1']), dict(anchors,price1=0), dict(anchors,time1=True)]:
+            entry['params'] = invalid
+            self.call('plans', body, status=422)
+
     def test_text_entry_strategies_round_trip_with_indicator_exits(self):
         condition = dict(id='exit', source='PRICE', period='1d', signal='below', threshold=10)
         for market, symbol in [('CN', CN['symbol']), ('US', US['symbol'])]:

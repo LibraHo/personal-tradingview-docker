@@ -8,6 +8,18 @@ const bars=Array.from({length:100},(_,i)=>{
     session:'regular',trade_date:'2026-11-20',session_date:'2026-11-20:regular'};
 });
 const original=structuredClone(bars),last=bars.at(-1);
+// Friday to Monday is one chart interval. Both closes use the line at their own candle.
+const trendBars=[1,2,5,6].map((time,i)=>({...last,time,close:[10,11,11.5,13.5][i]}));
+const trend={...newPlanCondition('TREND','1d'),params:{time1:1,price1:10,time2:2,price2:11}};
+assert.equal(estimatePlanCondition(trendBars,trend).price,13);
+assert.equal(estimatePlanCondition(trendBars,trend).met,true);
+const crossedEarlier=trendBars.map((b,i)=>i===2?{...b,close:12.5}:b);
+assert.equal(estimatePlanCondition(crossedEarlier,trend).met,false);
+const breakdown=crossedEarlier.map((b,i)=>i===3?{...b,close:12.5}:b);
+assert.equal(estimatePlanCondition(breakdown,{...trend,signal:'below'}).met,true);
+assert.equal(estimatePlanCondition(trendBars.map((b,i)=>i===3?{...b,close:13}:b),trend).met,false);
+assert.equal(estimatePlanCondition(trendBars.slice(1),trend).met,null);
+assert.equal(estimatePlanCondition(trendBars,{...trend,params:{}}).met,null);
 const trial=price=>[...bars.slice(0,-1),{...last,close:price,high:Math.max(last.high,price),low:Math.min(last.low,price)}];
 const conditionMet=(condition,price)=>{
   if(condition.source==='PRICE')return condition.signal==='above'?price>=condition.threshold:price<=condition.threshold;
