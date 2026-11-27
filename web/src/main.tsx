@@ -1,3 +1,5 @@
+import {chartSignalMarkers} from './chartSignalMarkers';
+import {macdDivergences,macdStructure} from './macdStructure';
 import IndicatorLibrary from './IndicatorLibrary';
 import {drawTdx,resonanceColors} from './tdxChart';
 import {tdxCatalog,tdxAvailable,isChiefResonance} from './tdxIndicators';
@@ -16,7 +18,7 @@ import{trendExtension,drawingTimeCoordinate}from'./TrendExtensions';
 import{drawingTimeAtX,moveTrendEndpoint,hitTestTrendEndpoint,type TimeSample}from'./trendGeometry';
 import type{PointerEvent as ReactPointerEvent}from'react';
 import{backfillHistory,marketDateWindow}from'./historyTools';
-import{createSeriesMarkers,type SeriesMarker,createChart,CandlestickSeries,HistogramSeries,LineSeries,CrosshairMode,TickMarkType,type IChartApi,type ISeriesApi,type MouseEventParams,type Time,type UTCTimestamp}from'lightweight-charts';
+import{type SeriesMarker,createChart,CandlestickSeries,HistogramSeries,LineSeries,CrosshairMode,TickMarkType,type IChartApi,type ISeriesApi,type MouseEventParams,type Time,type UTCTimestamp}from'lightweight-charts';
 import './analysis-tool.css';
 import{Activity,BookOpen,Sparkles,Plus,Settings2,Trash2,Save,LayoutGrid,Wifi,WifiOff,RotateCw,Minus}from'lucide-react';
 import {inputIssue} from './indicatorInputs';
@@ -403,7 +405,7 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
   });
  },[theme,index,snapCrosshairTime]);
  useEffect(()=>{const candle=candleRef.current;if(!candle)return;candle.applyOptions(candleSeriesOptions(appearance));if(loadedKey!==key)return;candle.setData(filtered.map(x=>({time:toTime(x.time),open:x.open,high:x.high,low:x.low,close:x.close,color:candleBodyColor(x.open,x.close,appearance)})));for(const item of volumeSeries.current){const colors=volumePalette(appearance,item.colors);item.series.setData(filtered.map(x=>({time:toTime(x.time),value:x.volume??undefined,color:volumeColor(x.open,x.close,colors)})))}},[appearance,filtered,key,loadedKey]);
- useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||loadedKey!==key)return;const data=filtered;const series:ISeriesApi<any>[]=[];const lines:any[]=[];const primitives:ReturnType<typeof trendExtension>[]=[];const signalMarkers:SeriesMarker<Time>[]=[];const tdxCleanup:(()=>void)[]=[];const msigPrimitives:ReturnType<typeof msigm8Overlay>[]=[];const sixPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sixPulsePanel>}[]=[];const sessionPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sessionBackground>}[]=[];
+ useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||loadedKey!==key)return;const data=filtered;const series:ISeriesApi<any>[]=[];const lines:any[]=[];const primitives:ReturnType<typeof trendExtension>[]=[];const signalMarkers:SeriesMarker<Time>[]=[];const macdMarkers:ReturnType<typeof chartSignalMarkers>[]=[];const tdxCleanup:(()=>void)[]=[];const msigPrimitives:ReturnType<typeof msigm8Overlay>[]=[];const sixPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sixPulsePanel>}[]=[];const sessionPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sessionBackground>}[]=[];
   const levelPrimitives:ReturnType<typeof sixPulseLevelsOverlay>[]=[];
   if(!drawingsHidden){
    for(const item of drawings){const style=drawingStyle(item,'horizontal');if(!style.visible)continue;const selected=selectedDrawing?.kind==='horizontal'&&selectedDrawing.id===item.id;lines.push(candle.createPriceLine({price:item.price,color:style.color,lineWidth:(selected?Math.min(4,style.lineWidth+2):style.lineWidth) as 1|2|3|4,lineStyle:style.lineStyle,axisLabelVisible:true,title:`${selected?'✓ ':''}水平线 ${drawings.indexOf(item)+1}`}))}
@@ -433,16 +435,30 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
     s.setData(filtered.map(b=>({time:toTime(b.time),value:3.5})));s.priceScale().applyOptions({autoScale:true,scaleMargins:{top:.04,bottom:.04}});
     const primitive=sixPulsePanel(filtered,values,ind.colors);s.attachPrimitive(primitive);sixPrimitives.push({series:s,primitive});series.push(s);continue;
    }
-   Object.entries(values).forEach(([label,arr],idx)=>{if((ind.name==='ATR'&&label.startsWith('stop_'))||(ind.name==='SUPERTREND'&&label==='direction'))return;const isHist=label==='hist'||label==='volume';const s=chart.addSeries(isHist?HistogramSeries:LineSeries,{color:selectedColor(ind.colors,label,indicatorDefaultColor(ind.name,label,idx)),lineWidth:2,...(ind.name==='SAR'?{lineVisible:false,pointMarkersVisible:true,pointMarkersRadius:2}:{}),priceFormat:['VOLUME','OBV','ADL','PVT','CHO'].includes(ind.name)?{type:'volume'}:{type:'price',precision:3,minMove:0.001},lastValueVisible:idx===0,priceLineVisible:false,title:ind.title?`${ind.title} ${label}`:/^(EMA|MA)[0-9]+$/.test(label)?label:label==='main'&&['EMA','SMA','WMA','VWMA'].includes(ind.name)?`${ind.name==='SMA'?'MA':ind.name}${JSON.parse(ind.params).period||(['WMA','VWMA'].includes(ind.name)?20:14)}`:`${ind.name} ${label}`},target);if(ind.name==='VOLUME'&&label==='volume')volumeSeries.current.push({series:s,colors:ind.colors});if(target>0&&idx===0&&isUS&&mode!=='regular'&&!isLongPeriod(tile.period)){const primitive=sessionBackground(filtered);s.attachPrimitive(primitive);sessionPrimitives.push({series:s,primitive})}s.setData(arr.flatMap((value,i)=>value===null||!Number.isFinite(value)?[]:[{time:toTime(filtered[i].time),value,...(['MACD','PPO'].includes(ind.name)&&label==='hist'?{color:macdHistogramColor(value,arr[i-1],ind.colors)}:ind.name==='SUPERTREND'?{color:selectedColor(ind.colors,values.direction[i]===1?'up':'down',values.direction[i]===1?'#26a69a':'#ef5350')}:ind.name==='AO'?{color:selectedColor(ind.colors,value>=(arr[i-1]??value)?'rising':'falling',value>=(arr[i-1]??value)?'#26a69a':'#ef5350')}:ind.name==='VOLUME'&&label==='volume'?{color:volumeColor(filtered[i].open,filtered[i].close,effectiveColors)}:{})}]));series.push(s)})
+   const macdParams=ind.name==='MACD'?JSON.parse(ind.params||'{}'):null;
+   const showStructure=macdParams!=null&&macdParams.structureHints!==false;
+   const plotted=showStructure?{...values,hist:values.hist.map(v=>v===null?null:v*2)}:values;
+   Object.entries(plotted).forEach(([label,arr],idx)=>{if((ind.name==='ATR'&&label.startsWith('stop_'))||(ind.name==='SUPERTREND'&&label==='direction'))return;const isHist=label==='hist'||label==='volume';const s=chart.addSeries(isHist?HistogramSeries:LineSeries,{color:selectedColor(ind.colors,label,indicatorDefaultColor(ind.name,label,idx)),lineWidth:2,...(ind.name==='SAR'?{lineVisible:false,pointMarkersVisible:true,pointMarkersRadius:2}:{}),priceFormat:['VOLUME','OBV','ADL','PVT','CHO'].includes(ind.name)?{type:'volume'}:{type:'price',precision:3,minMove:0.001},lastValueVisible:idx===0,priceLineVisible:false,title:showStructure?`${ind.title||'定量结构'} ${({macd:'DIF',signal:'DEA',hist:'MACD'} as Record<string,string>)[label]||label}`:ind.title?`${ind.title} ${label}`:/^(EMA|MA)[0-9]+$/.test(label)?label:label==='main'&&['EMA','SMA','WMA','VWMA'].includes(ind.name)?`${ind.name==='SMA'?'MA':ind.name}${JSON.parse(ind.params).period||(['WMA','VWMA'].includes(ind.name)?20:14)}`:`${ind.name} ${label}`},target);if(ind.name==='VOLUME'&&label==='volume')volumeSeries.current.push({series:s,colors:ind.colors});if(target>0&&idx===0&&isUS&&mode!=='regular'&&!isLongPeriod(tile.period)){const primitive=sessionBackground(filtered);s.attachPrimitive(primitive);sessionPrimitives.push({series:s,primitive})}s.setData(arr.flatMap((value,i)=>value===null||!Number.isFinite(value)?[]:[{time:toTime(filtered[i].time),value,...(['MACD','PPO'].includes(ind.name)&&label==='hist'?{color:macdHistogramColor(value,arr[i-1],ind.colors)}:ind.name==='SUPERTREND'?{color:selectedColor(ind.colors,values.direction[i]===1?'up':'down',values.direction[i]===1?'#26a69a':'#ef5350')}:ind.name==='AO'?{color:selectedColor(ind.colors,value>=(arr[i-1]??value)?'rising':'falling',value>=(arr[i-1]??value)?'#26a69a':'#ef5350')}:ind.name==='VOLUME'&&label==='volume'?{color:volumeColor(filtered[i].open,filtered[i].close,effectiveColors)}:{})}]));
+    if(macdParams&&label==='macd'&&(showStructure||macdParams.divergences===true)){
+     const events=[...(showStructure?macdStructure(filtered,values.macd,values.hist):[]),...(macdParams.divergences===true?macdDivergences(filtered,values.macd):[])].sort((a,b)=>a.index-b.index);
+     const light=theme==='light';
+     const colors={divergence:light?'#2555a5':'#96bdff',dull:light?'#806100':'#f0cb60',formed:light?'#9b287d':'#f698dd',cleared:light?'#16705a':'#67d6a2'};
+     const markers=events.map(({index:i,side,state}):SeriesMarker<Time>=>({
+      time:toTime(filtered[i].time),position:side==='top'?'aboveBar':'belowBar',shape:'circle',size:.55,
+      color:colors[state],text:macdParams.structureLabels===false?undefined:(side==='top'?'顶':'底')+({dull:'钝化',formed:'结构形成',cleared:'钝化消失',divergence:'背离'})[state],
+     }));
+     macdMarkers.push(chartSignalMarkers(chart,s,markers));
+    }
+    series.push(s)})
   }
   signalMarkers.sort((a,b)=>Number(a.time)-Number(b.time));
-  const signalPlugin=signalMarkers.length?createSeriesMarkers(candle,signalMarkers,{autoScale:true}):null;
+  const signalPlugin=signalMarkers.length?chartSignalMarkers(chart,candle,signalMarkers):null;
   setFormulaError(indicatorIssue);
   const entry=chartGroup.get(index);if(entry)markViewportReady(entry,data.length>0,performance.now());
   if(data.length&&fittedKey.current!==key){historyInteraction.current=false;if(entry)entry.suppressSyncUntil=performance.now()+350;resetChartViewport(chart,data.length);fittedKey.current=key}
   if(pendingHistoryJump.current){historyInteraction.current=false;if(entry)entry.suppressSyncUntil=performance.now()+350;resetPriceScales(chart);const jump=pendingHistoryJump.current;pendingHistoryJump.current=null;chart.timeScale().setVisibleRange({from:toTime(jump.from),to:toTime(jump.to)})}
-  return()=>{if(chartRef.current!==chart)return;volumeSeries.current=[];signalPlugin?.detach();for(const cleanup of tdxCleanup)cleanup();for(const primitive of msigPrimitives)candle.detachPrimitive(primitive);for(const primitive of levelPrimitives)candle.detachPrimitive(primitive);for(const {series,primitive} of sixPrimitives)series.detachPrimitive(primitive);for(const {series,primitive} of sessionPrimitives)series.detachPrimitive(primitive);for(const primitive of primitives)candle.detachPrimitive(primitive);trendVisuals.current.clear();for(const line of lines)candle.removePriceLine(line);for(const s of series)chart.removeSeries(s)}
- },[filtered,activeIndicators,pythonResults,drawings,trends,fibos,drawingsHidden,selectedDrawing,key,loadedKey,resonanceName,resonanceValues]);
+  return()=>{if(chartRef.current!==chart)return;volumeSeries.current=[];signalPlugin?.detach();for(const plugin of macdMarkers)plugin.detach();for(const cleanup of tdxCleanup)cleanup();for(const primitive of msigPrimitives)candle.detachPrimitive(primitive);for(const primitive of levelPrimitives)candle.detachPrimitive(primitive);for(const {series,primitive} of sixPrimitives)series.detachPrimitive(primitive);for(const {series,primitive} of sessionPrimitives)series.detachPrimitive(primitive);for(const primitive of primitives)candle.detachPrimitive(primitive);trendVisuals.current.clear();for(const line of lines)candle.removePriceLine(line);for(const s of series)chart.removeSeries(s)}
+ },[filtered,activeIndicators,pythonResults,drawings,trends,fibos,drawingsHidden,selectedDrawing,key,loadedKey,resonanceName,resonanceValues,theme]);
  useEffect(()=>{
   const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||loadedKey!==key||!openingEnabled)return;
   const primitives:ReturnType<typeof openingRangeLines>[]=[];let issue='';

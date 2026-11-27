@@ -1,4 +1,5 @@
-import {createSeriesMarkers,CandlestickSeries,HistogramSeries,LineSeries,LineStyle,type IChartApi,type ISeriesApi,type SeriesMarker,type Time,type UTCTimestamp} from 'lightweight-charts';
+import {chartSignalMarkers} from './chartSignalMarkers';
+import {CandlestickSeries,HistogramSeries,LineSeries,LineStyle,type IChartApi,type ISeriesApi,type SeriesMarker,type Time,type UTCTimestamp} from 'lightweight-charts';
 import {tdxCatalog} from './tdxIndicators';
 import type {Bar,Indicator} from './indicators';
 
@@ -36,15 +37,8 @@ export function drawTdx(chart:IChartApi,bars:Bar[],ind:Indicator,values:Record<s
   series.push(s);
  }
  const localMarkers:SeriesMarker<Time>[]=[];
- const lastTime=bars.at(-1)?.time;
- let lastPending=true;
- if(lastTime!==undefined&&item.period==='120m'&&item.market==='CN'){
-  const localSeconds=(lastTime+8*3600)%86400;
-  const closeSeconds=localSeconds<12*3600?11.5*3600:15*3600;
-  lastPending=Date.now()/1000<lastTime-localSeconds+closeSeconds;
- }
  for(const [key,signal] of Object.entries(item.signals))for(let i=0;i<bars.length;i++)if(values[key][i]===1){
-  localMarkers.push({time:bars[i].time as UTCTimestamp,position:signal.down?'aboveBar':'belowBar',shape:signal.shape||(signal.down?'arrowDown':'arrowUp'),color:ind.colors?.[key]||signal.color,text:signal.text?`${signal.text}${i===bars.length-1&&lastPending?'（待确认）':''}`:undefined,size:signal.shape==='circle'?.7:1,id:`${ind.id}:${key}:${bars[i].time}`});
+  localMarkers.push({time:bars[i].time as UTCTimestamp,position:signal.down?'aboveBar':'belowBar',shape:signal.shape||(signal.down?'arrowDown':'arrowUp'),color:ind.colors?.[key]||signal.color,text:signal.text||undefined,size:signal.shape==='circle'?.7:1,id:`${ind.id}:${key}:${bars[i].time}`});
  }
  if(pane===0)markers.push(...localMarkers);
  else if(localMarkers.length){
@@ -54,7 +48,7 @@ export function drawTdx(chart:IChartApi,bars:Bar[],ind:Indicator,values:Record<s
   const fallback=ind.name==='CHIEF_RESONANCE_PANE'?0:24;
   anchor.setData(bars.map((b,i)=>({time:b.time as UTCTimestamp,value:reference?.[i]??fallback})));
   series.push(anchor);
-  const plugin=createSeriesMarkers(anchor,localMarkers.sort((a,b)=>Number(a.time)-Number(b.time)),{autoScale:true});
+  const plugin=chartSignalMarkers(chart,anchor,localMarkers.sort((a,b)=>Number(a.time)-Number(b.time)));
   cleanup.push(()=>plugin.detach());
  }
 
