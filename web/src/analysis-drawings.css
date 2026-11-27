@@ -1,0 +1,8 @@
+.analysis-mode {display:flex;gap:4px;margin-top:10px;border-bottom:1px solid var(--theme-border,#324258)}
+.market-analysis .analysis-mode button {padding:7px 10px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--theme-muted,#91a6bd);border-radius:0}
+.market-analysis .analysis-mode button[aria-pressed=true] {border-color:var(--theme-focus,#80b7f4);color:var(--theme-text,#dce7f5)}
+.analysis-drawing-preview {width:100%;height:auto;color:var(--theme-muted,#91a6bd);background:var(--theme-page,#0c1623);border-radius:6px}
+.market-analysis .analysis-proposals li {padding:8px 0;border-bottom:1px solid var(--theme-border,#324258)}
+.market-analysis .analysis-proposals label {display:flex;gap:8px;margin:0}
+.analysis-proposals label span {margin-left:auto;font-variant-numeric:tabular-nums}
+.analysis-proposals small {display:block;margin:4px 0 0 22px}

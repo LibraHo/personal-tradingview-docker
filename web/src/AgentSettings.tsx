@@ -55,7 +55,7 @@ export default function AgentSettings({secureUrl}:{secureUrl:string}) {
   return <section className="ai-settings" aria-labelledby="ai-settings-title">
     <div className="ai-settings-title">
       <span className="ai-symbol"><Bot size={23} aria-hidden="true"/></span>
-      <div><h3 id="ai-settings-title">AI 助手</h3><p>管理 NAS Market 各项功能共用的 Agent 连接。</p></div>
+      <div><h3 id="ai-settings-title">AI 助手</h3><p>NAS Market 可以调用你配置的 Agent，Agent 也可以通过授权 API 操作 NAS Market。</p></div>
     </div>
     {!secure ? <div className="ai-access"><LockKeyhole size={19} aria-hidden="true"/>
       <div><strong>连接管理</strong><p>登录安全看盘入口后，可以选择服务并管理凭证。</p></div>
@@ -82,6 +82,7 @@ export default function AgentSettings({secureUrl}:{secureUrl:string}) {
     {notice&&<p className="ai-notice" role="status">{notice}</p>}
     {needsLogin?<a href={secureUrl}>重新登录并返回 AI 助手设置</a>:secure&&!config&&notice&&<button type="button" onClick={()=>{setNotice('');setRetry(n=>n+1)}}>重新读取</button>}
     <div className="ai-usage"><Bot size={19} aria-hidden="true"/><div><h4>AI 盘面分析</h4><p>在图表工具栏选择参考周期，结合 K 线和成交量解读当前标的。</p></div></div>
+    <div className="ai-usage"><Cable size={19} aria-hidden="true"/><div><h4>Agent 调用平台</h4><p>在「API 管理」查看接口和所需权限。外部 Agent 可读取行情、执行扫描、更新复盘；画线使用独立的画线凭证。</p></div></div>
     <div className="ai-usage"><ClipboardList size={19} aria-hidden="true"/><div>
       <h4>交易计划 · 一键填表</h4><p>点击时起草入场、退出和风险说明。核对后保存计划。</p>
     </div></div>

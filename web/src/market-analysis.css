@@ -19,3 +19,22 @@
 .market-analysis small {font-weight:400;color:var(--theme-muted)}
 .market-analysis li b,.market-analysis [role=alert] {color:var(--theme-warning,#e4a94e)}
 .analysis-text {white-space:pre-wrap;line-height:1.7;overflow-wrap:anywhere}
+
+.market-analysis { padding:clamp(18px,3vw,28px); box-shadow:0 20px 64px rgb(0 0 0 / .28); }
+.market-analysis header {align-items:center;justify-content:flex-start;gap:12px}
+.market-analysis header>button {margin-left:auto;background:transparent;border:0;color:var(--theme-muted,#91a6bd);display:grid;place-items:center}
+.market-analysis .analysis-mark {display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:var(--theme-surface-active,#243c59);color:var(--theme-link,#90bdec)}
+.market-analysis header p {font-variant-numeric:tabular-nums;font-size:12px}
+.market-analysis .analysis-mode {margin:8px 0 18px;gap:14px}
+.market-analysis .analysis-mode button {display:inline-flex;align-items:center;gap:6px;padding:9px 3px}
+.market-analysis .analysis-periods {display:flex;flex-wrap:wrap;gap:6px}
+.market-analysis .analysis-periods legend small {margin-left:5px;font-size:11px}
+.market-analysis .analysis-periods label {position:relative;cursor:pointer;margin:0;padding:5px 10px;border-radius:6px;border:1px solid var(--theme-border,#34465a);font-size:12px}
+.market-analysis .analysis-periods label:has(:checked) {border-color:var(--theme-border-active,#7195bd);background:var(--theme-surface-active,#243c59);color:var(--theme-link,#b6d8ff)}
+.market-analysis .analysis-periods input {accent-color:var(--theme-focus,#579ee5);width:13px;height:13px;margin:0}
+.market-analysis .analysis-periods label:has(:focus-visible) {outline:2px solid var(--theme-focus,#579ee5);outline-offset:2px}
+.market-analysis .analysis-run {background:var(--theme-focus,#80b7f4);color:var(--theme-page,#0c1623);font-weight:600;border-radius:6px;min-height:34px}
+.market-analysis .analysis-samples {margin-top:18px;font-size:12px}
+.market-analysis .analysis-samples summary {cursor:pointer;color:var(--theme-muted,#99acc2);padding:8px 0}
+.market-analysis .analysis-samples small {margin-left:5px}
+@media(max-width:600px){.market-analysis{width:calc(100vw - 16px);max-height:92dvh}.market-analysis h2{font-size:18px}}

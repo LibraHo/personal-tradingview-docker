@@ -1,6 +1,6 @@
 import {useEffect,useRef,type ReactNode} from 'react';
-export type SettingsTab='appearance'|'indicators'|'cache'|'connection'|'agents';
-const tabs:{id:SettingsTab;label:string}[]=[{id:'appearance',label:'K 线与配色'},{id:'indicators',label:'指标管理'},{id:'cache',label:'数据与缓存'},{id:'connection',label:'OpenD 连接'},{id:'agents',label:'AI 助手'}];
+export type SettingsTab='appearance'|'indicators'|'cache'|'connection'|'agents'|'notifications';
+const tabs:{id:SettingsTab;label:string}[]=[{id:'appearance',label:'K 线与配色'},{id:'indicators',label:'指标管理'},{id:'cache',label:'数据与缓存'},{id:'connection',label:'OpenD 连接'},{id:'agents',label:'AI 助手'},{id:'notifications',label:'消息推送'}];
 export default function SettingsPanel({tab,onTab,onClose,children}:{tab:SettingsTab;onTab:(tab:SettingsTab)=>void;onClose:()=>void;children:ReactNode}){
  const box=useRef<HTMLDivElement>(null);
  useEffect(()=>{const before=document.activeElement as HTMLElement|null;box.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();return()=>before?.focus()},[]);

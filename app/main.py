@@ -17,7 +17,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -657,9 +657,22 @@ async def lifespan(app):
     init_db()
     drawing_api.drawing_token()
     loop = asyncio.get_running_loop()
+    # The chart already authorized this request. Reuse its own bar service even
+    # when an external identity proxy requires headers on incoming HTTP calls.
+    from . import market_analysis
+    def read_analysis_bars(params):
+        future = asyncio.run_coroutine_threadsafe(bars(**params), loop)
+        try:
+            return future.result(timeout=45)
+        except TimeoutError:
+            future.cancel()
+            raise
+    market_analysis.local_bar_reader = read_analysis_bars
     task = asyncio.create_task(maintenance())
     depth_task = asyncio.create_task(depth_maintenance())
     await scan_service.start()
+    from .notifications import Notifications
+    notification_task = asyncio.create_task(Notifications(connect_db).run())
     from .ledger_opend import run as sync_trade_archive
     archive_task = asyncio.create_task(sync_trade_archive(connect_db))
     from .plan_daily import run as run_plan_daily
@@ -667,12 +680,15 @@ async def lifespan(app):
     directory_stop = asyncio.Event()
     directory_task = asyncio.create_task(maintain_directory(bridge, connect_db, directory_stop, Bridge))
     yield
+    market_analysis.local_bar_reader = None
     directory_stop.set()
     await directory_task
     plan_daily_task.cancel()
     archive_task.cancel()
     await asyncio.gather(archive_task, plan_daily_task, return_exceptions=True)
     await scan_service.stop()
+    notification_task.cancel()
+    await asyncio.gather(notification_task, return_exceptions=True)
     task.cancel()
     depth_task.cancel()
     await asyncio.gather(asyncio.to_thread(depth_feed.close), asyncio.to_thread(ticker_feed.close))
@@ -685,7 +701,7 @@ app = FastAPI(title='NAS Market', lifespan=lifespan)
 
 @app.middleware('http')
 async def auth(request: Request, call_next):
-    if (request.url.path.startswith(('/api/scanner/', '/api/review/')) or request.url.path=='/api/settings/theme') and request.method not in ('GET','HEAD','OPTIONS'):
+    if (request.url.path.startswith(('/api/scanner/', '/api/review/', '/api/market-analysis/')) or request.url.path=='/api/settings/theme') and request.method not in ('GET','HEAD','OPTIONS'):
         origin=request.headers.get('origin')
         fetch_site=request.headers.get('sec-fetch-site')
         different_origin=origin and origin!=str(request.base_url).rstrip('/')
@@ -1263,6 +1279,9 @@ async def stream(ws: WebSocket):
 
 drawing_api.install(app, connect_db)
 
+from .market_analysis import install as install_market_analysis
+install_market_analysis(app, connect_db, path='/api/market-analysis', synchronous=False)
+
 from .review import install as install_review
 install_review(app, connect_db)
 
@@ -1281,4 +1300,8 @@ if STATIC.exists():
 def frontend(path: str):
     if not STATIC.exists():
         raise HTTPException(404, '前端尚未构建')
+    if path.rstrip('/') == 'chart':
+        html = (STATIC / 'index.html').read_text(encoding='utf-8')
+        return HTMLResponse(html.replace('<html ', '<html data-market-entry="public" ', 1),
+                            headers={'Cache-Control':'no-store, max-age=0'})
     return FileResponse(STATIC / 'index.html', headers={'Cache-Control': 'no-store, max-age=0'})

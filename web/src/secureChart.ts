@@ -1,4 +1,4 @@
-export const secureChart=location.pathname==='/chart';
+export const secureChart=location.pathname.replace(/\/$/,'')==='/chart' && document.documentElement.dataset.marketEntry!=='public';
 let csrf='';
 export function setChartCsrf(value:string){csrf=value}
 export function getChartCsrf(){return csrf}

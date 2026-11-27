@@ -1,4 +1,5 @@
 import {useEffect,useState} from 'react';
+import {secureChart} from './secureChart';
 import DrawingApiPanel from './DrawingApiPanel';
 import './api-management.css';
 
@@ -7,7 +8,7 @@ export default function ApiManagement(){
  const [inventory,setInventory]=useState<any>(null),[tokens,setTokens]=useState<any[]>([]),[csrf,setCsrf]=useState('');
  const [query,setQuery]=useState(''),[category,setCategory]=useState(''),[name,setName]=useState('OpenClaw 只读'),[permissions,setPermissions]=useState(['read']);
  const [secret,setSecret]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[revokeId,setRevokeId]=useState('');
- const secure=location.protocol==='https:';
+ const secure=location.protocol==='https:' && (secureChart || location.pathname.startsWith('/trade'));
  async function request(path:string,method='GET',body?:unknown){
   const r=await fetch('/api/trade/api-management/'+path,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:body===undefined?undefined:JSON.stringify(body)});
   const v=await r.json();if(!r.ok)throw Error(typeof v.detail==='string'?v.detail:'请求失败');return v;
@@ -20,7 +21,7 @@ export default function ApiManagement(){
  });},[]);
  function download(){const blob=new Blob([JSON.stringify(inventory.schemas,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='nas-market-openapi.json';a.click();URL.revokeObjectURL(url)}
  const rows=(inventory?.items||[]).filter((r:any)=>(!category||r.category===category)&&[r.path,r.method,r.summary,r.auth].join(' ').toLowerCase().includes(query.toLowerCase()));
- return <section className="api-management"><h2>API 管理</h2><p>统一查看行情、板块、情绪、扫描、后台事件、画线及交易接口。机器凭证与网页登录分开管理。</p>
+ return <section className="api-management"><h2>API 管理</h2><p>在「设置 → AI 助手」连接 Agent，平台即可调用它分析盘面和填写交易计划。外部 Agent 也能使用这里的授权 API 读取行情、执行扫描、写入复盘或管理画线。</p>
  {!secure?<p>凭证管理需要安全登录。<a href={`https://${location.hostname}:8443/chart?view=api`}>打开 HTTPS API 管理</a></p>:<>
  <div className="api-summary"><div><strong>OpenClaw 基础地址</strong><code>{location.origin}/api/v1</code><small>NAS 容器可信内网：http://market:8000/api/v1；Authorization: Bearer &lt;token&gt;</small></div><div><strong>增量读取事件</strong><code>GET /api/v1/events?after=0&amp;limit=100</code><small>保存返回游标，以 event_id 去重；Token 不放入 URL。</small></div></div>
  <h3>API 凭证</h3><p>为 OpenClaw 写复盘启用「复盘读取」和「复盘写入」。复盘入口为 <code>/api/v1/review</code>。凭证管理权限可创建或撤销其他凭证，请仅授予管理客户端。</p>

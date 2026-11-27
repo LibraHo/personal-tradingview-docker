@@ -15,6 +15,7 @@ export function computeAdvanced(b:Bar[],name:string,input:Record<string,unknown>
  if(name==='MSIGM8')return computeMSIGM8(b,p);
  if(name==='SIXPULSE'||name==='SIXPULSE_SIGNAL'){const values=computeSixPulse(b,p);return name==='SIXPULSE_SIGNAL'?signalValues(values,input):values}
  const c=b.map(x=>x.close),h=b.map(x=>x.high),l=b.map(x=>x.low),n=p.period;
+ if(name==='EXPMA')return {[`EMA${p.fast}`]:ema(c,p.fast),[`EMA${p.slow}`]:ema(c,p.slow)};
  if(name==='KDJ'){const hi=extreme(h,n,true),lo=extreme(l,n,false);let k=50,d=50;const ks:V=[],ds:V=[],js:V=[];c.forEach((x,i)=>{if(hi[i]===null){ks.push(null);ds.push(null);js.push(null);return}const raw=hi[i]===lo[i]?50:100*(x-lo[i]!)/(hi[i]!-lo[i]!);k+=(raw-k)/p.smoothK;d+=(k-d)/p.smoothD;ks.push(k);ds.push(d);js.push(3*k-2*d)});return {k:ks,d:ds,j:js}}
  if(name==='MFI'){const tp=b.map(x=>(x.high+x.low+x.close)/3),pos=sum(tp.map((x,i)=>i?(x>tp[i-1]?x*b[i].volume:0):null),n),neg=sum(tp.map((x,i)=>i?(x<tp[i-1]?x*b[i].volume:0):null),n);return {main:pos.map((x,i)=>x===null?null:!x&&!neg[i]?null:!neg[i]?100:100-100/(1+x/neg[i]!))}}
  if(name==='STOCHRSI'){const values=rsi(c,p.rsiPeriod),raw:V=values.map((x,i)=>{if(x===null||i<p.rsiPeriod+n-1)return null;const window=values.slice(i-n+1,i+1) as number[],hi=Math.max(...window),lo=Math.min(...window);return hi===lo?null:100*(x-lo)/(hi-lo)}),k=average(raw,p.smoothK);return {k,d:average(k,p.smoothD)}}

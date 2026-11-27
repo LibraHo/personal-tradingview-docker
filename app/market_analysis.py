@@ -9,6 +9,7 @@ from urllib import parse, request
 from fastapi import HTTPException
 from pydantic import Field
 
+from .analysis_drawings import drawing_proposals, fibonacci_for_frame
 from .agent_client import complete
 from .agent_settings import active_config
 from .ledger import Input, PlanPeriod, transaction
@@ -17,12 +18,14 @@ from .radar import SYMBOL
 
 PERIODS = get_args(PlanPeriod)
 LONG = {'1d', '1w', '1mo'}
+local_bar_reader = None
 COLUMNS = ('time', 'open', 'high', 'low', 'close', 'volume')
 PROMPT = (
     '以中文分析给定标的最新盘面，主周期是 primary。仅根据所附各周期 OHLCV 数据，'
     '先概括主周期走势和成交量变化，再结合较高周期说明趋势一致或分歧、关键价位和后续观察条件。'
     '引用具体周期、价量或时间作为依据。同周期、可比时段内比较成交量，不直接比较不同周期总量。'
     '每组最后一根可能尚未收盘，其成交量可能不完整。时间戳为 UTC 秒，按给定时区解释。'
+    '如主周期有 fibonacci，结合量价说明邻近回撤位，注明波段方向；缺少确认波段时不要推算点位。'
     '标明缺失周期、过期缓存和样本不足对结论的影响，不编造行情，不调用工具。使用简短中文段落。'
 )
 
@@ -34,6 +37,7 @@ class Chart(Input):
 
 
 class AnalysisRequest(Chart):
+    drawing_focus: Literal['levels', 'range', 'strokes', 'fibonacci'] | None = None
     references: list[PlanPeriod] | None = Field(default=None, max_length=3)
 
 
@@ -58,7 +62,10 @@ def recent_bars(symbol, period, mode, limit):
         session_minutes = 390 if symbol.startswith('US.') else 240
         bars_per_session = 1 if period == '1d' else math.ceil(session_minutes / int(period[:-1]))
         days = math.ceil(limit / bars_per_session * 7 / 5) + 5
-    query = parse.urlencode(dict(symbol=symbol, period=period, mode=mode, limit=limit, days=days))
+    params = dict(symbol=symbol, period=period, mode=mode, limit=limit, days=days)
+    if local_bar_reader is not None:
+        return local_bar_reader(params)
+    query = parse.urlencode(params)
     with request.urlopen(base + '/api/bars?' + query, timeout=45) as response:
         return json.load(response)
 
@@ -76,15 +83,14 @@ def sample(chart, period, limit):
             if all(isinstance(v, (int, float)) and math.isfinite(v) for v in row):
                 item['bars'].append(row)
         item['stale'] = bool(data.get('stale'))
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, HTTPException):
         item['issue'] = '行情读取失败'
     if not item['bars'] and 'issue' not in item:
         item['issue'] = '暂无有效 K 线'
     return item
 
 
-def install(app, connect_db):
-    path = '/api/trade/market-analysis'
+def install(app, connect_db, path='/api/trade/market-analysis', synchronous=True):
 
     def config():
         with transaction(connect_db) as db:
@@ -99,7 +105,15 @@ def install(app, connect_db):
         return {'enabled': provider == 'openclaw' and bool(url and token),
                 'higher': higher, 'defaults': defaults}
 
-    @app.post(path, summary='使用当前 AI 助手分析多周期量价数据')
+    @app.get(path + '/fibonacci', summary='计算指定周期最近确认波段的斐波那契回撤')
+    def fibonacci(symbol: str, period: PlanPeriod, mode: Literal['regular','extended','all'] = 'regular'):
+        if not SYMBOL.fullmatch(symbol):
+            raise HTTPException(422, '无效的图表标的')
+        frame = sample(Chart(symbol=symbol, period=period, mode=mode), period, 80)
+        if not frame['bars']:
+            raise HTTPException(503, frame['issue'])
+        return {'fibonacci': fibonacci_for_frame(frame), 'stale': frame['stale']}
+
     def analyze(body: AnalysisRequest):
         provider, url, token, agent = config()
         if provider != 'openclaw' or not (url and token):
@@ -116,8 +130,27 @@ def install(app, connect_db):
                    'as_of': datetime.now(timezone.utc).isoformat(timespec='seconds'),
                    'timezone': 'America/New_York' if body.symbol.startswith('US.') else 'Asia/Shanghai',
                    'frames': frames}
+        if body.drawing_focus:
+            return drawing_proposals(context, body.drawing_focus,
+                                     lambda prompt, facts: complete(url, token, agent or 'default', prompt, facts))
+        context['fibonacci'] = fibonacci_for_frame(primary)
         report = complete(url, token, agent or 'default', PROMPT, context)
         coverage = [{'period': f['period'], 'mode': f['mode'], 'count': len(f['bars']),
                      'last': f['bars'][-1][0] if f['bars'] else None, 'stale': f['stale'],
                      'issue': f.get('issue')} for f in frames]
-        return {'analysis': report, 'coverage': coverage}
+        return {'analysis': report, 'coverage': coverage, 'fibonacci': context['fibonacci']}
+
+    # Keep the original authenticated API for existing callers. Browser jobs also
+    # work through remote-access proxies with short response timeouts.
+    if synchronous:
+        app.post(path, summary='使用当前 AI 助手分析多周期量价数据')(analyze)
+    from .analysis_jobs import AnalysisJobs
+    jobs = AnalysisJobs()
+
+    @app.post(path + '/jobs', status_code=202, summary='开始盘面分析')
+    def submit(body: AnalysisRequest):
+        return jobs.submit(analyze, body)
+
+    @app.get(path + '/jobs/{job_id}', summary='读取本次盘面分析')
+    def poll(job_id: str):
+        return jobs.result(job_id)

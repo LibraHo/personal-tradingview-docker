@@ -33,6 +33,7 @@ import StockSearch from './StockSearch';
 import {resetChartViewport,resetPriceScales,markViewportReady} from './chartViewport';
 import SettingsPanel,{type SettingsTab} from './SettingsPanel';
 import AgentSettings from './AgentSettings';
+import NotificationSettings from './NotificationSettings';
 import OpenDPanel from './OpenDPanel';
 import CandleSettings from './CandleSettings';
 import {defaultCandleAppearance,normalizeCandleAppearance,candleSeriesOptions,candleBodyColor,volumePalette,type CandleAppearance} from './candleAppearance';
@@ -47,6 +48,8 @@ import IndicatorAppearance from './IndicatorAppearance';
 import DrawingsPanel from './DrawingsPanel';
 import {fibPrices,drawingStyle,normalizeDrawingRecords,drawingsForPeriod,updateDrawingRecords,newDrawingId,hitTestDrawing,type FibDrawing,type HorizontalDrawing,type TrendDrawing,type DrawingSelection} from './drawingTools';
 import type {AnalysisChart} from './MarketAnalysis';
+import type {AnalysisDrawingBatch} from './AnalysisDrawings';
+import {flushSync} from 'react-dom';
 const MarketAnalysis=lazy(()=>import('./MarketAnalysis'));
 const StrategyPanel=lazy(()=>import('./StrategyPanel'));
 const DailyReview=lazy(()=>import('./DailyReview'));
@@ -538,7 +541,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   const [settingsTab,setSettingsTab]=useState<SettingsTab|null>(()=>{
     const tab=new URLSearchParams(location.search).get('settings');
     if (tab==='agents'||tab==='plans') return 'agents';
-    return tab==='connection'?'connection':null;
+    return tab==='notifications'?'notifications':tab==='connection'?'connection':null;
   }),[depthHost,setDepthHost]=useState<HTMLDivElement|null>(null);
  const [drawingHost,setDrawingHost]=useState<HTMLDivElement|null>(null);
   const [snapCrosshairTime,setSnapCrosshairTime]=useState(()=>{
@@ -565,10 +568,32 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   const [analysisChart,setAnalysisChart]=useState<AnalysisChart|null>(null);
   function openAnalysis(tile:Tile,mode:Mode){
     const chart:AnalysisChart={...tile,mode:tile.symbol.startsWith('US.')&&!isLongPeriod(tile.period)?mode:'regular'};
-    if(secureChart){setAnalysisChart(chart);return}
-    const url=new URL('/chart',tradingUrl);
-    url.search=new URLSearchParams({...chart,analysis:'1'}).toString();
-    location.assign(url.href);
+    setAnalysisChart(chart);
+  }
+  function applyAnalysisDrawings(batch:AnalysisDrawingBatch) {
+    if (!analysisChart) return;
+    const {symbol,period}=analysisChart;
+    const market:Market=symbol.startsWith('US.')?'US':'CN';
+    const key=symbol+':'+period;
+    let full=false;
+    flushSync(()=>setState(previous=>{
+      const workspace=previous.markets[market];
+      const append=<T extends {id?:string}>(existing:T[], suggestions:T[])=>{
+        const ids=new Set(existing.map(line=>line.id));
+        return [...existing,...suggestions.filter(line=>!ids.has(line.id))];
+      };
+      const horizontal=append(workspace.drawings[key]||[],batch.horizontal);
+      const trends=append(workspace.trends[key]||[],batch.trends);
+      const fibos=append(workspace.fibos[key]||[],batch.fibos);
+      full=horizontal.length>100 || trends.length>100 || fibos.length>100;
+      if(full) return previous;
+      return {...previous,markets:{...previous.markets,[market]:{...workspace,
+        drawings:{...workspace.drawings,[key]:horizontal},trends:{...workspace.trends,[key]:trends},
+        fibos:{...workspace.fibos,[key]:fibos},
+        drawingsHidden:{...workspace.drawingsHidden,[key]:false},
+      }}};
+    }));
+    if(full) throw Error('当前周期的画线已达容量上限，请在画线管理中整理后再添加。');
   }
   const chartLinkApplied=useRef(false);
   useEffect(()=>{
@@ -576,7 +601,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
     chartLinkApplied.current=true;
     const query=new URLSearchParams(location.search),symbol=query.get('symbol')||'',period=query.get('period')||'1d';
     if(/^(US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.(?:\d{6}|(?:BK|LIST)\d{1,10}))$/.test(symbol)&&['1m','5m','15m','30m','60m','120m','240m','1d','1w','1mo'].includes(period)){
-      const analysis=secureChart&&query.get('analysis')==='1';
+      const analysis=query.get('analysis')==='1';
       const session=query.get('mode');
       const mode=analysis&&symbol.startsWith('US.')&&!isLongPeriod(period)&&(session==='all'||session==='extended')?session:'regular';
       openRadar({symbol,name:symbol},period as Period,mode);
@@ -924,9 +949,9 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
       </div>
     </main></div>
 
-    {analysisChart&&<Suspense fallback={<p role="status">正在打开盘面分析…</p>}><MarketAnalysis chart={analysisChart} onClose={()=>setAnalysisChart(null)} onSettings={()=>{setAnalysisChart(null);setSettingsTab('agents')}}/></Suspense>}
+    {analysisChart&&<Suspense fallback={<p role="status">正在打开盘面分析…</p>}><MarketAnalysis chart={analysisChart} onApply={applyAnalysisDrawings} onClose={()=>setAnalysisChart(null)} onSettings={()=>{setAnalysisChart(null);setSettingsTab('agents')}}/></Suspense>}
     {workspaceView!=='chart'&&hasDepthIndicator&&depthHost&&<DepthPanel key={current.symbol} symbol={current.symbol} settingsHost={depthHost}/>}
-    {settingsTab&&<SettingsPanel tab={settingsTab} onTab={tab=>{if(tab==='appearance')setAppearanceMarket(market);setSettingsTab(tab)}} onClose={()=>setSettingsTab(null)}>{settingsTab==='agents'?<AgentSettings secureUrl={new URL('/chart?settings=agents',secureChart?location.origin:tradingUrl).href}/>:settingsTab==='connection'?<OpenDPanel tradingUrl={tradingUrl} onReady={()=>setRefresh(v=>v+1)}/>:settingsTab==='appearance'?<CandleSettings snapCrosshairTime={snapCrosshairTime} onCrosshairSnapChange={changeCrosshairSnap} market={appearanceMarket} onMarket={setAppearanceMarket} appearance={state.markets[appearanceMarket].chartAppearance} onChange={patch=>setState(old=>({...old,markets:{...old.markets,[appearanceMarket]:{...old.markets[appearanceMarket],chartAppearance:{...old.markets[appearanceMarket].chartAppearance,...patch}}}}))}/>:settingsTab==='indicators'?indicatorSettings:<CachePanel embedded symbol={current?.symbol} onClose={()=>setSettingsTab(null)}/>}</SettingsPanel>}
+    {settingsTab&&<SettingsPanel tab={settingsTab} onTab={tab=>{if(tab==='appearance')setAppearanceMarket(market);setSettingsTab(tab)}} onClose={()=>setSettingsTab(null)}>{settingsTab==='notifications'?<NotificationSettings secureUrl={new URL('/chart?settings=notifications',secureChart?location.origin:tradingUrl).href}/>:settingsTab==='agents'?<AgentSettings secureUrl={new URL('/chart?settings=agents',secureChart?location.origin:tradingUrl).href}/>:settingsTab==='connection'?<OpenDPanel tradingUrl={tradingUrl} onReady={()=>setRefresh(v=>v+1)}/>:settingsTab==='appearance'?<CandleSettings snapCrosshairTime={snapCrosshairTime} onCrosshairSnapChange={changeCrosshairSnap} market={appearanceMarket} onMarket={setAppearanceMarket} appearance={state.markets[appearanceMarket].chartAppearance} onChange={patch=>setState(old=>({...old,markets:{...old.markets,[appearanceMarket]:{...old.markets[appearanceMarket],chartAppearance:{...old.markets[appearanceMarket].chartAppearance,...patch}}}}))}/>:settingsTab==='indicators'?indicatorSettings:<CachePanel embedded symbol={current?.symbol} onClose={()=>setSettingsTab(null)}/>}</SettingsPanel>}
 
   </div>;
 }

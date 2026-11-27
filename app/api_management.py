@@ -41,6 +41,8 @@ def install(app):
     from .market_analysis import install as install_market_analysis
     install_agent_settings(app, token_db)
     install_market_analysis(app, token_db)
+    from .notification_api import install as install_notifications
+    install_notifications(app, token_db)
     prefix = '/api/trade/api-management'
 
     @app.get(prefix + '/inventory', tags=['API management'])

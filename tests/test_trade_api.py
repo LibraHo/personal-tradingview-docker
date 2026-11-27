@@ -49,6 +49,14 @@ class TradeApiTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/trade/lock', headers={**self.headers,'Origin':'https://evil.test'}, json={}).status_code, 403)
         self.assertEqual(self.client.post('/api/trade/lock', headers=self.headers, json={}).status_code, 200)
 
+    def test_notification_settings_require_https_session_and_csrf(self):
+        path='/api/trade/notifications'
+        self.assertEqual(self.client.get('http://testserver'+path).status_code,426)
+        self.assertEqual(self.client.get(path).status_code,401)
+        self.setup_account()
+        self.assertEqual(self.client.post(path+'/channels',headers=self.origin,json={}).status_code,403)
+        self.assertEqual(self.client.post(path+'/channels',headers={**self.headers,'Origin':'https://evil.test'},json={}).status_code,403)
+
     def test_api_management_requires_session_and_csrf_and_revokes(self):
         import sqlite3
         path=str(Path(self.tmp.name)/'market.sqlite3')

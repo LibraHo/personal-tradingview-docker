@@ -9,6 +9,19 @@ def rows(close):
 
 
 class AdvancedIndicatorTests(unittest.TestCase):
+    def test_expma_uses_two_close_based_emas(self):
+        bars = rows([10, 14, 12])
+        default = calculate(bars, 'EXPMA')
+        self.assertEqual(list(default), ['EMA12', 'EMA50'])
+        ema = calculate(bars, 'EMA', dict(periods=[12, 50]))
+        for key in default:
+            for actual, expected in zip(default[key], ema[key]):
+                self.assertAlmostEqual(actual, expected)
+        custom = calculate(bars, 'EXPMA', dict(fast=1, slow=3))
+        self.assertEqual(custom, {'EMA1': [10, 14, 12], 'EMA3': [10, 12, 12]})
+        with self.assertRaises(ValueError):
+            calculate(bars, 'EXPMA', dict(fast=12, slow=12))
+
     def test_kdj_recurrence_and_seed(self):
         result = calculate(rows([10, 12, 11, 14]), 'KDJ', dict(period=3))
         self.assertEqual(result['k'], [None, None, 50, 60])

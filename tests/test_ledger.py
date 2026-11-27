@@ -296,6 +296,11 @@ class LedgerTests(unittest.TestCase):
             agent.assert_not_called()
         self.assertEqual(self.call('book')['plans'],[])
 
+    @staticmethod
+    def quote_frame(chart, period, limit):
+        return {'period':period,'mode':'regular','stale':period=='1w',
+                'bars':[[1700000000+n,19,21,18,20,100+n] for n in range(limit)]}
+
     def test_one_click_existing_agent_and_invalid_response(self):
         import io
         import json
@@ -307,18 +312,40 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(payload['model'],'openclaw/default')
             self.assertEqual(req.full_url,'http://localhost:18789/v1/chat/completions')
             self.assertNotIn('我的文字',payload['messages'][1]['content'])
+            facts=json.loads(payload['messages'][1]['content'])['facts']
+            self.assertEqual(facts['period'], '1d')
+            self.assertEqual(facts['last_close'],20)
+            self.assertEqual([f['period'] for f in facts['frames']], ['1d','1w','1mo'])
+            self.assertEqual([len(f['bars']) for f in facts['frames']], [80,40,40])
+            self.assertEqual(facts['ohlcv_columns'][-1], 'volume')
+            self.assertIn('T+1', facts['settlement'])
             msg={'title':'回封观察','exit_note':'炸板后撤单','risk_note':'观察流动性'}
             return io.BytesIO(json.dumps({'choices':[{'message':{'content':json.dumps(msg)}}]}).encode())
         mock.open.side_effect=respond
         env={'OPENCLAW_BASE_URL':'http://localhost:18789','OPENCLAW_GATEWAY_TOKEN':'unit-test','OPENCLAW_AGENT_ID':''}
-        with patch.dict('os.environ',env),patch('app.agent_client.request.build_opener',return_value=mock):
+        with patch.dict('os.environ',env),patch('app.plan_autofill.sample',side_effect=self.quote_frame),patch('app.agent_client.request.build_opener',return_value=mock):
             result=self.call('autofill',draft)
             self.assertEqual(result['source'],'openclaw')
             self.assertNotIn('entry_note',result['fields'])
             self.assertEqual(result['fields']['title'],'回封观察')
+            self.assertIn('T+1',result['fields']['exit_note'])
+            self.assertTrue(result['coverage'][1]['stale'])
+            self.assertEqual(result['coverage'][0]['count'],80)
             mock.open.side_effect=lambda *args,**kw:io.BytesIO(b'{}')
             self.call('autofill',draft,status=502)
         self.assertEqual(self.call('book')['plans'],[])
+
+    def test_minute_fill_context_and_missing_primary(self):
+        env={'OPENCLAW_BASE_URL':'http://localhost','OPENCLAW_GATEWAY_TOKEN':'unit-test'}
+        draft=dict(symbol='SH.510300',period='1m',side='BUY',details={})
+        with patch.dict('os.environ',env),patch('app.plan_autofill.sample',side_effect=self.quote_frame),patch('app.plan_autofill.agent_text',return_value={'risk_note':'观察'}) as agent:
+            result=self.call('autofill',draft)
+            facts=agent.call_args.args[3]
+            self.assertEqual([f['period'] for f in result['coverage']], ['1m','60m','1d'])
+            self.assertIn('核对该品种',facts['settlement'])
+        with patch.dict('os.environ',env),patch('app.plan_autofill.sample',return_value={'bars':[]}),patch('app.plan_autofill.agent_text') as agent:
+            self.call('autofill',draft,status=503)
+            agent.assert_not_called()
 
     def test_fill_provider_settings_and_failure_history(self):
         from app.plan_agent_settings import install
@@ -330,7 +357,7 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/trade/plan-agent').json(),self.client.get(path).json())
         self.assertEqual(self.client.put(path,json={**config,'url':'http://another-host','token':None}).status_code,422)
         draft = dict(request_id='a'*32,symbol=CN['symbol'],period='1d',side='BUY',details={})
-        with patch('app.plan_autofill.agent_text',side_effect=HTTPException(503,'网关超时')) as agent:
+        with patch('app.plan_autofill.sample',side_effect=self.quote_frame),patch('app.plan_autofill.agent_text',side_effect=HTTPException(503,'网关超时')) as agent:
             response = self.call('autofill',draft,status=503)
             self.assertIn(draft['request_id'],response['detail'])
             self.call('autofill',draft,status=409)

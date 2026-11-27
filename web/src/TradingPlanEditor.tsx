@@ -34,9 +34,16 @@ import {
 } from './tradePlanAnalysis';
 import FillHistory, {recordDeliveryError} from './FillHistory';
 import PlanConditionsEditor from './PlanConditionsEditor';
+import {PlanFibonacci} from './FibonacciLevels';
 import './trade-plans.css';
 
+type FillFields = Partial<Record<'title'|'entry_note'|'exit_note'|'risk_note'|'size'|'defense_source',string>
+  & Record<'entry_price'|'stop'|'take_profit',number>>;
+type Coverage = {period:PlanPeriod; mode:string; count:number; last:number|null; stale:boolean; issue?:string|null};
+type FillContext = {period:PlanPeriod; symbol:string; coverage:Coverage[]};
 type Draft = {
+  autofilled?: FillFields;
+  fillContext?: FillContext;
   symbol: string;
   period: PlanPeriod;
   side: 'BUY' | 'SELL';
@@ -57,6 +64,7 @@ type Props = {
   onSaved: (target: RecordTarget) => void;
   onCancel: () => void;
   onBusyChange?: (busy: boolean) => void;
+  onContextChange?: (chart:{symbol:string;period:PlanPeriod})=>void;
 };
 const noIndicators: Indicator[] = [];
 const noBars: Bar[] = [];
@@ -78,8 +86,9 @@ export default function TradingPlanEditor({
   onSaved,
   onCancel,
   onBusyChange,
+  onContextChange,
 }: Props) {
-  const storageKey = `market-plan-draft-v1:${market}:${plan?.id || symbol + ':' + period + (limitUp ? ':limit-up' : '')}`;
+  const keyFor = (code:string, frame:PlanPeriod) => `market-plan-draft-v1:${market}:${plan?.id || code + ':' + frame + (limitUp ? ':limit-up' : '')}`;
   const [initial] = useState(() => {
     const details = plan?.details
       ? structuredClone(plan.details)
@@ -102,13 +111,14 @@ export default function TradingPlanEditor({
       size: plan?.size || '',
       stop: plan?.stop == null ? null : planPrice(plan.stop),
       details,
+      ...(!plan && details.risk.entry_price!=null ? {autofilled:{entry_price:details.risk.entry_price}} : {}),
     };
     try {
-      const cached = JSON.parse(localStorage.getItem(storageKey) || 'null');
+      const cached = JSON.parse(localStorage.getItem(keyFor(value.symbol,value.period)) || 'null');
       if (
         cached?.version === 1 &&
         cached.revision === (plan?.revision || 0) &&
-        cached.value?.symbol === value.symbol &&
+        cached.value?.symbol === value.symbol && (plan || cached.value.period === value.period) &&
         cached.value.details?.version === 1
       )
         return {
@@ -126,6 +136,9 @@ export default function TradingPlanEditor({
     [busy, setBusy] = useState(false);
   const [error, setError] = useState(''),
     [notice, setNotice] = useState(initial.restored ? '已恢复本地草稿，尚未保存到 NAS。' : '');
+  useEffect(()=>{onContextChange?.({symbol:draft.symbol,period:draft.period})},[draft.symbol,draft.period,onContextChange]);
+  const storageKey = keyFor(draft.symbol,draft.period);
+  const [beforeClear, setBeforeClear] = useState<Draft|null>(null);
   const [referencePeriod, setReferencePeriod] = useState<PlanPeriod>(initial.value.period),
     [refresh, setRefresh] = useState(0);
   const [editingStop, setEditingStop] = useState(false);
@@ -154,6 +167,7 @@ export default function TradingPlanEditor({
   const following = details.risk.defense_reference;
   const indicatorGroups = useRef({entry: details.entry, exit: details.exit});
   const patch = (values: Partial<Draft>) => {
+    setBeforeClear(null);
     setDraft((previous) => ({ ...previous, ...values }));
     setDirty(true);
     setError('');
@@ -176,7 +190,7 @@ export default function TradingPlanEditor({
   ]
     .sort()
     .join(',');
-  const dataKey = canonical + ':' + details.mode;
+  const dataKey = [canonical, draft.period, details.mode, requestedPeriods].join(':');
 
   useEffect(() => {
     if (!dirty) return;
@@ -273,6 +287,9 @@ export default function TradingPlanEditor({
   }, [board, data, dataKey, referencePeriod, details.risk.entry_price, indicators]);
   const structure = useMemo(() => structureReferences(data.key === dataKey ? data.bars[draft.period] || [] : [], draft.period),
     [data, dataKey, draft.period]);
+  const candidateStructure = useMemo(() => referencePeriod === draft.period ? structure :
+    structureReferences(data.key === dataKey ? data.bars[referencePeriod] || [] : [], referencePeriod),
+    [structure,referencePeriod,draft.period,data,dataKey]);
   const levels = { ...emptyPlanLevels, ...details.levels };
   if (autoStructure) {
     for (const key of Object.keys(structureLabels) as (keyof typeof structureLabels)[])
@@ -291,6 +308,36 @@ export default function TradingPlanEditor({
     ? details.references.filter(row => row.period === referencePeriod && !Object.values(structureLabels).includes(row.label))
     : references.map(({condition: _condition, ...row}) => row);
   const snapshotDetails = { ...details, levels, references: [...snapshotReferences, ...(autoStructure ? structure : [])] };
+  function changeContext(next:Partial<Pick<Draft,'period'|'symbol'|'side'>>, nextMode=details.mode) {
+    const nextPeriod = next.period || draft.period;
+    const shift = (group:PlanDetails['entry']) => ({...group,items:group.items.map(item=>
+      item.period===draft.period ? {...item,period:nextPeriod} : item)});
+    const generated = draft.autofilled || {};
+    const clean = (value:string, previous:string|undefined) => previous!==undefined && value===previous ? '' : value;
+    const generatedStop = generated.stop!==undefined && draft.stop===generated.stop && !following;
+    const cleanLevels = {...emptyPlanLevels,...details.levels};
+    if(generated.take_profit!==undefined && cleanLevels.take_profit===generated.take_profit) cleanLevels.take_profit=null;
+    if(details.structure_mode==='auto') for(const key of Object.keys(structureLabels) as (keyof typeof structureLabels)[]) cleanLevels[key]=null;
+    indicatorGroups.current={entry:shift(indicatorGroups.current.entry),exit:shift(indicatorGroups.current.exit)};
+    patch({...next,stop:generatedStop?null:draft.stop,size:clean(draft.size,generated.size),
+      autofilled:undefined,fillContext:undefined,
+      details:{...details,mode:nextMode,levels:cleanLevels,references:[],entry:shift(details.entry),exit:shift(details.exit),
+        title:clean(details.title,generated.title),entry_note:clean(details.entry_note,generated.entry_note),
+        exit_note:clean(details.exit_note,generated.exit_note),
+        risk:{...details.risk,note:clean(details.risk.note,generated.risk_note),
+          entry_price:generated.entry_price===details.risk.entry_price ? null : details.risk.entry_price,
+          defense_source:generatedStop?'手动填写':details.risk.defense_source}}});
+    if(next.period) setReferencePeriod(nextPeriod);
+    setFillFailure('');setAgentText('');setAgentInput('');setNotice('');
+  }
+  function clearForm() {
+    const blank = newPlanDetails(draft.period,details.mode);
+    blank.strategy=details.strategy;blank.structure_mode='manual';blank.entry.items=[];blank.exit.items=[];
+    patch({details:blank,stop:null,size:'',autofilled:undefined,fillContext:undefined});
+    indicatorGroups.current={entry:blank.entry,exit:blank.exit};
+    setBeforeClear(draft);setReferencePeriod(draft.period);setFillFailure('');setEditingStop(false);
+    setAgentText('');setAgentInput('');setNotice('已清空当前表单，保存后才会更新 NAS。');
+  }
   function changeStrategy(next: 'indicator' | 'limit_up') {
     if (next === 'limit_up') {
       indicatorGroups.current = {entry: details.entry, exit: details.exit};
@@ -349,15 +396,13 @@ export default function TradingPlanEditor({
     const controller = new AbortController();
     fillRequest.current = controller;
     const id = requestId();
-    const deadline = window.setTimeout(()=>controller.abort('timeout'),90000);
+    const deadline = window.setTimeout(()=>controller.abort('timeout'),225000);
     const started = Date.now();
     setFillStarted(started);setElapsed(0);setFillFailure('');
     setFilling(true);setNotice('');setError('');
-    type Fields = Partial<Record<'title'|'entry_note'|'exit_note'|'risk_note'|'size'|'defense_source',string>
-      & Record<'entry_price'|'stop'|'take_profit',number>>;
     try {
       const last = data.key === dataKey && !data.issues[draft.period] ? data.bars[draft.period]?.at(-1) : null;
-      const result = await ledgerRequest<{source:'local'|'openclaw';fields:Fields}>(market,'autofill','POST',
+      const result = await ledgerRequest<{source:'local'|'openclaw';fields:FillFields;coverage:Coverage[]}>(market,'autofill','POST',
         {request_id:id,symbol:canonical,period:draft.period,side:draft.side,size:draft.size,stop,details:snapshotDetails,last_close:last?.close ?? null},
         controller.signal);
       if (controller.signal.aborted) return;
@@ -367,6 +412,8 @@ export default function TradingPlanEditor({
         return;
       }
       patch({
+        autofilled:{...draft.autofilled,...f},
+        fillContext:result.source==='openclaw'?{period:draft.period,symbol:canonical,coverage:result.coverage}:draft.fillContext,
         size: draft.size || f.size || '', stop: following ? draft.stop : draft.stop ?? f.stop ?? null,
         details: {...details,
           title: details.title || f.title || '', entry_note: details.entry_note || f.entry_note || '',
@@ -534,7 +581,7 @@ export default function TradingPlanEditor({
               required
               readOnly={!!plan}
               value={draft.symbol}
-              onChange={(e) => patch({ symbol: e.target.value.toUpperCase() })}
+              onChange={(e) => changeContext({symbol:e.target.value.toUpperCase()})}
             />
           </label>
           <label>
@@ -542,7 +589,7 @@ export default function TradingPlanEditor({
             <select
               aria-label="计划周期"
               value={draft.period}
-              onChange={(e) => patch({ period: e.target.value as PlanPeriod })}
+              onChange={(e) => changeContext({period:e.target.value as PlanPeriod})}
             >
               {Object.entries(periodNames).map(([key, title]) => (
                 <option key={key} value={key}>
@@ -557,7 +604,7 @@ export default function TradingPlanEditor({
               aria-label="计划方向"
               disabled={!!plan}
               value={draft.side}
-              onChange={(e) => patch({ side: e.target.value as 'BUY' | 'SELL' })}
+              onChange={(e) => changeContext({side:e.target.value as 'BUY' | 'SELL'})}
             >
               <option value="BUY">买入</option>
               <option value="SELL">卖出</option>
@@ -590,7 +637,7 @@ export default function TradingPlanEditor({
               <select
                 aria-label="计划行情时段"
                 value={details.mode}
-                onChange={(e) => patchDetails({ mode: e.target.value as PlanDetails['mode'] })}
+                onChange={(e) => changeContext({},e.target.value as PlanDetails['mode'])}
               >
                 <option value="regular">常规</option>
                 <option value="extended">盘前、常规、盘后</option>
@@ -600,16 +647,24 @@ export default function TradingPlanEditor({
           )}
         </div>
         {details.tracking_period && <p className="plan-help">状态为「进行中」时，在{periodNames[details.tracking_period]}收盘后记录。日汇总复用跟踪记录。跟随防守价沿用所选来源周期。</p>}
-        <div className={board ? "plan-editor-columns plan-board-layout" : "plan-editor-columns"}>
+        <div className="plan-editor-columns">
           <div className="plan-main-fields">
             <section className="plan-entry-panel" aria-label="入场条件">
               <div className="plan-entry-heading">
                 <h3>入场条件</h3>
                 <button type="button" className="plan-fill-button" onClick={()=>void fillForm()}
-                  disabled={!canonical || data.loading} title={!canonical ? '请先填写标的' : '只补空项，核对后保存'}>
+                  disabled={!canonical || data.loading || data.key!==dataKey} title={!canonical ? '请先填写标的' : '只补空项，核对后保存'}>
                   <WandSparkles size={16} aria-hidden="true"/>{filling ? '正在填表…' : '一键填表'}
                 </button>
               </div>
+              <details className="plan-fill-context"><summary>填表依据 · {periodNames[draft.period]}</summary>
+                <p>发送标的、主周期、方向、策略、入出场指标条件、关键价位、入场参考、防守价和止盈位。启用 AI 时附上主周期最多 80 根、最多两个更高周期各 40 根的开高低收、时间和成交量。</p>
+                {draft.fillContext?.coverage?.length ? <ul>{draft.fillContext.coverage.map(f=><li key={f.period}>
+                  {periodNames[f.period]} · {f.count} 根 · {f.mode==='all'?'全时段':f.mode==='extended'?'含盘前盘后':'常规时段'}
+                  {f.last!==null && ' · '+displayTime(market,new Date(f.last*1000).toISOString())}
+                  {f.stale && ' · 缓存未同步'} {f.issue}</li>)}</ul> : null}
+              </details>
+              {market==='CN' && <p className="plan-help">普通 A 股实行 T+1。今日新买股份最早下一交易日可卖，盘中退出应核对已有可卖数量。ETF 等品种按各自交易规则执行。</p>}
               {filling && <div className="plan-fill-progress">
                 <span role="status">正在等待填表结果</span><span>{elapsed} 秒</span>
                 <progress aria-label="等待填表结果"/>
@@ -671,28 +726,15 @@ export default function TradingPlanEditor({
             {canonical && <FillHistory key={market+canonical} market={market} symbol={canonical} revision={fillRevision}/>}
             </section>
             <section className="plan-section">
-              <div className="plan-section-heading plan-levels-heading"><h3>关键价位与止盈</h3>
-                {board && <button type="button" aria-label="刷新计划参考行情" title="刷新计划参考行情"
-                  disabled={data.loading || !canonical} onClick={() => setRefresh(v=>v+1)}><RefreshCw size={15}/></button>}
-                <label><input type="checkbox" checked={autoStructure}
-                onChange={e => patchDetails({structure_mode: e.target.checked ? 'auto' : 'manual', levels:
-                  !e.target.checked && !structure.length ? details.levels : levels})}/>自动识别前高、前低和平台</label></div>
-              {board && data.loading && <p role="status" className="plan-help">正在读取参考行情…</p>}
-              {board && Object.entries(data.issues).map(([key,message])=><p key={key} className="plan-data-issue">{periodNames[key as PlanPeriod]} · {message}</p>)}
-              {autoStructure && <p className="plan-help">{periodNames[draft.period]} · 最近 60 根历史 K 线，排除末根。前高前低各需左右两根确认。平台取最近连续 12 根、振幅不超过 8%、上下沿各触及至少两次的区间。</p>}
+              <div className="plan-section-heading"><h3>目标与缺口</h3></div>
               <div className="plan-risk-fields">
                 {([
-                  ['previous_high', '前高'], ['previous_low', '前低'],
-                  ['platform_high', '前期平台上沿'], ['platform_low', '前期平台下沿'],
+                  ...(!autoStructure ? [['platform_high','前期平台上沿'],['platform_low','前期平台下沿']] : []),
                   ['gap_up', '前期向上缺口'], ['gap_down', '前期向下缺口'],
                   ['take_profit', '止盈位'],
                 ] as [keyof PlanLevels, string][]).map(([key, label]) => {
-                  const point = autoStructure && structure.find(row => row.label === structureLabels[key as keyof typeof structureLabels]);
                   return <label key={key}>{label}
-                  {point && <small>{displayTime(market, new Date(point.bar_time * 1000).toISOString())}</small>}
                   <input aria-label={label} type="number" min="0.00000001" step="any"
-                    readOnly={autoStructure && key in structureLabels}
-                    placeholder={autoStructure && key in structureLabels ? (data.loading ? '读取行情中' : '未识别') : undefined}
                     value={levels[key] ?? ''}
                     onChange={e => patchLevels({[key]: optionalNumber(e.target.value)})}/>
                 </label>})}
@@ -842,9 +884,9 @@ export default function TradingPlanEditor({
               </button>
             </details>
           </div>
-          {!board && <section className="plan-reference-panel" aria-label="价位参考">
+          <section className="plan-reference-panel" aria-label="点位候选">
             <div className="plan-section-heading">
-              <h3>价位参考</h3>
+              <h3>点位候选</h3>
               <button
                 type="button"
                 aria-label="刷新计划参考行情"
@@ -868,9 +910,9 @@ export default function TradingPlanEditor({
                 ))}
               </select>
             </label>
-            <p className="plan-help">
-              固定价保留选定数值。跟随价在打开编辑器或刷新时重算，保存修订时记录本次点位。
-            </p>
+            <label className="plan-structure-mode"><input type="checkbox" checked={autoStructure}
+              onChange={e=>patchDetails({structure_mode:e.target.checked?'auto':'manual',levels})}/>
+              保存计划周期的自动结构价位</label>
             {data.loading && (
               <p role="status" className="plan-help">
                 正在读取参考行情…
@@ -881,25 +923,33 @@ export default function TradingPlanEditor({
                 {periodNames[key as PlanPeriod]} · {message}
               </p>
             ))}
-            {references.map((row) => (
-              <div className="plan-reference-row" key={row.label}>
-                <div>
-                  <span>{row.label}</span>
-                  <strong>{displayPlanPrice(row.price)}</strong>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => useDefense(row.price, periodNames[row.period] + ' · ' + row.label)}
-                >
-                  设为固定防守位
-                </button>
-                <button type="button" onClick={() => useDefense(row.price, periodNames[row.period] + ' · ' + row.label,
-                  {period: row.period, label: row.label, condition: row.condition})}>跟随此价位</button>
-              </div>
-            ))}
-            {!board && !references.length && !data.loading && (
-              <p className="plan-help">暂时没有可计算的参考价位，仍可手动填写计划。</p>
-            )}
+            {[
+              {name:'结构高低与平台',rows:candidateStructure},
+              ...(!autoStructure && referencePeriod===draft.period ? [{name:'已记录的结构价位',
+                rows:Object.entries(structureLabels).flatMap(([key,label])=> {
+                  const price=details.levels?.[key as keyof PlanLevels];
+                  return price ? [{label,price,period:draft.period,bar_time:0}] : [];
+                })}] : []),
+              {name:'均线与通道',rows:references.filter(r=>r.condition && r.condition.source!=='SIXPULSE')},
+              {name:'信号触发价',rows:references.filter(r=>r.condition?.source==='SIXPULSE')},
+              {name:'波动与防守',rows:references.filter(r=>!r.condition)},
+            ].filter(group=>group.rows.length).map(group=>
+              <details key={group.name} className="plan-candidate-group" open={group.name==='结构高低与平台' || undefined}>
+                <summary>{group.name}<small>{group.rows.length}</small></summary>
+                {group.rows.map(row=><div className="plan-reference-row" key={row.label}>
+                  <div><span>{row.label}</span><strong>{displayPlanPrice(row.price)}</strong></div>
+                  <button type="button" onClick={()=>useDefense(row.price,periodNames[row.period]+' · '+row.label)}>设为防守</button>
+                  <button type="button" onClick={()=>patchLevels({take_profit:row.price})}>设为止盈</button>
+                  {references.includes(row) && <button type="button" onClick={()=>{
+                    const source=references.find(r=>r.label===row.label);
+                    useDefense(row.price,periodNames[row.period]+' · '+row.label,
+                      {period:row.period,label:row.label,condition:source?.condition});
+                  }}>跟随防守</button>}
+                </div>)}
+              </details>)}
+            <PlanFibonacci symbol={canonical} period={referencePeriod} mode={details.mode} refresh={refresh}
+              actions={{onDefense:(price,label)=>useDefense(planPrice(price),label),
+                onTarget:price=>patchLevels({take_profit:planPrice(price)})}}/>
             {references[0] && (
               <p className="plan-help">
                 行情 K 线时间
@@ -907,7 +957,7 @@ export default function TradingPlanEditor({
                 {displayTime(market, new Date(references[0].bar_time * 1000).toISOString())}
               </p>
             )}
-          </section>}
+          </section>
         </div>
       </fieldset>
       {notice && (
@@ -923,6 +973,8 @@ export default function TradingPlanEditor({
       )}
       <div className="plan-save-bar">
         <span>{dirty ? '本地草稿 · 保存后同步到 NAS' : '可先保存草稿，之后继续完善'}</span>
+        {beforeClear ? <button type="button" disabled={busy || filling} onClick={()=>{patch(beforeClear);indicatorGroups.current={entry:beforeClear.details.entry,exit:beforeClear.details.exit};setNotice('已恢复清空前的草稿。')}}>撤销清空</button> :
+          <button type="button" disabled={busy || filling} onClick={clearForm}>一键清空</button>}
         <button type="button" disabled={busy} onClick={onCancel}>
           关闭
         </button>

@@ -6,6 +6,7 @@ const slope = '观察斜率转升。上一根值 ≤ 再前一根，本根值 > 
 
 export const observations:Record<string,string>={
  SMA:priceCross,EMA:priceCross,WMA:priceCross,VWMA:priceCross,HMA:priceCross,DEMA:priceCross,TEMA:priceCross,BBI:priceCross,VWAP:priceCross,
+ EXPMA:fastCross,
  BOLL:closeBand,KC:closeBand,
  MACD:fastCross+' 这里快线指 DIF，慢线指 DEA，等价于柱值从 ≤0 变为 >0。',
  KDJ:fastCross+' 比较 K 与 D，J 用来观察两者间距。',STOCH:fastCross+' 比较平滑后的 K 与 D。',STOCHRSI:fastCross+' 比较随机 RSI 的 K 与 D。',

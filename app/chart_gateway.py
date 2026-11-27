@@ -114,7 +114,7 @@ def register_chart_gateway(app, sessions, cookie):
             req = urllib.request.Request(url, data=body if request.method != 'GET' else None,
                                          method=request.method, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=85 if ledger_path=='autofill' else 30) as response:
+                with urllib.request.urlopen(req, timeout=225 if ledger_path=='autofill' else 30) as response:
                     return response.status, response.read()
             except urllib.error.HTTPError as exc:
                 return exc.code, exc.read()

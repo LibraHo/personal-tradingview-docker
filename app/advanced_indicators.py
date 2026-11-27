@@ -11,6 +11,7 @@ DEFAULTS = {
     'KC': dict(period=20, atrPeriod=10, multiplier=2), 'SUPERTREND': dict(period=10, multiplier=3),
     'SAR': dict(start=.02, increment=.02, maximum=.2),
     'STOCHRSI': dict(rsiPeriod=14, period=14, smoothK=3, smoothD=3),
+    'EXPMA': dict(fast=12, slow=50),
     'HMA': dict(period=21), 'DEMA': dict(period=20), 'TEMA': dict(period=20),
     'TRIX': dict(period=15, signal=9), 'PPO': dict(fast=12, slow=26, signal=9),
     'AO': dict(fast=5, slow=34), 'BIAS': dict(period=6), 'ADL': {},
@@ -107,6 +108,8 @@ def calculate_advanced(bars, name, inputs):
         return signal_values(values, inputs) if name == 'SIXPULSE_SIGNAL' else values
     c, h, l = ([b[key] for b in bars] for key in ('close', 'high', 'low'))
     n = p.get('period')
+    if name == 'EXPMA':
+        return {f'EMA{length}': ema(c, length) for length in (p['fast'], p['slow'])}
     if name == 'KDJ':
         hi, lo = extreme(h, n, True), extreme(l, n, False)
         k = d = 50

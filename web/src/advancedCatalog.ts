@@ -15,6 +15,7 @@ export const advancedCatalog:Record<string,Entry>={
  SAR:{label:'SAR · 抛物线转向',pane:'main',description:'以圆点显示追踪价位；第二根确定初始方向，反转时重置加速因子。',fields:[factor(.02,'start','初始加速',1),factor(.02,'increment','加速步长',1),factor(.2,'maximum','最大加速',1)]},
  STOCHRSI:{label:'Stoch RSI · 随机 RSI',pane:'separate',description:'使用 Wilder RSI，再计算随机位置与 K/D 平滑；以 0–100 显示。',fields:[length(14,'rsiPeriod','RSI 周期'),length(14,'period','随机窗口'),length(3,'smoothK','K 平滑周期'),length(3,'smoothD','D 平滑周期')]},
  HMA:{label:'HMA · Hull 均线',pane:'main',description:'WMA(2×WMA(C,N/2)−WMA(C,N),√N)，半周期向下取整，根号周期四舍五入。',fields:[length(21)]},
+ EXPMA:{label:'EXPMA · 指数平均线',pane:'main',description:'在主图叠加两条收盘价的指数移动平均线（EMA），默认快线 12 根、慢线 50 根。每条线以首根收盘价起算，随后每根按 2/(周期+1) 的权重向新收盘价更新。',fields:pair(12,50)},
  DEMA:{label:'DEMA · 双重指数均线',pane:'main',description:'2×EMA(C,N)−EMA(EMA(C,N),N)，减少平滑滞后。',fields:[length(20)]},
  TEMA:{label:'TEMA · 三重指数均线',pane:'main',description:'3×一级 EMA−3×二级 EMA+三级 EMA。',fields:[length(20)]},
  TRIX:{label:'TRIX · 三重平滑动量',pane:'separate',description:'三级 EMA 的单根变化率（%），附带 EMA 信号线。',fields:[length(15),length(9,'signal','信号周期')]},

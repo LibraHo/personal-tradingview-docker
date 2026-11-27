@@ -32,6 +32,7 @@ export default function ChartPlanDialog({
   const dialog = useRef<HTMLDialogElement>(null);
   const [saved, setSaved] = useState<RecordTarget | null>(null),
     [busy, setBusy] = useState(false);
+  const [planContext,setPlanContext] = useState({symbol,period});
   const [context] = useState({ market, symbol, period, mode, indicators, bars, stockName });
   useEffect(() => {
     const element = dialog.current;
@@ -55,11 +56,11 @@ export default function ChartPlanDialog({
       <header className="chart-plan-heading">
         <div>
           <span>
-            {context.market === 'CN' ? 'A 股' : '美股'} · {context.symbol} · {periodNames[context.period]}
+            {context.market === 'CN' ? 'A 股' : '美股'} · {planContext.symbol} · {periodNames[planContext.period]}
           </span>
           <h2>
             {saved ? '计划已保存' : '创建交易计划'}
-            {context.stockName && <small>{context.stockName}</small>}
+            {context.stockName && planContext.symbol===context.symbol && <small>{context.stockName}</small>}
           </h2>
         </div>
         <button type="button" aria-label="关闭交易计划" disabled={busy} onClick={onClose}>
@@ -93,6 +94,7 @@ export default function ChartPlanDialog({
           }}
           onCancel={onClose}
           onBusyChange={setBusy}
+          onContextChange={setPlanContext}
         />
       )}
     </dialog>,
