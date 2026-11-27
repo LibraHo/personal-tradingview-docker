@@ -12,8 +12,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-FIELDS = ('drawings', 'trends', 'fibos', 'drawingsHidden')
-KINDS = {'horizontal': 'drawings', 'trend': 'trends', 'fib': 'fibos'}
+KINDS = {'horizontal': 'drawings', 'trend': 'trends', 'fib': 'fibos', 'measure': 'measures'}
+FIELDS = (*KINDS.values(), 'drawingsHidden')
 PERIODS = {'1m', '5m', '15m', '30m', '60m', '120m', '240m', '1d', '1w', '1mo'}
 SYMBOL = re.compile(r'^(US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.(?:\d{6}|(?:BK|LIST)[0-9]{1,10}))$')
 IDENTIFIER = re.compile(r'^[A-Za-z0-9_.:-]{1,128}$')
@@ -52,9 +52,13 @@ def finite(value):
 
 
 def clean_object(raw, kind, identifier, strict=False):
-    defaults = dict(color={'horizontal': '#c6d6e7', 'trend': '#e3b76b', 'fib': '#739dde'}[kind],
-                    lineWidth=2 if kind == 'trend' else 1, lineStyle=0 if kind == 'trend' else 2, visible=True)
-    allowed = set(defaults) | {'id', 'timeframeScope'} | ({'price'} if kind == 'horizontal' else {'points', 'extend'} if kind == 'trend' else {'points', 'levels', 'levelColors'})
+    solid = kind in ('trend', 'measure')
+    defaults = dict(color={'horizontal': '#c6d6e7', 'trend': '#e3b76b', 'fib': '#739dde', 'measure': '#40bba8'}[kind],
+                    lineWidth=2 if solid else 1, lineStyle=0 if solid else 2, visible=True)
+    allowed = set(defaults) | {'id', 'timeframeScope'} | {
+        'horizontal': {'price'}, 'trend': {'points', 'extend'}, 'fib': {'points', 'levels', 'levelColors'},
+        'measure': {'points', 'axis'}
+    }[kind]
     if not isinstance(raw, dict) or (strict and set(raw) - allowed):
         raise ValueError('画线字段不正确')
     result = {'id': identifier}
@@ -74,10 +78,21 @@ def clean_object(raw, kind, identifier, strict=False):
         result['price'] = raw['price']
     else:
         points = raw.get('points')
-        if not isinstance(points, list) or len(points) != 2 or any(not isinstance(p, dict) or not finite(p.get('time')) or not 0 < p['time'] <= 4102444800 or not finite(p.get('price')) or p['price'] <= 0 for p in points) or points[0]['time'] == points[1]['time']:
+        if not isinstance(points, list) or len(points) != 2 or any(not isinstance(p, dict) or not finite(p.get('time')) or not 0 < p['time'] <= 4102444800 or not finite(p.get('price')) or p['price'] <= 0 for p in points):
+            raise ValueError('需要两个有效端点，价格须大于零，time 使用 Unix 秒')
+        if kind != 'measure' and points[0]['time'] == points[1]['time']:
             raise ValueError('需要两个时间不同、价格大于零的端点，time 使用 Unix 秒')
         result['points'] = [{name: p[name] for name in ('time', 'price')} for p in points]
-        if kind == 'trend':
+        if kind == 'measure':
+            a, b = points
+            axis = raw.get('axis')
+            if axis == 'horizontal' and a['time'] != b['time'] and a['price'] == b['price']:
+                result['axis'] = axis
+            elif axis == 'vertical' and a['time'] == b['time'] and a['price'] != b['price']:
+                result['axis'] = axis
+            else:
+                raise ValueError('水平测量须同价异时，垂直测量须同时异价')
+        elif kind == 'trend':
             extend = raw.get('extend', 'none')
             if strict and extend not in ('none', 'left', 'right', 'both'):
                 raise ValueError('延长方向不正确')
@@ -222,7 +237,7 @@ def install(app, connect_db):
 
     @router.post('/objects')
     def create_object(request: Request, body: dict):
-        if set(body) - {'symbol', 'period', 'kind', 'id', 'price', 'points', 'color', 'lineWidth', 'lineStyle', 'visible', 'extend', 'levels', 'levelColors', 'timeframeScope'}:
+        if set(body) - {'symbol', 'period', 'kind', 'id', 'price', 'points', 'axis', 'color', 'lineWidth', 'lineStyle', 'visible', 'extend', 'levels', 'levelColors', 'timeframeScope'}:
             raise HTTPException(422, '存在不支持的画线字段')
         kind = body.get('kind')
         if not isinstance(kind, str) or kind not in KINDS:

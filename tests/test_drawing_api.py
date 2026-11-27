@@ -46,6 +46,18 @@ class DrawingApiTests(unittest.TestCase):
   r=self.client.put('/api/settings/workspace',json={'value':initial['value'],'drawing_revision':initial['drawing_revision']});self.assertEqual(r.status_code,200,r.text);self.assertTrue(r.json()['drawings_conflict'])
   objects=self.client.get('/api/drawings/objects',headers=self.auth).json()['objects'];self.assertEqual(objects[0]['id'],'agent-new')
   rev=r.json()['drawing_revision'];self.assertFalse(self.client.get('/api/settings/workspace?drawings_only=true&since='+str(rev)).json()['changed'])
+ def test_axis_measurements_survive_workspace_save(self):
+  start = {'time':1700000000, 'price':120}
+  for axis, end in [('vertical', dict(start, price=110)), ('horizontal', dict(start, time=1699999700))]:
+   points = [start, end]
+   created = self.create('measure', id=axis, axis=axis, points=points)
+   self.assertEqual(created.status_code, 201, created.text)
+   workspace = self.client.get('/api/settings/workspace').json()
+   saved = self.client.put('/api/settings/workspace', json=workspace).json()
+   rows = saved['value']['markets']['US']['measures']['US.SNDK:5m']
+   self.assertEqual(next(row for row in rows if row['axis']==axis)['points'], points)
+   self.assertEqual(self.create('measure', axis=axis, points=[start,start]).status_code,422)
+   self.assertEqual(self.create('measure', axis=axis).status_code,422)
  def test_browser_and_agent_share_storage(self):
   self.create(id='agent-base');value=self.client.get('/api/settings/workspace').json();workspace=value['value'];workspace['markets']['US']['drawings']['US.SNDK:5m'][0]['price']=150
   r=self.client.put('/api/settings/workspace',json={'value':workspace,'drawing_revision':value['drawing_revision']});self.assertFalse(r.json()['drawings_conflict'])
