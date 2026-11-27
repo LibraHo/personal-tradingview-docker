@@ -17,7 +17,7 @@ export function candleBodyColor(open:number,close:number,appearance:CandleAppear
 }
 export function candleSeriesOptions(appearance:CandleAppearance):Partial<CandlestickSeriesOptions>{
  const {upColor,downColor,wickUpColor,wickDownColor,borderUpColor,borderDownColor}=appearance;
- return {upColor,downColor,wickUpColor,wickDownColor,borderUpColor,borderDownColor,borderVisible:appearance.style!=='solid'||appearance.showBorders,wickVisible:appearance.showWicks};
+ return {priceLineVisible:false,lastValueVisible:false,upColor,downColor,wickUpColor,wickDownColor,borderUpColor,borderDownColor,borderVisible:appearance.style!=='solid'||appearance.showBorders,wickVisible:appearance.showWicks};
 }
 export function volumePalette(appearance:CandleAppearance,custom?:Record<string,string>){
  const valid=(value:unknown)=>typeof value==='string'&&/^#[0-9a-f]{6}$/i.test(value);
