@@ -1,4 +1,5 @@
 const aliases:Record<string,string>={
+ NINE:'神奇九转 神奇九轉 九转序列 TD9 TD Sequential 高九 低九',
  HOURLY_RVOL:'量比 一小时 1小时 60分钟 同时段 放量 RVOL',
  DAILY_RVOL:'量比 日量比 全天 日均量 相对成交量 RVOL',
  HALFDAY_RVOL:'量比 同时段相对成交量 上午 下午 半日放量 RVOL',

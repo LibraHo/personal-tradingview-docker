@@ -1,3 +1,4 @@
+import {nineTurnLabels} from './nineTurn';
 import {chartSignalMarkers} from './chartSignalMarkers';
 import {macdDivergences,macdStructure} from './macdStructure';
 import IndicatorLibrary from './IndicatorLibrary';
@@ -141,7 +142,7 @@ function IndicatorSettings({indicator,onPatch,onDelete}:{indicator:Indicator;onP
     {expanded&&<div className="indicator-card-options" id={`indicator-settings-${indicator.id}`}>
     {indicator.name==='PYTHON'&&<><textarea className="python-code" aria-label={`${displayName} Python 代码`} value={pythonCode} spellCheck={false} onChange={e=>patchPython({code:e.target.value})}/><div className="python-inputs"><strong>可调参数</strong>{Object.entries(pythonInputs).map(([name,value])=><label key={`${name}:${value}`}>{name}<input aria-label={`${displayName} ${name}`} type="number" step="any" defaultValue={value} onBlur={e=>{const next=Number(e.target.value);if(!e.target.value||!Number.isFinite(next)){e.target.value=String(value);setValidationError(`${name} 须为数字`);return}patchPython({inputs:{...pythonInputs,[name]:next}})}}/><button title={`删除参数 ${name}`} onClick={()=>{const inputs={...pythonInputs};delete inputs[name];patchPython({inputs})}}>×</button></label>)}<div className="python-add-input"><input aria-label="新增参数名" placeholder="新增参数名" value={newInputName} onChange={e=>setNewInputName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addInput()}/><button onClick={addInput}>添加参数</button></div><small>代码中用 PARAMS["fast"] 读取参数；修改数值后离开输入框即生效。</small></div>{validationError&&<div className="side-error">{validationError}</div>}</>}
     {indicator.name!=='PYTHON'&&<IndicatorParameters indicator={indicator} onChange={params=>onPatch({params})}/>}
-    <label className="indicator-pane-control">绘制位置<select aria-label={`${displayName} 绘制位置`} value={indicatorPane(indicator)} disabled={!!tdxCatalog[indicator.name]||['ORB5','SIXPULSE','SIXPULSE_SIGNAL','MSIGM8'].includes(indicator.name)} onChange={e=>onPatch({pane:e.target.value as 'main'|'separate'})}><option value="main">主图叠加</option><option value="separate">独立副图</option></select><span className="indicator-pane-badge">{indicatorPane(indicator)==='main'?'主图指标':'副图指标'}</span></label>
+    <label className="indicator-pane-control">绘制位置<select aria-label={`${displayName} 绘制位置`} value={indicatorPane(indicator)} disabled={indicatorPane({name:indicator.name,pane:'main'})===indicatorPane({name:indicator.name,pane:'separate'})} onChange={e=>onPatch({pane:e.target.value as 'main'|'separate'})}><option value="main">主图叠加</option><option value="separate">独立副图</option></select><span className="indicator-pane-badge">{indicatorPane(indicator)==='main'?'主图指标':'副图指标'}</span></label>
     <IndicatorAppearance indicator={indicator} onChange={onPatch}/>
     <details className="indicator-scope-details"><summary>适用图与周期</summary><IndicatorScope indicator={indicator} onChange={onPatch}/></details>
     </div>}
@@ -424,6 +425,17 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
   }catch(e){indicatorIssue+=[indicatorIssue?'；':'',ind.title||ind.name,'：',e instanceof Error?e.message:String(e)].join('');continue}const overlay=indicatorPane(ind)==='main';const target=overlay?0:pane++;const effectiveColors=ind.name==='VOLUME'?volumePalette(appearance,ind.colors):ind.colors;
    if(drawTdx(chart,filtered,ind,values,target,series,signalMarkers,tdxCleanup))continue;
    if(ind.name==='MSIGM8'){const primitive=msigm8Overlay(filtered,values,ind.colors);candle.attachPrimitive(primitive);msigPrimitives.push(primitive);continue}
+   if(ind.name==='NINE'){
+    for(const side of ['上涨计数','下跌计数'] as const){
+     const color=selectedColor(ind.colors,side,indicatorDefaultColor('NINE',side));
+     for(const {index,count} of nineTurnLabels(values[side])){
+      const time=toTime(filtered[index].time);
+      signalMarkers.push({id:`${ind.id}:${time}`,time,position:side==='上涨计数'?'aboveBar':'belowBar',
+       shape:'circle',size:count===9?0.6:0,color,text:String(count)});
+     }
+    }
+    continue;
+   }
    if(ind.name==='SIXPULSE_SIGNAL'){
     const input=JSON.parse(ind.params);
     if(input.showLevels!==false){const primitive=sixPulseLevelsOverlay(filtered,input,candle.options().priceFormat.minMove,ind.colors);candle.attachPrimitive(primitive);levelPrimitives.push(primitive)}

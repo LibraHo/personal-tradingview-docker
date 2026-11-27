@@ -5,7 +5,7 @@ from .sixpulse import DEFAULTS as SIXPULSE_DEFAULTS, calculate_sixpulse, signal_
 from .msigm8 import DEFAULTS as MSIGM8_DEFAULTS, calculate_msigm8
 
 DEFAULTS = {
-    'MSIGM8': MSIGM8_DEFAULTS,
+    'NINE': {}, 'MSIGM8': MSIGM8_DEFAULTS,
     'SIXPULSE': SIXPULSE_DEFAULTS, 'SIXPULSE_SIGNAL': SIXPULSE_DEFAULTS,
     'KDJ': dict(period=9, smoothK=3, smoothD=3), 'MFI': dict(period=14),
     'KC': dict(period=20, atrPeriod=10, multiplier=2), 'SUPERTREND': dict(period=10, multiplier=3),
@@ -101,6 +101,15 @@ def calculate_advanced(bars, name, inputs):
     p = parameters(name, inputs)
     if p is None:
         return None
+    if name == 'NINE':
+        up, down = [None] * len(bars), [None] * len(bars)
+        for i in range(4, len(bars)):
+            current, prior = bars[i]['close'], bars[i - 4]['close']
+            if current is None or prior is None or not math.isfinite(current) or not math.isfinite(prior) or current == prior:
+                continue
+            side = up if current > prior else down
+            side[i] = (side[i - 1] or 0) % 9 + 1
+        return {'上涨计数': up, '下跌计数': down}
     if name == 'MSIGM8':
         return calculate_msigm8(bars, p)
     if name in ('SIXPULSE', 'SIXPULSE_SIGNAL'):
