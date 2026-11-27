@@ -123,12 +123,12 @@ aside .side-title{padding-bottom:16px}aside .side-group{min-height:0;overflow-y:
 }
 .candle-readout span, .candle-readout time { white-space: nowrap; }
 
-.quote .current-price {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
+.chart-head .quote { gap: 8px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.chart-head .quote > strong {
+  font-size: clamp(26px, 2.5vw, 32px);
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  color: var(--theme-text, #f2f6fc);
 }
-.quote .current-price span { font-size: 12px; font-weight: 600; }
-.quote .current-price strong { font-size: 22px; font-weight: 750; line-height: 1.1; }
+.chart-head .quote > span:first-of-type { font-size: 13px; font-weight: 650; }
