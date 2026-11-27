@@ -14,18 +14,28 @@ import urllib.request
 import uuid
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def call(path, method='GET', body=None, request_id=None):
     base = os.environ.get('NAS_MARKET_API_URL', 'http://market:8000').rstrip('/')
     secret = Path(os.environ.get('NAS_MARKET_SCAN_TOKEN_FILE',
                   str(Path.home() / '.openclaw/credentials/nas-market-scan-token'))).read_text().strip()
-    context = ssl.create_default_context(cafile=os.environ.get('NAS_MARKET_CA_FILE') or None)
     headers = {'Authorization': 'Bearer ' + secret, 'Content-Type': 'application/json'}
     if request_id:
         headers['Idempotency-Key'] = request_id
     request = urllib.request.Request(base + '/api/v1/' + path, method=method,
               data=json.dumps(body).encode() if body is not None else None, headers=headers)
     timeout = max(1, min(60, float(os.environ.get('NAS_MARKET_API_TIMEOUT_SECONDS', '15'))))
-    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+    handlers = [NoRedirect()]
+    if base == 'http://market:8000':
+        handlers.append(urllib.request.ProxyHandler({}))
+    elif urllib.parse.urlsplit(base).scheme == 'https':
+        context = ssl.create_default_context(cafile=os.environ.get('NAS_MARKET_CA_FILE') or None)
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    with urllib.request.build_opener(*handlers).open(request, timeout=timeout) as response:
         return json.load(response)
 
 

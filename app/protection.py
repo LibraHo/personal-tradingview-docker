@@ -39,6 +39,16 @@ def stop_prices(basis, config):
     return trigger, limit
 
 
+def verify_child_stop(child, expected):
+    from .trading import TradeError
+    if (float(child.get('qty') or 0) != expected['qty'] or child.get('trd_side') != 'SELL'
+            or child.get('code') != expected['code'] or child.get('order_type') != expected['order_type']):
+        raise TradeError('止损订单内容已变化，请人工核对保护数量')
+    if (float(child.get('aux_price') or 0) != expected['aux_price']
+            or expected['order_type'] == 'STOP_LIMIT' and float(child.get('price') or 0) != expected['price']):
+        raise TradeError('止损价格已变化，请人工核对')
+
+
 class ProtectionMixin:
     def init_protection(self):
         with self.db() as db:
@@ -87,6 +97,21 @@ class ProtectionMixin:
         self.save_protection(p)
         return {'ok': True}
 
+    def verify_prior_stops(self, children, broker_orders):
+        from .trading import TradeError
+        if not children:
+            return
+        # Journal payloads preserve the original intent, including for pre-upgrade plans.
+        with self.db() as db:
+            for child_id in children:
+                child = broker_orders.get('NMT:' + child_id)
+                if not child or child.get('order_status') not in {'SUBMITTED', 'FILLED_PART', 'FILLED_ALL'}:
+                    raise TradeError('先前止损已失效或无法确认，后续跟进暂停；请人工核对')
+                record = db.execute('SELECT payload FROM operations WHERE id=?', (child_id,)).fetchone()
+                if not record:
+                    raise TradeError('缺少先前止损的操作流水，请人工核对保护数量')
+                verify_child_stop(child, json.loads(record['payload']))
+
     def protection_tick(self):
         from .trading import TradeError, ACTIVE
         for p in self.protections():
@@ -98,13 +123,11 @@ class ProtectionMixin:
                 if parent_op['state'] not in {'ACCEPTED', 'RECONCILED'}:
                     raise TradeError('买单结果未确认，请先核对操作流水')
                 rows = self.broker.orders(p['acc_id'], p['env'])
-                parent = next((r for r in rows if r.get('remark') == 'NMT:' + p['id']), None)
+                broker_orders = {r.get('remark'): r for r in rows}
+                parent = broker_orders.get('NMT:' + p['id'])
                 if not parent:
                     raise TradeError('未查到买单，请在券商端核对')
-                for child_id in p['children']:
-                    prior = next((r for r in rows if r.get('remark') == 'NMT:' + child_id), None)
-                    if not prior or prior.get('order_status') not in {'SUBMITTED', 'FILLED_PART', 'FILLED_ALL'}:
-                        raise TradeError('先前止损已失效或无法确认，后续跟进暂停；请人工核对')
+                self.verify_prior_stops(p['children'], broker_orders)
                 # A persisted child intent is resolved before considering another fill.
                 pending = p['pending']
                 if pending:
@@ -113,7 +136,7 @@ class ProtectionMixin:
                         # Intent saved but no mutation journal: safe to construct it again.
                         preview = self.preview(p['owner'], pending['order'])
                         op = self.commit(p['owner'], preview['preview_id'], pending['id'])
-                    child = next((r for r in rows if r.get('remark') == 'NMT:' + pending['id']), None)
+                    child = broker_orders.get('NMT:' + pending['id'])
                     if op['state'] not in {'ACCEPTED', 'RECONCILED'}:
                         raise TradeError('止损提交结果未确认，请核对流水；不会自动重发')
                     if child is None or child.get('order_status') in {'UNSUBMITTED', 'WAITING_SUBMIT', 'SUBMITTING'}:
@@ -122,10 +145,7 @@ class ProtectionMixin:
                         continue
                     if child.get('order_status') not in {'SUBMITTED', 'FILLED_PART', 'FILLED_ALL'}:
                         raise TradeError('止损未处于有效状态，请在券商端核对处理')
-                    if float(child.get('qty') or 0) != pending['qty'] or child.get('trd_side') != 'SELL' or child.get('code') != p['code'] or child.get('order_type') != p['config']['mode']:
-                        raise TradeError('止损订单内容已变化，请人工核对保护数量')
-                    if float(child.get('aux_price') or 0) != pending['order']['aux_price'] or (p['config']['mode'] == 'STOP_LIMIT' and float(child.get('price') or 0) != pending['order']['price']):
-                        raise TradeError('止损价格已变化，请人工核对')
+                    verify_child_stop(child, pending['order'])
                     p['covered'] += pending['qty']
                     p['covered_value'] += pending['value']
                     p['children'].append(pending['id'])

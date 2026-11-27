@@ -141,6 +141,33 @@ class ProtectionTests(unittest.TestCase):
         self.assertEqual(self.engine.protections()[0]['state'], 'PAUSED')
         self.assertEqual(len(self.broker.rows), 2)
 
+    def test_resumed_plan_checks_confirmed_stop_against_its_original_order(self):
+        plan_id = self.buy()
+        self.fill(4)
+        self.engine.tick()
+        self.engine.tick()
+        saved = self.engine.protections()[0]
+        self.assertEqual(saved['covered'], 4)
+        self.assertIsInstance(saved['children'][0], str)
+        restarted = TradeEngine(self.path, self.broker)
+        restarted.unlock('new-owner', self.acc, 'test-only')
+        self.fill(10, terminal=True)
+        child = self.broker.rows[1]
+        for field, changed in [('qty', 1), ('aux_price', 95), ('price', 90)]:
+            with self.subTest(field=field):
+                original = child[field]
+                child[field] = changed
+                restarted.resume_protection('new-owner', plan_id)
+                restarted.tick()
+                self.assertEqual(restarted.protections()[0]['state'], 'PAUSED')
+                self.assertEqual(len(self.broker.rows), 2)
+                child[field] = original
+        restarted.resume_protection('new-owner', plan_id)
+        restarted.tick()
+        restarted.tick()
+        self.assertEqual(restarted.protections()[0]['state'], 'COMPLETE')
+        self.assertEqual([row['qty'] for row in self.broker.rows[1:]], [4, 6])
+
     def test_named_presets_validation_and_persistence(self):
         value = dict(quantities=[10], stops=[2.5], templates=[{**self.config, 'qty': 10}], option_quantities=[1,2,5])
         self.assertEqual(self.engine.preferences(value), value)

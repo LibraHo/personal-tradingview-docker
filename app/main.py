@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from inspect import signature
 import json
 import math
 import os
@@ -173,10 +174,15 @@ def row_to_bar(row):
     extra = d.pop('extra_fields', None)
     if extra:
         d['fields'] = json.loads(extra)
-    scope = d.pop('scope', None) or scope_for(d['symbol'])
+    scope = d.pop('scope', None) or scope_for(d['symbol'], d['period'])
     sources, d['adjustment'], _ = scope.split('/')
     d['provider'] = d.pop('origin', None) or d.get('provider') or sources.split('~')[0]
-    d['session'], d['calendar_date'], d['trade_date'] = session_fields(d['time'], d['symbol'])
+    history = market_data.for_market(d['symbol'])
+    feed = history if history.provider.source_id == d['provider'] else market_data.for_market(d['symbol'], 'live')
+    d['bar_label'] = feed.time_label(d['symbol'], d['period'])
+    # An end-labelled 16:00 candle belongs to the session that just closed.
+    session_stamp = d['time'] - int(d['bar_label'] == 'end')
+    d['session'], d['calendar_date'], d['trade_date'] = session_fields(session_stamp, d['symbol'])
     if d['period'] in LONG_PERIODS:
         d['session'] = 'regular'
     d['session_date'] = d['trade_date'] + ':' + d['session']
@@ -186,7 +192,7 @@ def row_to_bar(row):
 def save_bars(key, bars):
     if not bars:
         return
-    scope = scope_for(key[0])
+    scope = scope_for(*key[:2])
     with connect_db() as db:
         db.executemany('''INSERT INTO bars VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(scope,symbol,period,mode,time) DO UPDATE SET
@@ -199,14 +205,14 @@ def save_bars(key, bars):
 def read_bars(key, days, limit):
     since = int((datetime.now(ET) - timedelta(days=days)).timestamp())
     with connect_db() as db:
-        rows = db.execute('SELECT * FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=? AND time>=? ORDER BY time DESC LIMIT ?', (scope_for(key[0]), *key, since, limit)).fetchall()
+        rows = db.execute('SELECT * FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=? AND time>=? ORDER BY time DESC LIMIT ?', (scope_for(*key[:2]), *key, since, limit)).fetchall()
     return [row_to_bar(r) for r in reversed(rows)]
 
 
 def sync_state(key):
     with connect_db() as db:
-        row = db.execute('SELECT requested_days,last_success FROM cache_sync WHERE scope=? AND symbol=? AND period=? AND mode=?', (scope_for(key[0]), *key)).fetchone()
-        latest = db.execute('SELECT MAX(time) FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=?', (scope_for(key[0]), *key)).fetchone()[0]
+        row = db.execute('SELECT requested_days,last_success FROM cache_sync WHERE scope=? AND symbol=? AND period=? AND mode=?', (scope_for(*key[:2]), *key)).fetchone()
+        latest = db.execute('SELECT MAX(time) FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=?', (scope_for(*key[:2]), *key)).fetchone()[0]
     return (int(row[0]), float(row[1]), latest) if row else (0, 0, latest)
 
 
@@ -227,14 +233,14 @@ def save_sync_state(key, days):
     with connect_db() as db:
         db.execute('INSERT INTO cache_sync VALUES(?,?,?,?,?,?) ON CONFLICT(scope,symbol,period,mode) DO UPDATE SET '
                    'requested_days=MAX(requested_days,excluded.requested_days),last_success=excluded.last_success',
-                   (scope_for(key[0]), *key, days, time.time()))
+                   (scope_for(*key[:2]), *key, days, time.time()))
 
 
 def read_bars_before(key, before, limit):
     cutoff = int(time.time()) - HISTORY_LOOKBACK_DAYS*86400
     with connect_db() as db:
         rows = db.execute('SELECT * FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=? AND time<? AND time>=? ORDER BY time DESC LIMIT ?',
-                          (scope_for(key[0]), *key, before, cutoff, limit)).fetchall()
+                          (scope_for(*key[:2]), *key, before, cutoff, limit)).fetchall()
     return [row_to_bar(r) for r in reversed(rows)]
 
 
@@ -296,34 +302,44 @@ streams = RoutedStreams(market_data, on_provider_bars, listeners, MAX_STREAMS)
 _scope = ContextVar('market_cache_scope', default=None)
 
 
-def scope_for(symbol):
+def scope_for(symbol, period=None):
     pinned = _scope.get()
     if pinned is not None:
         return pinned
-    meta = market_data.metadata(symbol)
+    meta = market_data.metadata(symbol, period)
     basis = meta['adjustment']
     identity = meta['provider']
     if meta['live_supported'] and meta['live_provider'] != identity:
         identity += '~' + meta['live_provider']
     revision = (str(datetime.now(ET if symbol.upper().startswith('US.') else CN_TZ).date())
                 if basis == 'qfq' else 'stable')
+    provider = market_data.for_market(symbol).provider
+    version_for = getattr(provider, 'cache_revision', None)
+    if version_for and (version := version_for(symbol.upper(), period)):
+        revision = f'{version}-{revision}'
     return f'{identity}/{basis}/{revision}'
 
 
 def scoped(function):
+    parameters = signature(function)
     @wraps(function)
     async def call(*args, **kwargs):
-        first = args[0] if args else kwargs.get('symbol') or kwargs['key']
-        symbol = first[0] if isinstance(first, tuple) else first
+        bound = parameters.bind(*args, **kwargs)
+        bound.apply_defaults()
+        args_by_name = bound.arguments
+        if 'key' in args_by_name:
+            symbol, period = args_by_name['key'][:2]
+        else:
+            symbol, period = args_by_name['symbol'], args_by_name.get('period')
         try:
-            scope = scope_for(symbol)
+            scope = scope_for(symbol, period)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         token = _scope.set(scope)
         try:
             result = await function(*args, **kwargs)
             if isinstance(result, dict):
-                result.update(market_data.metadata(symbol), series_revision=scope)
+                result.update(market_data.metadata(symbol, period), series_revision=scope)
                 if 'bars' in result:
                     feed = market_data.for_market(symbol)
                     history_status = getattr(feed.provider, 'history_status', None)
@@ -344,14 +360,16 @@ def scoped(function):
 
 @scoped
 async def publish(key, bars):
+    feed = market_data.for_market(key[0], 'live')
     if key[2] != 'all' and key[1] not in LONG_PERIODS:
-        bars = [b for b in bars if session_fields(b['time'], key[0])[0] == 'regular' or
-                (key[2] == 'extended' and session_fields(b['time'], key[0])[0] in ('pre', 'post'))]
-    origin = market_data.for_market(key[0], 'live').provider.source_id
+        offset = int(feed.time_label(*key[:2]) == 'end')
+        allowed = ('regular', 'pre', 'post') if key[2] == 'extended' else ('regular',)
+        bars = [bar for bar in bars if session_fields(bar['time'] - offset, key[0])[0] in allowed]
+    origin = feed.provider.source_id
     bars = [{**bar, 'provider':origin} for bar in bars]
     await asyncio.to_thread(save_bars, key, bars)
     for bar in bars:
-        item = {'type': 'bar', 'series_revision': scope_for(key[0]), 'bar': row_to_bar(dict(symbol=key[0], period=key[1], mode=key[2], **bar))}
+        item = {'type': 'bar', 'series_revision': scope_for(*key[:2]), 'bar': row_to_bar(dict(symbol=key[0], period=key[1], mode=key[2], **bar))}
         notify_stream(key, item)
 
 
@@ -388,7 +406,7 @@ async def maintenance():
                     if not listeners[key]:
                         continue
                     reconnect = not stream_connected(key)
-                    if reconnect and market_data.metadata(key[0])['live_supported']:
+                    if reconnect and market_data.metadata(*key[:2])['live_supported']:
                         await asyncio.to_thread(streams.subscribe, key)
                     if reconnect or time.monotonic() - last_fetch.get(cache_key(key), 0) > max(REFRESH, 600):
                         days = default_history_days(key[1], key[0])
@@ -525,8 +543,13 @@ def cache_status(symbol: str | None = None):
         raise HTTPException(400, '股票代码无效')
     with connect_db() as db:
         total = db.execute('SELECT COUNT(*) FROM bars').fetchone()[0]
-        rows = db.execute('SELECT symbol,period,mode,COUNT(*) AS count,MIN(time) AS oldest,MAX(time) AS newest '
-                          'FROM bars WHERE scope=? AND symbol=? GROUP BY symbol,period,mode', (scope_for(symbol),symbol.upper())).fetchall() if symbol else []
+        rows = []
+        if symbol:
+            scopes = {period: scope_for(symbol, period) for period in PERIODS}
+            for scope in set(scopes.values()):
+                batch = db.execute('SELECT symbol,period,mode,COUNT(*) AS count,MIN(time) AS oldest,MAX(time) AS newest '
+                                   'FROM bars WHERE scope=? AND symbol=? GROUP BY symbol,period,mode', (scope,symbol.upper()))
+                rows.extend(row for row in batch if scopes.get(row['period']) == scope)
     size = sum(p.stat().st_size for p in [Path(DB), Path(DB+'-wal')] if p.exists())
     return {'storage': 'NAS SQLite', 'total_bars': total, 'bytes': size,
             'intraday_retention_days': RETENTION_DAYS, 'daily_retention_days': DAILY_RETENTION_DAYS, 'long_retention_days': LONG_RETENTION_DAYS,
@@ -648,7 +671,7 @@ async def quotes(symbols: str):
 
 
 def cache_key(key):
-    return (scope_for(key[0]), *key)
+    return (scope_for(*key[:2]), *key)
 
 
 def history_needs_refresh(key, days, known, success):
@@ -729,7 +752,7 @@ async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | N
 
 def remember_history_window(key, start, end):
     with connect_db() as db:
-        db.execute('INSERT OR REPLACE INTO history_windows VALUES(?,?,?,?,?,?,?)', (scope_for(key[0]),*key,start,end,time.time()))
+        db.execute('INSERT OR REPLACE INTO history_windows VALUES(?,?,?,?,?,?,?)', (scope_for(*key[:2]),*key,start,end,time.time()))
 
 
 @app.get('/api/bars/window')
@@ -743,7 +766,7 @@ async def bars_window(symbol: str, period: str, mode: str, start: int, end: int)
         raise HTTPException(400, '日期范围无效或超出可配置的历史查询范围')
     async with fetch_locks.setdefault(key, asyncio.Lock()):
         with connect_db() as db:
-            covered = db.execute('SELECT 1 FROM history_windows WHERE scope=? AND symbol=? AND period=? AND mode=? AND start<=? AND end>=? AND checked>?', (scope_for(key[0]),*key,start,end,time.time()-86400)).fetchone()
+            covered = db.execute('SELECT 1 FROM history_windows WHERE scope=? AND symbol=? AND period=? AND mode=? AND start<=? AND end>=? AND checked>?', (scope_for(*key[:2]),*key,start,end,time.time()-86400)).fetchone()
         if not covered:
             zone = ET if key[0].startswith('US.') else CN_TZ
             first = datetime.fromtimestamp(start,zone).date()
@@ -754,7 +777,7 @@ async def bars_window(symbol: str, period: str, mode: str, start: int, end: int)
                 raise HTTPException(503,f'目标日期行情暂不可用：{exc}')
             remember_history_window(key,start,end)
         with connect_db() as db:
-            rows=db.execute('SELECT * FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=? AND time>=? AND time<=? ORDER BY time',(scope_for(key[0]),*key,start,end)).fetchall()
+            rows=db.execute('SELECT * FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=? AND time>=? AND time<=? ORDER BY time',(scope_for(*key[:2]),*key,start,end)).fetchall()
         return {'bars':[row_to_bar(row) for row in rows]}
 
 
@@ -776,7 +799,7 @@ async def older_bars(symbol: str, period: str, mode: str, before: int, limit: in
         # An isolated old date window is not proof that the gap before the
         # current viewport was fetched. Reuse only verified adjacent coverage.
         with connect_db() as db:
-            coverage=db.execute('SELECT start FROM history_windows WHERE scope=? AND symbol=? AND period=? AND mode=? AND start<? AND end>=? AND checked>? ORDER BY start LIMIT 1',(scope_for(key[0]),*key,before,before-1,time.time()-86400)).fetchone()
+            coverage=db.execute('SELECT start FROM history_windows WHERE scope=? AND symbol=? AND period=? AND mode=? AND start<? AND end>=? AND checked>? ORDER BY start LIMIT 1',(scope_for(*key[:2]),*key,before,before-1,time.time()-86400)).fetchone()
         if coverage:
             cached=await asyncio.to_thread(read_bars_before,key,before,limit)
             cached=[b for b in cached if b['time']>=coverage['start']]
@@ -906,7 +929,7 @@ async def strategy_evaluate(request: StrategyEvaluation):
     try:
         config=validate_strategy(request.config)
         key=validate(config['symbol'],config['period'],config['mode'])
-        metadata = market_data.metadata(key[0])
+        metadata = market_data.metadata(*key[:2])
         if request.lease and metadata['live_supported']:
             if key not in strategy_leases and len(strategy_leases)>=8:
                 raise ValueError('策略行情最多使用 8 组股票/周期订阅')
@@ -1111,7 +1134,7 @@ async def stream(ws: WebSocket):
         await ws.close(code=1008)
         return
     await ws.accept()
-    meta = market_data.metadata(key[0])
+    meta = market_data.metadata(*key[:2])
     if not meta['live_supported']:
         await ws.send_json({'type': 'status', 'connected': False, **meta})
         await ws.close(code=1000)

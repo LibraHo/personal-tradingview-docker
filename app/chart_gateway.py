@@ -89,6 +89,7 @@ def register_chart_gateway(app, sessions, cookie):
     async def market_proxy(path: str, request: Request):
         setting = re.fullmatch(r'settings/(?:workspace|templates|theme|depth-US\.[A-Z][A-Z0-9.]{0,11})', path)
         scanner = re.fullmatch(r'scanner/(?:watchlists|scope-preview|plans|jobs|monitors|events|health)(?:/[a-f0-9]{32}(?:/(?:copy|run|results|cancel|start|pause|resume))?)?',path)
+        retry_scan = request.method == 'POST' and re.fullmatch(r'scanner/jobs/[a-f0-9]{32}/retry', path)
         review_methods = {'review/dashboard': {'GET'}, 'review/export': {'GET'}, 'review/rules': {'POST'}}
         ledger_routes = {
             'GET': r'autofill/history|book|backlinks|broker|opend|(?:plans|fills)/[a-f0-9]{32}|plans/[a-f0-9]{32}/(?:daily|bars)',
@@ -100,7 +101,7 @@ def register_chart_gateway(app, sessions, cookie):
         ledger = path.startswith('review/ledger/') and re.fullmatch(ledger_routes.get(request.method, r'(?!)'), ledger_path)
         review = ledger or request.method in review_methods.get(path, set()) or (
             request.method == 'PUT' and re.fullmatch(r'review/(?:rules/[a-z0-9-]{1,64}|(?:days|weeks)/[0-9]{4}-[0-9]{2}-[0-9]{2})', path))
-        if path not in allowed.get(request.method, set()) and not scanner and not review and not (setting and request.method in {'GET', 'PUT'}):
+        if path not in allowed.get(request.method, set()) and not scanner and not retry_scan and not review and not (setting and request.method in {'GET', 'PUT'}):
             raise HTTPException(404, '行情接口不存在')
         body = await request.body()
         if len(body) > (524288 if review else 32768):

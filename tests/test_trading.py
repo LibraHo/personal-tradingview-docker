@@ -3,7 +3,7 @@ import tempfile
 import time
 import unittest
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from app.trading import TradeEngine, TradeError
@@ -85,6 +85,21 @@ class TradingTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_strategy_uses_quote_timezone_for_freshness(self):
+        arm = dict(acc_id=self.order['acc_id'], env='SIMULATE', expires=time.time() + 60)
+        config = dict(symbol='US.SNDK', execution=dict(session='RTH', qty=1, flat_only=False,
+                                                      max_deviation=1, offset_percent=0))
+        now = datetime.now(timezone.utc)
+        # This old UTC quote has the same wall clock reading as the current New York time.
+        self.broker.timestamp = now.astimezone(ZoneInfo('America/New_York')).replace(tzinfo=timezone.utc).isoformat()
+        with self.assertRaisesRegex(TradeError, '15 秒'):
+            self.engine.strategy_execute('a', config, 'BUY', {'close': 100}, arm)
+        self.assertFalse(self.broker.rows)
+        self.broker.timestamp = now.isoformat().replace('+00:00', 'Z')
+        operation = self.engine.strategy_execute('a', config, 'BUY', {'close': 100}, arm)
+        self.assertEqual(operation['state'], 'ACCEPTED')
+        self.assertEqual(len(self.broker.rows), 1)
 
     def test_duplicate_commit_is_not_another_order(self):
         p = self.engine.preview('a', self.order)

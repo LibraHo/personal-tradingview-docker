@@ -96,7 +96,9 @@ def validate_strategy(raw):
 def evaluate(config,bars,now=None,python_runner=None):
     now=time.time() if now is None else now
     duration=PERIOD_SECONDS[config['period']]
-    closed=[b for b in bars if b['time']+duration+3<=now]
+    def ends_at(bar):
+        return bar['time'] if bar.get('bar_label') == 'end' else bar['time'] + duration
+    closed=[b for b in bars if ends_at(b)+3<=now]
     if len(closed)<2:raise ValueError('至少需要两根已完成 K 线；等待收线或加载更多历史')
     series={field:[b[field] for b in closed] for field in ('close','open','high','low','volume')}
     for source in config['sources']:
@@ -129,6 +131,6 @@ def evaluate(config,bars,now=None,python_runner=None):
     for side in ('buy','sell'):
         g=config[side];checks=[test(r) for r in g['conditions']]
         result[side]=bool(checks) and (all(checks) if g.get('join','all')=='all' else any(checks))
-    return {**result,'bar_time':closed[-1]['time'],'bar_end':closed[-1]['time']+duration,
+    return {**result,'bar_time':closed[-1]['time'],'bar_end':ends_at(closed[-1]),
             'close':closed[-1]['close'],'closed_count':len(closed),'series':list(series),
             'latest_values':{k:v[-1] for k,v in series.items()},'evidence':evidence}

@@ -320,7 +320,13 @@ class ScanService:
                 sources[scope].update({key:meta[key] for key in ('live_supported','live_reason') if key in meta})
         return sources
 
-    def fingerprint(self, plan):
+    @staticmethod
+    def timing_version(plan):
+        periods = set(plan['periods'])
+        periods.update(rule['period'] for rule in plan['rules'] if rule.get('period'))
+        return 2 if any(period.endswith('m') for period in periods) else 1
+
+    def fingerprint(self, plan, *, legacy_timing=False):
         scope = json.loads(dump(plan.get('scope', {'kind': 'all'})))
         for field in ('groups', 'symbols'):
             if field in scope:
@@ -356,6 +362,9 @@ class ScanService:
         content = {'market_feed': self.feed_identity(), 'rules': rules, 'scope': scope, 'scope_version': scope_version,
                    'periods': sorted(set(plan['periods'])), 'join': plan.get('join', 'all'),
                    'lookback': plan.get('lookback', 1), 'live': plan.get('live', True)}
+        timing = self.timing_version(plan)
+        if timing != 1 and not legacy_timing:
+            content['timing_version'] = timing
         return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def job_view(self, job, reused=False, reuse_reason=None, queue_positions=None):
@@ -406,7 +415,7 @@ class ScanService:
     def plan_results(self, plan, max_age_seconds=86400):
         fingerprint = self.fingerprint(plan)
         with self.db() as db:
-            row = db.execute("SELECT id FROM scan_jobs WHERE json_extract(payload,'$.fingerprint')=? OR (json_extract(payload,'$.plan.id')=? AND json_extract(payload,'$.plan.version')=? AND json_extract(payload,'$.monitor_snapshot.follow_watchlists')=0 AND coalesce(json_extract(payload,'$.market_feed'),'')=?) ORDER BY json_extract(payload,'$.created') DESC LIMIT 1", (fingerprint, plan['id'], plan.get('version'), self.feed_identity())).fetchone()
+            row = db.execute("SELECT id FROM scan_jobs WHERE json_extract(payload,'$.fingerprint')=? OR (json_extract(payload,'$.plan.id')=? AND json_extract(payload,'$.plan.version')=? AND json_extract(payload,'$.monitor_snapshot.follow_watchlists')=0 AND coalesce(json_extract(payload,'$.market_feed'),'')=? AND coalesce(json_extract(payload,'$.timing_version'),1)=?) ORDER BY json_extract(payload,'$.created') DESC LIMIT 1", (fingerprint, plan['id'], plan.get('version'), self.feed_identity(), self.timing_version(plan))).fetchone()
         if not row:
             return {'status': 'not_started', 'ready': False, 'fresh': False, 'job_id': None,
                     'plan_id': plan['id'], 'plan_version': plan.get('version'), 'retry_after_seconds': None}
@@ -436,11 +445,27 @@ class ScanService:
             raise JobConflict('仅执行失败或部分完成的任务可以重试')
         return await self.submit(parent['plan'], source=source, force=True, parent=parent)
 
-    async def submit(self, p, monitor=None, request_id=None, force=False, reuse_seconds=86400, source='api', parent=None):
+    @staticmethod
+    def update_due_monitor(db, snapshot, changes):
+        # Check the exact state used for the asynchronous calendar lookup while
+        # holding the same write transaction that claims this scheduled run.
+        row = db.execute('SELECT payload FROM scan_monitors WHERE id=?', (snapshot['id'],)).fetchone()
+        if not row or json.loads(row[0]) != snapshot or not snapshot['enabled']:
+            return False
+        updated = time.time()
+        value = {**snapshot, **changes, 'updated': updated}
+        db.execute('UPDATE scan_monitors SET payload=?,updated=? WHERE id=?',
+                   (dump(value), updated, snapshot['id']))
+        return True
+
+    async def submit(self, p, monitor=None, request_id=None, force=False, reuse_seconds=86400, source='api', parent=None,
+                     *, schedule_update=None):
         validate_plan(p)
         fingerprint = self.fingerprint(p) if not parent else 'retry:' + parent['id']
         if parent and parent.get('market_feed', '') != self.feed_identity():
             raise JobConflict('行情源或复权口径已变更，请发起新扫描')
+        if parent and parent.get('timing_version', 1) != self.timing_version(p):
+            raise JobConflict('K 线时间口径已更新，请发起新扫描')
         if parent:
             request_id = 'retry:' + parent['id']
         monitor_id = monitor['id'] if monitor else None
@@ -451,7 +476,7 @@ class ScanService:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT fingerprint,job_id FROM scan_requests WHERE request_id=?', (request_id,)).fetchone() if request_id else None
             if row:
-                if row[0] != fingerprint:
+                if row[0] != fingerprint and (parent or row[0] != self.fingerprint(p, legacy_timing=True)):
                     raise JobConflict('同一 request_id 已用于不同扫描参数')
                 return self.job_view(row[1], True, 'request_id')
             row = db.execute("""SELECT id FROM scan_jobs WHERE json_extract(payload,'$.fingerprint')=?
@@ -466,20 +491,21 @@ class ScanService:
                     AND json_extract(payload,'$.finished')>=? ORDER BY json_extract(payload,'$.finished') DESC LIMIT 1""",
                     (fingerprint, now - reuse_seconds)).fetchone()
                 reason = 'fresh_result'
+            ident = row[0] if row else uid()
+            if schedule_update is not None and not self.update_due_monitor(db, monitor, {**schedule_update, 'last_job': ident}):
+                return None
             if row:
-                ident = row[0]
                 if request_id:
                     db.execute('INSERT INTO scan_requests VALUES(?,?,?,?)', (request_id, fingerprint, ident, now))
                 reused = True
             else:
-                ident = uid()
                 workspace_row = db.execute("SELECT value FROM settings WHERE key='workspace'").fetchone()
                 workspace = json.loads(workspace_row[0]) if workspace_row else {}
                 snapshot = scope_snapshot(p.get('scope', {'kind':'all'}), workspace, monitor if monitor and not monitor.get('follow_watchlists', True) else None)
                 job = {'id': ident, 'plan': json.loads(dump(p)), 'monitor_id': monitor_id,
                        'execution_plan': execution_plan(p), 'audit_version': 1,
                        'scope_snapshot': snapshot, 'scope_summary': scope_summary(snapshot),
-                       'fingerprint': fingerprint, 'market_feed': self.feed_identity(),
+                       'fingerprint': fingerprint, 'timing_version': self.timing_version(p), 'market_feed': self.feed_identity(),
                        'market_sources': self.market_sources(p.get('scope', {}).get('market')), 'status': 'queued', 'phase': 'queued',
                        'source': 'monitor' if monitor else source, 'created': now, 'queued_at': now,
                        'monitor_snapshot': json.loads(dump(monitor)) if monitor else None,
@@ -598,7 +624,7 @@ class ScanService:
                 # The tail may also contain the current, unfinished candle.
                 if cached and (outside or any(
                     str(datetime.fromtimestamp(b['time'],tz).date()) in days
-                    and close_time(b['time'],symbol,period,days)==required_close for b in reversed(cached[-2:])
+                    and close_time(b['time'],symbol,period,days,b.get('bar_label','start'))==required_close for b in reversed(cached[-2:])
                 )):
                     payload={'bars':cached,'stale':False}
                     cached_success=success
@@ -642,7 +668,7 @@ class ScanService:
                 return (not rows or (required and rows[-1]['close_time'] < required)
                         or (not live and required and not any(
                             b['confirmed'] and b['close_time'] >= required for b in reversed(rows)))
-                        or (start and rows[-1]['time'] < start))
+                        or (start and rows[-1]['open_time'] < start))
             if missing(result):
                 refreshed = await self.main.bars(symbol,period,'regular',None,10000,True)
                 if refreshed.get('stale'):
@@ -652,7 +678,7 @@ class ScanService:
                     def label(stamp):
                         return datetime.fromtimestamp(stamp,tz).isoformat(timespec='minutes') if stamp else '无'
                     raise ValueError(f"重新读取后 K 线仍未覆盖扫描时间；应有已收线至 {label(required)}，"
-                                     f"要求盘中起点 {label(start)}，实际最新起点 {label(result[-1]['time'] if result else None)}，"
+                                     f"要求盘中起点 {label(start)}，实际最新起点 {label(result[-1]['open_time'] if result else None)}，"
                                      f"实际该根结束时间 {label(result[-1]['close_time'] if result else None)}")
         return result
 
@@ -664,6 +690,10 @@ class ScanService:
                 j = self.get('jobs', j['id'])
                 if j.get('market_feed', '') != self.feed_identity():
                     raise ValueError('行情源或复权口径已变更，请发起新扫描')
+                if j.get('timing_version', 1) != self.timing_version(j['plan']):
+                    if j.get('done'):
+                        raise ValueError('K 线时间口径已更新，请发起新扫描')
+                    j.update(timing_version=self.timing_version(j['plan']), fingerprint=self.fingerprint(j['plan']))
                 j.update(status='running', started=j.get('started') or time.time(), phase='resolving_scope',
                          phase_started_at=time.time(), finished=None)
                 self.put('jobs', j)
@@ -874,15 +904,15 @@ class ScanService:
                         due, slot = await self.monitor_due(monitor, now)
                         if not due:
                             continue
-                        job = await self.submit(monitor['plan'], monitor)
-                        monitor.update(force_run=False, last_job=job['id'])
+                        changes = {'force_run': False}
                         if slot is not None:
-                            monitor['last_schedule_slot'] = slot
-                        self.put('monitors', monitor)
+                            changes['last_schedule_slot'] = slot
+                        await self.submit(monitor['plan'], monitor, schedule_update=changes)
                     except Exception as error:
-                        monitor.update(last_error=str(error), last_status='failed',
-                                       next_run=time.time() + monitor['interval_seconds'])
-                        self.put('monitors', monitor)
+                        with self.db() as db:
+                            db.execute('BEGIN IMMEDIATE')
+                            self.update_due_monitor(db, monitor, {'last_error': str(error), 'last_status': 'failed',
+                                                    'next_run': time.time() + monitor['interval_seconds']})
             except asyncio.CancelledError:
                 raise
             except Exception:

@@ -9,7 +9,10 @@ def is_us_hour(symbol, period):
     return symbol.startswith('US.') and period in {'120m', '240m'}
 
 
-def hour_bucket(stamp, period):
+def hour_bucket(stamp, period, label='start'):
+    # The native closing print at a session/bucket boundary belongs to the preceding interval.
+    if label == 'end':
+        stamp -= 1
     dt = datetime.fromtimestamp(stamp, ET)
     minutes = dt.hour * 60 + dt.minute
     anchor = dt.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -28,12 +31,12 @@ def hour_bucket(stamp, period):
     return start + (int(stamp) - start) // duration * duration
 
 
-def aggregate_hours(bars, period):
+def aggregate_hours(bars, period, label='start'):
     result = {}
     # A push corrects the same source bar, rather than adding its volume again.
     unique = {bar['time']: bar for bar in bars}
     for stamp, bar in sorted(unique.items()):
-        bucket = hour_bucket(stamp, period)
+        bucket = hour_bucket(stamp, period, label)
         if bucket not in result:
             result[bucket] = {k: bar[k] for k in ('open', 'high', 'low', 'close', 'volume', 'turnover')}
             result[bucket]['time'] = bucket

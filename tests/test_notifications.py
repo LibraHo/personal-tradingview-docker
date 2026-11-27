@@ -112,6 +112,48 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual([r['status'] for r in self.service.records()].count('accepted'), 1)
         self.assertEqual([r['status'] for r in self.service.records()].count('pending'), 1)
 
+    def test_full_budget_backlog_does_not_block_another_channel(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        first = self.channel(daily_limit=1)
+        for index in range(101):
+            self.event('backlog-' + str(index))
+        self.service.collect()
+        day = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+        with self.db() as db:
+            db.execute('UPDATE notification_channels SET budget_day=?,budget_used=1 WHERE id=?', (day, first['id']))
+        second = self.channel(name='second')
+        self.event('new')
+        self.service.collect()
+        with patch('urllib.request.OpenerDirector.open', return_value=io.BytesIO(b'{"code":0}')):
+            self.service.deliver_one()
+        self.assertEqual(next(r for r in self.service.records() if r['channel_id']==second['id'])['status'], 'accepted')
+
+    def test_subscription_edits_during_delivery_do_not_retry_the_old_signal(self):
+        from app.notifications import Rejected
+        channel = self.channel()
+        self.event()
+        self.service.collect()
+        def edit_and_reject(*args):
+            self.service.save({**channel, 'monitor_ids': []}, channel['id'])
+            self.service.save(channel, channel['id'])
+            raise Rejected('test rejection')
+        with patch('app.notifications.send_webhook', side_effect=edit_and_reject) as send:
+            self.service.deliver_one()
+            self.assertEqual(self.service.records()[0]['status'], 'cancelled')
+            self.service.deliver_one()
+            self.assertEqual(send.call_count, 1)
+
+    def test_recovery_cancels_legacy_retry_outside_current_subscription(self):
+        channel = self.channel()
+        self.event()
+        self.service.collect()
+        self.service.save({**channel, 'monitor_ids': []}, channel['id'])
+        with self.db() as db:
+            db.execute("UPDATE notification_outbox SET status='retry'")
+        self.service.init(recover=True)
+        self.assertEqual(self.service.records()[0]['status'], 'cancelled')
+
     def test_invalid_channel_or_monitor_rejected(self):
         for change in [{'format':'unknown'}, {'url':'file:///etc/passwd'}, {'monitor_ids':['missing']}]:
             with self.assertRaises(ValueError):

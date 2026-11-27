@@ -134,6 +134,14 @@ class MarketData:
         finally:
             self._adjustment.reset(token)
 
+    def time_label(self, symbol, period):
+        if not period.endswith('m') or (period == '240m' and not symbol.startswith('US.')):
+            return 'date'
+        per_series = getattr(self.provider, 'time_label', None)
+        if per_series:
+            return per_series(symbol, period)
+        return getattr(self.provider, 'bar_label', 'start')
+
     def feature(self, name):
         method = getattr(self.provider, name, None)
         if not callable(method):
@@ -147,7 +155,7 @@ class MarketData:
     def for_market(self, symbol_or_market, capability='history'):
         return self
 
-    def metadata(self, symbol=None):
+    def metadata(self, symbol=None, period=None):
         return {'provider': self.provider.source_id, 'live_provider': self.provider.source_id, 'adjustment': self.adjustment,
                 'adjustment_label': ADJUSTMENTS[self.adjustment], 'live_supported': self.live,
                 'historical_chips': getattr(self.provider, 'historical_chips', False) is True}
@@ -262,7 +270,7 @@ class MarketRoutes:
             identities[market]['adjustment'] = self.for_market(market).adjustment
         return json.dumps(identities, sort_keys=True, separators=(',',':'))
 
-    def metadata(self, symbol):
+    def metadata(self, symbol, period=None):
         market = market_of(symbol)
         history = self.for_market(market)
         live = self.for_market(market, 'live')
@@ -274,7 +282,8 @@ class MarketRoutes:
             hp = getattr(h, 'bar_profiles', {}).get(basis)
             lp = getattr(l, 'bar_profiles', {}).get(basis)
             if (not hp or hp != lp or getattr(h, 'bar_label', None) not in ('start', 'end')
-                    or h.bar_label != getattr(l, 'bar_label', None)):
+                    or h.bar_label != getattr(l, 'bar_label', None)
+                    or period and history.time_label(symbol, period) != live.time_label(symbol, period)):
                 enabled = False
                 reason = '历史与实时源的 K 线时间、复权或量价口径未确认兼容'
         return {**history.metadata(), 'live_provider':l.source_id,
@@ -361,7 +370,7 @@ class RoutedStreams:
 
     def subscribe(self, key):
         with self.lock:
-            meta = self.routes.metadata(key[0])
+            meta = self.routes.metadata(*key[:2])
             if not meta['live_supported']:
                 raise ValueError(meta['live_reason'])
             if key not in self.active and len(self.active) >= self.limit:

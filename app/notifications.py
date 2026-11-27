@@ -85,11 +85,21 @@ class Notifications:
             # A crash after sending but before committing acknowledgement is ambiguous.
             if recover:
                 db.execute("UPDATE notification_outbox SET status='unknown',error='服务中断，无法确认接收端是否接收；请核对后再处理' WHERE status='sending'")
+                # Older workers could queue a retry after its subscription changed.
+                db.execute("""UPDATE notification_outbox AS o SET status='cancelled',updated=?
+                    WHERE o.status='retry' AND o.event_id NOT LIKE 'test:%' AND NOT EXISTS (
+                      SELECT 1 FROM notification_channels c JOIN scan_events e ON e.event_id=o.event_id
+                      WHERE c.id=o.channel_id AND json_extract(c.payload,'$.enabled')=1
+                      AND e.monitor_id IN (SELECT value FROM json_each(c.payload,'$.monitor_ids'))
+                      AND json_extract(c.payload,'$.confirmation') IN ('all',json_extract(e.payload,'$.confirmation'))
+                    )""", (time.time(),))
 
     @staticmethod
     def public(row):
         credentials = json.loads(row['secret'])
-        return {**json.loads(row['payload']), 'has_url':bool(credentials['url']), 'has_headers':bool(credentials['headers'])}
+        payload = json.loads(row['payload'])
+        payload.pop('routing_revision', None)
+        return {**payload, 'has_url':bool(credentials['url']), 'has_headers':bool(credentials['headers'])}
 
     def channels(self):
         with self.db() as db:
@@ -158,14 +168,16 @@ class Notifications:
             cursor = db.execute('SELECT COALESCE(MAX(cursor),0) FROM scan_events').fetchone()[0]
             # Preserve old routing when only display name/limit/credential changes.
             routing = ('enabled','monitor_ids','confirmation')
-            changed = previous and any(json.loads(previous['payload'])[k]!=value[k] for k in routing)
+            old_value = json.loads(previous['payload']) if previous else {}
+            changed = previous is not None and any(old_value[k]!=value[k] for k in routing)
+            stored = {**value, 'routing_revision':old_value.get('routing_revision', 0) + int(changed)}
             if previous:
                 db.execute('UPDATE notification_channels SET payload=?,secret=?,cursor=? WHERE id=?',
-                           (json.dumps(value),secret,cursor if changed else previous['cursor'],ident))
+                           (json.dumps(stored),secret,cursor if changed else previous['cursor'],ident))
                 if changed:
                     db.execute("UPDATE notification_outbox SET status='cancelled',updated=? WHERE channel_id=? AND status IN ('pending','retry')", (time.time(),ident))
             else:
-                db.execute('INSERT INTO notification_channels(id,payload,secret,cursor) VALUES(?,?,?,?)', (ident,json.dumps(value),secret,cursor))
+                db.execute('INSERT INTO notification_channels(id,payload,secret,cursor) VALUES(?,?,?,?)', (ident,json.dumps(stored),secret,cursor))
         return {**value, 'has_url':True, 'has_headers':bool(headers)}
 
     def delete(self, ident):
@@ -214,25 +226,22 @@ class Notifications:
         day = datetime.fromtimestamp(now, ZoneInfo('Asia/Shanghai')).date().isoformat()
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            rows = db.execute("SELECT o.*,c.payload,c.secret,c.last_attempt,c.budget_day,c.budget_used FROM notification_outbox o JOIN notification_channels c ON c.id=o.channel_id WHERE o.status IN ('pending','retry') AND o.next_attempt<=? ORDER BY o.created LIMIT 100", (now,)).fetchall()
-            selected = None
-            for row in rows:
-                channel = json.loads(row['payload'])
-                used = row['budget_used'] if row['budget_day']==day else 0
-                if (used >= channel['daily_limit'] or now-row['last_attempt']<2
-                        or (not channel['enabled'] and not row['event_id'].startswith('test:'))):
-                    continue
-                selected = row
-                db.execute("UPDATE notification_outbox SET status='sending',attempts=attempts+1,updated=? WHERE id=?", (now,row['id']))
-                db.execute('UPDATE notification_channels SET last_attempt=?,budget_day=?,budget_used=? WHERE id=?', (now,day,used+1,row['channel_id']))
-                break
-        if selected is None:
-            return
-        row = selected
+            row = db.execute("""SELECT o.*,c.payload,c.secret,c.budget_day,c.budget_used
+                FROM notification_outbox o JOIN notification_channels c ON c.id=o.channel_id
+                WHERE o.status IN ('pending','retry') AND o.next_attempt<=? AND c.last_attempt<=?
+                AND (c.budget_day<>? OR c.budget_used<json_extract(c.payload,'$.daily_limit'))
+                AND (json_extract(c.payload,'$.enabled')=1 OR o.event_id LIKE 'test:%')
+                ORDER BY o.created LIMIT 1""", (now,now-2,day)).fetchone()
+            if row is None:
+                return
+            channel = json.loads(row['payload'])
+            used = row['budget_used'] if row['budget_day']==day else 0
+            db.execute("UPDATE notification_outbox SET status='sending',attempts=attempts+1,updated=? WHERE id=?", (now,row['id']))
+            db.execute('UPDATE notification_channels SET last_attempt=?,budget_day=?,budget_used=? WHERE id=?', (now,day,used+1,row['channel_id']))
         attempts = row['attempts']+1
         status, error, due = 'accepted', '', 0
         try:
-            send_webhook(json.loads(row['secret']),json.loads(row['message']),json.loads(row['payload']))
+            send_webhook(json.loads(row['secret']),json.loads(row['message']),channel)
         except Rejected as exc:
             status = 'retry' if attempts<3 else 'failed'
             error, due = str(exc), now+60*attempts
@@ -243,6 +252,12 @@ class Notifications:
             # A lost response does not prove a failed send. Avoid duplicate alerts.
             status, error = 'unknown', '请求结果未确认，请在接收端核对；未自动重发'
         with self.db() as db:
+            if status == 'retry':
+                db.execute('BEGIN IMMEDIATE')
+                current = db.execute("SELECT coalesce(json_extract(payload,'$.routing_revision'),0) FROM notification_channels WHERE id=?",
+                                     (row['channel_id'],)).fetchone()
+                if current is None or current[0] != channel.get('routing_revision',0):
+                    status, error, due = 'cancelled', '订阅已更改，已取消重试', 0
             db.execute('UPDATE notification_outbox SET status=?,error=?,next_attempt=?,updated=? WHERE id=?', (status,error,due,time.time(),row['id']))
 
     def records(self):

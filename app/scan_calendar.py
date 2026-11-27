@@ -12,7 +12,7 @@ class TradingCalendar:
         return self.radar.trading_days(symbol)
 
 
-def close_time(stamp, symbol, period, days):
+def close_time(stamp, symbol, period, days, label='start'):
     us = symbol.startswith('US.')
     dt = datetime.fromtimestamp(stamp, ZoneInfo('America/New_York' if us else 'Asia/Shanghai'))
     day = dt.date()
@@ -29,7 +29,8 @@ def close_time(stamp, symbol, period, days):
     end = datetime.combine(day, datetime.min.time(), dt.tzinfo).replace(hour=(13 if kind == 'MORNING' else 16) if us else 15)
     if period in ('1d', '1w', '1mo') or (not us and period == '240m'):
         return end.timestamp()
-    # Canonical scanner timestamps identify the beginning of an intraday candle.
+    if label == 'end':
+        return stamp
     end = min(end, dt+timedelta(minutes=int(period[:-1])))
     if not us and dt.hour < 12:
         end = min(end, dt.replace(hour=11, minute=30, second=0))
@@ -40,13 +41,24 @@ def annotate(bars, symbol, period, days, now=None):
     now = time.time() if now is None else now
     output = []
     for i, bar in enumerate(bars):
+        stamp = bar['time']
+        label = bar.get('bar_label', 'start')
+        start = stamp
+        if label == 'end' and period.endswith('m') and (symbol.startswith('US.') or period != '240m'):
+            # Locate the candle in its regular-session grid, including short last bars.
+            dt = datetime.fromtimestamp(stamp, ZoneInfo('America/New_York' if symbol.startswith('US.') else 'Asia/Shanghai'))
+            afternoon = not symbol.startswith('US.') and dt.hour >= 13
+            anchor = int(dt.replace(hour=13 if afternoon else 9, minute=0 if afternoon else 30,
+                                    second=0, microsecond=0).timestamp())
+            width = int(period[:-1]) * 60
+            start = anchor + ((stamp - 1 - anchor) // width) * width
         try:
-            end = close_time(bar['time'], symbol, period, days)
+            end = close_time(stamp, symbol, period, days, label)
         except ValueError:
             if i+1 == len(bars):
                 raise
-            end = bars[i+1]['time']
-        output.append({**bar, 'close_time': end, 'confirmed': end <= now})
+            end = stamp if label == 'end' else bars[i+1]['time']
+        output.append({**bar, 'open_time': start, 'close_time': end, 'confirmed': end <= now})
     return output
 
 

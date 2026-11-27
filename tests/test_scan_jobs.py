@@ -7,7 +7,7 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -56,6 +56,54 @@ class ScanJobTests(unittest.IsolatedAsyncioTestCase):
                 return job
             await asyncio.sleep(.01)
         self.fail('Expected '+status+', got '+job['status']+' '+str(job.get('error')))
+
+    async def test_pause_during_calendar_lookup_survives_due_and_error_paths(self):
+        saved = self.service.plan(plan())
+        monitor = await self.service.create_monitor({'plan_id': saved['id']})
+        for calendar_failed in (False, True):
+            with self.subTest(calendar_failed=calendar_failed):
+                self.service.put('monitors', {**monitor, 'enabled': True})
+                async def pause_during_lookup(*args):
+                    current = self.service.get('monitors', monitor['id'])
+                    self.service.put('monitors', {**current, 'enabled': False, 'next_run': 0})
+                    if calendar_failed:
+                        raise ValueError('calendar unavailable')
+                    return True, None
+                self.service.monitor_due = pause_during_lookup
+                with patch('app.scan_service.asyncio.sleep', side_effect=asyncio.CancelledError):
+                    with self.assertRaises(asyncio.CancelledError):
+                        await self.service.schedule()
+                self.assertFalse(self.service.get('monitors', monitor['id'])['enabled'])
+                self.assertEqual(self.service.list('jobs'), [])
+
+    async def test_due_monitor_records_slot_and_job_in_the_submission(self):
+        saved = self.service.plan(plan())
+        monitor = await self.service.create_monitor({'plan_id': saved['id']})
+        self.service.monitor_due = AsyncMock(return_value=(True, 123.0))
+        with patch('app.scan_service.asyncio.sleep', side_effect=asyncio.CancelledError):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.service.schedule()
+        current = self.service.get('monitors', monitor['id'])
+        self.assertEqual(current['last_schedule_slot'], 123.0)
+        self.assertFalse(current['force_run'])
+        self.assertEqual(self.service.get('jobs', current['last_job'])['monitor_id'], monitor['id'])
+
+    async def test_legacy_intraday_job_stays_readable_but_is_not_a_fresh_result(self):
+        params = {**plan(), 'periods':['5m']}
+        pending = await self.service.submit(params, request_id='before-upgrade')
+        job = await self.state(pending['id'], 'completed')
+        old = self.service.fingerprint(params, legacy_timing=True)
+        job.update(fingerprint=old, monitor_snapshot={'follow_watchlists':False})
+        del job['timing_version']
+        self.service.put('jobs', job)
+        with self.db() as db:
+            db.execute('UPDATE scan_requests SET fingerprint=? WHERE job_id=?', (old, job['id']))
+        self.assertEqual(self.service.plan_results(params)['status'], 'not_started')
+        receipt = await self.service.submit(params,request_id='before-upgrade')
+        self.assertEqual(receipt['id'],job['id'])
+        fresh = await self.service.submit(params)
+        self.assertNotEqual(fresh['id'],job['id'])
+        self.assertEqual((await self.state(fresh['id'],'completed'))['timing_version'],2)
 
     async def test_retry_preserves_history_and_only_rechecks_failed_pairs(self):
         config = plan()

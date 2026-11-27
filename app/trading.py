@@ -41,6 +41,16 @@ def price(value, name='价格'):
     return float(n)
 
 
+def quote_age_seconds(timestamp):
+    try:
+        dt = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo('America/New_York'))
+        return time.time() - dt.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return float('inf')
+
+
 class TradeEngine(ProtectionMixin, OptionToolsMixin):
     """All methods run on one dedicated thread; SQLite is also a crash journal."""
     def __init__(self, path, broker=None, *, config=None):
@@ -233,13 +243,7 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
         if kind == 'MARKET':
             if q.get('market_state') != 'AFTERNOON':
                 raise TradeError('当前不在美股常规交易时段，禁止提交市价单')
-            try:
-                dt = datetime.fromisoformat(str(q['update_time']).replace('Z', '+00:00'))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=ZoneInfo('America/New_York'))
-                age = time.time() - dt.timestamp()
-            except (ValueError, KeyError, TypeError):
-                age = 999
+            age = quote_age_seconds(q.get('update_time'))
             if age < -2 or age > 5:
                 raise TradeError('快照超过 5 秒，市价单暂不可用；请使用明确价格的限价单')
         # Validate security type even for manual limit orders. Snapshot age is shown in UI;

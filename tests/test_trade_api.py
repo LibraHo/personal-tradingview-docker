@@ -220,9 +220,10 @@ class TradeApiTests(unittest.TestCase):
             self.assertEqual(response.status_code,202,response.text)
             self.assertEqual(forward.call_args.args[0].get_header('Idempotency-key'),'intent-1')
             self.setup_account()
-            for path in ['scanner/jobs/'+'a'*32+'/pause','scanner/jobs/'+'a'*32+'/resume']:
+            for path in ['scanner/jobs/'+'a'*32+'/pause','scanner/jobs/'+'a'*32+'/resume','scanner/jobs/'+'a'*32+'/retry']:
                 response=self.client.post('/api/market/'+path,headers=self.headers)
                 self.assertEqual(response.status_code,202,response.text)
+            self.assertEqual(self.client.get('/api/market/scanner/jobs/'+'a'*32+'/retry').status_code,404)
             self.assertEqual(self.client.get('/api/market/scanner/plans/'+'a'*32+'/results').status_code,202)
 
     def test_drawing_agent_is_scoped_and_needs_no_trade_session(self):

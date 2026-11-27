@@ -2,9 +2,7 @@
 import math
 import time
 import uuid
-from datetime import datetime
-from zoneinfo import ZoneInfo
-from .trading import TradeError, ACTIVE
+from .trading import TradeError, ACTIVE, quote_age_seconds
 
 
 def execute_strategy(engine,owner,config,side,signal,arm):
@@ -28,8 +26,7 @@ def execute_strategy(engine,owner,config,side,signal,arm):
     quote=engine.quote(code);last=float(quote['last_price'])
     if e['session']!='RTH' or quote.get('market_state')!='AFTERNOON':
         raise TradeError('首版自动策略只在美股常规交易时段提交；其他时段可监控信号')
-    try:age=time.time()-datetime.fromisoformat(str(quote['update_time'])).replace(tzinfo=ZoneInfo('America/New_York')).timestamp()
-    except (ValueError,KeyError,TypeError):age=999
+    age = quote_age_seconds(quote.get('update_time'))
     if age < -2 or age > 15:raise TradeError('自动策略需要 15 秒内行情快照，已跳过下单')
     if basis<=0 or abs(last/basis-1)*100>e['max_deviation']:raise TradeError('现价偏离信号收盘价，跳过追价')
     raw=last*(1+e['offset_percent']/100*(1 if side=='BUY' else -1))

@@ -119,7 +119,7 @@ def evaluate(data, plan, period, history_limit=None):
         rp = rule.get('period') or period
         rows = data[rp]
         a,b=series(rows,rule['left']),series(rows,rule['right'])
-        sources.append((rule,rp,rows,a,b,[b['close_time'] for b in rows],[compare(a,b,rule['op'],j) for j in range(len(rows))],[row['time'] for row in rows]))
+        sources.append((rule,rp,rows,a,b,[b['close_time'] for b in rows],[compare(a,b,rule['op'],j) for j in range(len(rows))],[row.get('open_time', row['time']) for row in rows]))
     results=[]
     for idx in decisions[-(history_limit or plan.get('lookback',1)):]:
         decision = base[idx]['close_time']

@@ -61,6 +61,12 @@ class OpenDMarket:
     bar_label = os.getenv('OPENING_RANGE_BAR_LABEL', 'end')
     bar_profiles = {'qfq':'opend-qfq-v1', 'none':'opend-raw-v1', 'hfq':'opend-hfq-v1'}
 
+    def cache_revision(self, symbol, period):
+        return f'hours2-{self.bar_label}' if is_us_hour(symbol, period) else ''
+
+    def time_label(self, symbol, period):
+        return 'start' if is_us_hour(symbol, period) else self.bar_label
+
     def __init__(self, connect_db, listeners, on_error=None):
         self.connect_db = connect_db
         self.listeners = listeners
@@ -191,7 +197,7 @@ class OpenDMarket:
                     # Retain the in-progress native candles for the next 2h/4h push.
                     if key in self.sinks and end_date is None and adjustment == 'qfq':
                         self.remember_hours(key, all_bars)
-                    all_bars = aggregate_hours(all_bars, key[1])
+                    all_bars = aggregate_hours(all_bars, key[1], self.bar_label)
                 self.last_activity = time.monotonic()
                 return all_bars
             except QuotePermissionError:
@@ -395,8 +401,8 @@ class OpenDMarket:
         if not is_us_hour(*key[:2]):
             return bars
         native = self.remember_hours(key, bars)
-        touched = {hour_bucket(bar['time'], key[1]) for bar in bars}
-        return [b for b in aggregate_hours(native, key[1]) if b['time'] in touched]
+        touched = {hour_bucket(bar['time'], key[1], self.bar_label) for bar in bars}
+        return [b for b in aggregate_hours(native, key[1], self.bar_label) if b['time'] in touched]
 
     def subscribe_bars(self, key, adjustment, emit):
         if adjustment not in self.live_adjustments:

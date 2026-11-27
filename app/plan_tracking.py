@@ -50,10 +50,15 @@ class Series:
         self.cache = {}
         self.indicators = {}
         self.grid_ends = [s[1] for s in grid]
+        grid_close_times = set(self.grid_ends)
         closes = {label_key(period,market,d,a):b for a,b,d in grid}
         for r in sorted(rows,key=lambda item:item['time']):
             key = label_key(period,market,r['trade_date'],r['time'])
-            end = closes.get(key)
+            end_label = r.get('bar_label') == 'end' and period.endswith('m') and not (market == 'CN' and period == '240m')
+            if end_label:
+                end = r['time'] if r['time'] in grid_close_times else None
+            else:
+                end = closes.get(key)
             if end is not None:
                 self.by_end[end] = r
             elif r['trade_date'] < grid[0][2]:
@@ -62,7 +67,7 @@ class Series:
             elif mode!='regular' and period.endswith('m') and r.get('session')!='regular':
                 if mode=='extended' and r.get('session')=='overnight':
                     continue
-                end = r['time']+int(period[:-1])*60
+                end = r['time'] if end_label else r['time']+int(period[:-1])*60
             else:
                 continue
             self.ends.append(end)
