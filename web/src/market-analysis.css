@@ -38,3 +38,9 @@
 .market-analysis .analysis-samples summary {cursor:pointer;color:var(--theme-muted,#99acc2);padding:8px 0}
 .market-analysis .analysis-samples small {margin-left:5px}
 @media(max-width:600px){.market-analysis{width:calc(100vw - 16px);max-height:92dvh}.market-analysis h2{font-size:18px}}
+
+.report-archive li + li {border-top:1px solid var(--theme-border)}
+.report-archive button {width:100%;display:flex;align-items:baseline;justify-content:space-between;gap:6px;flex-wrap:wrap;text-align:left;background:transparent;color:inherit;border:0}
+.report-archive span,.market-analysis .report-time {color:var(--theme-muted);font-size:12px;font-variant-numeric:tabular-nums}
+
+.background-report-status {position:fixed;bottom:16px;right:16px;z-index:30;padding:8px 14px;border-radius:6px;background:var(--theme-surface,#182330);color:var(--theme-text,#dce7f5);border:1px solid var(--theme-border,#435368);font-size:13px;pointer-events:none}

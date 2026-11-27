@@ -111,3 +111,14 @@ aside .side-title{padding-bottom:16px}aside .side-group{min-height:0;overflow-y:
 .app-body aside .stock-middle em{font-size:15px;font-weight:800;letter-spacing:.01em;line-height:1.2}
 .app-body aside .stock-middle em.positive{color:var(--theme-positive,#4ee0aa)}
 .app-body aside .stock-middle em.negative{color:var(--theme-danger,#ff8292)}
+
+.candle-readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 12px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.candle-readout span, .candle-readout time { white-space: nowrap; }

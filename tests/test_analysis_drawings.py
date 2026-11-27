@@ -41,15 +41,41 @@ class DrawingProposalsTests(unittest.TestCase):
     def test_turns_and_strokes_are_confirmed_and_anchored(self):
         rows=[row(i,p) for i,p in enumerate([10,11,12,15,14,13,12,11,8,9,10,11,12,16,12,11,10,9,55])]
         result=drawing_proposals(context(rows),'levels',select_all)
-        self.assertEqual([p['id'] for p in result['proposals']], ['swing-high','swing-low'])
+        self.assertEqual(result['proposals'],[])  # latest price gapped far away from the tested levels
         self.assertEqual(result['trace'][-1][0],rows[-2][0])
-        lines=[p['lines'][0] for p in result['proposals']]
-        self.assertEqual([l['points'][0]['price'] for l in lines],[17,7])
         strokes=drawing_proposals(context(rows),'strokes',select_all)['proposals'][0]['lines']
         self.assertEqual(len(strokes),2)
         self.assertEqual(strokes[0]['points'][1],strokes[1]['points'][0])
         self.assertGreaterEqual(strokes[0]['points'][1]['time']-strokes[0]['points'][0]['time'],4*60)
         self.assertEqual(strokes,drawing_proposals(context(rows),'strokes',select_all)['proposals'][0]['lines'])
+
+    def test_nearby_levels_use_the_latest_price_and_reactions(self):
+        rows=[row(i,p) for i,p in enumerate([102,102,100,102,104,102,100,102,104,102,102,102])]
+        def choose(prompt,payload):
+            self.assertEqual(payload['reference_price'],102)
+            return select_all(prompt,payload)
+        support,resistance=drawing_proposals(context(rows),'levels',choose)['proposals']
+        self.assertEqual([support['id'],resistance['id']],['support','resistance'])
+        self.assertEqual([p['lines'][0]['points'][0]['price'] for p in (support,resistance)], [99,105])
+        self.assertIn('2 次独立测试',support['evidence'])
+        rows[-1]=row(len(rows)-1,98)
+        self.assertFalse(any(p['id']=='support' for p in drawing_proposals(context(rows),'levels',select_all)['proposals']))
+
+    def test_fib_projection_uses_trend_direction_and_confirmed_breakout(self):
+        for sign in [1,-1]:
+            prices=[108,106,101,104,108,112,116,119,117,115,121,122]
+            rows=[row(i,110+sign*(v-110)) for i,v in enumerate(prices)]
+            ctx=context(rows)
+            proposals=lambda mode:drawing_proposals(ctx,'fibonacci',select_all,mode)['proposals']
+            auto=proposals('auto')
+            self.assertEqual([p['id'] for p in auto],['fibonacci','fib-extension'])
+            self.assertEqual(len(proposals('off')),1)
+            projections=auto[1]['fibonacci']['levels']
+            self.assertAlmostEqual(projections[1]['price'],132.36 if sign==1 else 87.64)
+            self.assertEqual(auto[1]['lines'][0]['points'],auto[0]['lines'][0]['points'][::-1])
+            rows[-2][1:5]=row(1,110)[1:5]
+            self.assertEqual(len(proposals('auto')),1)
+            self.assertEqual(len(proposals('always')),2)
 
     def test_out_of_set_or_malformed_reply_cannot_inject_drawings(self):
         rows=[row(i,p) for i,p in enumerate([10,11,13,16,15,10,9,11,12])]

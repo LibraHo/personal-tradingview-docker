@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +29,28 @@ class MarketAnalysisTests(unittest.TestCase):
         self.client = self.enterContext(TestClient(app))
         self.bars = self.enterContext(patch.object(market_analysis, 'recent_bars'))
         self.agent = self.enterContext(patch.object(market_analysis, 'complete', return_value='测试解读'))
+
+    def test_archived_job_survives_server_restart_and_is_scoped(self):
+        self.bars.return_value={'bars':[dict(time=1,open=5,high=6,low=4,close=5,volume=100,session='regular')]}
+        headers={'X-Analysis-Archive':'a'*64}
+        job=self.client.post(self.path+'/jobs',json=self.chart,headers=headers).json()['id']
+        for _ in range(150):
+            result=self.client.get(self.path+'/jobs/'+job).json()
+            if result['state']!='running':break
+            time.sleep(.01)
+        self.assertEqual(result['state'],'done')
+        self.assertNotIn('fibonacci',result['result'])
+        self.assertNotIn('fibonacci',self.agent.call_args.args[-1])
+        restarted=FastAPI()
+        market_analysis.install(restarted,token_db)
+        with TestClient(restarted) as client:
+            history=client.get(self.path+'/archive',headers=headers).json()['reports']
+            self.assertEqual(history[0]['id'],job)
+            self.assertGreaterEqual(history[0]['completed'],history[0]['started'])
+            detail=self.path+'/archive/'+job
+            self.assertEqual(client.get(detail,headers=headers).json(),result['result'])
+            self.assertEqual(client.get(detail,headers={'X-Analysis-Archive':'b'*64}).status_code,404)
+            self.assertEqual(client.get(self.path+'/archive').status_code,422)
 
     def test_effective_settings_gate_both_operations(self):
         options = self.client.get(self.path, params=self.chart).json()

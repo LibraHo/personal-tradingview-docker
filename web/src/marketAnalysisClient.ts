@@ -20,12 +20,31 @@ function pause(signal:AbortSignal,ms:number) {
   });
 }
 
-export async function marketAnalysisRequest<T>(body:unknown,signal:AbortSignal):Promise<T> {
+export function archiveHeaders() {
+  const name='market-analysis-archive-key';
+  let key=localStorage.getItem(name);
+  if (!key || !/^[a-f0-9]{64}$/.test(key)) {
+    key=Array.from(crypto.getRandomValues(new Uint8Array(32)),n=>n.toString(16).padStart(2,'0')).join('');
+    localStorage.setItem(name,key);
+  }
+  return {'X-Analysis-Archive':key};
+}
+
+export async function submitAnalysis(body:unknown,signal?:AbortSignal,archive=false) {
   const headers:Record<string,string>={'Content-Type':'application/json'};
+  if(archive) Object.assign(headers,archiveHeaders());
   if(secureChart) headers['X-CSRF-Token']=getChartCsrf();
   const {id}=await responseData<{id:string}>(await fetch(analysisPath+'/jobs',{
     method:'POST',signal,headers,body:JSON.stringify(body),
   }));
+  return id;
+}
+
+export async function readArchive<T>(suffix:string,signal?:AbortSignal) {
+  return responseData<T>(await fetch(analysisPath+'/archive'+suffix,{headers:archiveHeaders(),cache:'no-store',signal}));
+}
+
+export async function waitAnalysis<T>(id:string,signal:AbortSignal,archived=false):Promise<T> {
   const path=analysisPath+'/jobs/'+encodeURIComponent(id);
   let failures=0;
   for (;;) {
@@ -34,13 +53,18 @@ export async function marketAnalysisRequest<T>(body:unknown,signal:AbortSignal):
     try {
       response=await fetch(path,{signal,cache:'no-store'});
     } catch(error) {
-      if(signal.aborted || ++failures>=4) throw error;
+      if(signal.aborted || (!archived && ++failures>=4)) throw error;
       continue;
     }
-    if([502,503,504].includes(response.status) && ++failures<4) continue;
+    if([502,503,504].includes(response.status) && (archived || ++failures<4)) continue;
+    if(archived && response.status===404) return readArchive<T>('/'+encodeURIComponent(id),signal);
     const job=await responseData<{state:'running'|'done'|'failed';result:T;message?:string}>(response);
     failures=0;
     if(job.state==='done') return job.result;
     if(job.state!=='running') throw Error(job.message||'分析失败，请重试。');
   }
+}
+
+export async function marketAnalysisRequest<T>(body:unknown,signal:AbortSignal):Promise<T> {
+  return waitAnalysis<T>(await submitAnalysis(body,signal),signal);
 }

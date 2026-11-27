@@ -4,7 +4,7 @@ import type {DrawingPoint} from './drawingTools';
 import {displayTime, periodNames, type PlanPeriod} from './tradeBookClient';
 
 type Level = {ratio:number; price:number};
-export type Retracement = {points:[DrawingPoint, DrawingPoint]; levels:Level[]};
+export type Retracement = {points:[DrawingPoint, DrawingPoint]; levels:Level[]; extensions?:Level[]; extend_by_default?:boolean};
 type Actions = {onDefense:(price:number, label:string)=>void; onTarget:(price:number)=>void};
 const formatPrice = new Intl.NumberFormat('zh-CN', {maximumFractionDigits:8});
 const formatRatio = new Intl.NumberFormat('zh-CN', {style:'percent', maximumFractionDigits:1});
@@ -21,9 +21,9 @@ export function FibonacciLevels({value,symbol,period,actions}:{
     {value.levels.map(level=>{
       const ratio = formatRatio.format(level.ratio);
       return <div className="plan-reference-row" key={level.ratio}>
-        <div><span>{ratio}{level.ratio===0?'（终点）':level.ratio===1?'（起点）':''}</span> <strong>{formatPrice.format(level.price)}</strong></div>
+        <div><span>{ratio}{level.ratio>1?'（扩展）':level.ratio===0?'（终点）':level.ratio===1?'（起点）':''}</span> <strong>{formatPrice.format(level.price)}</strong></div>
         {actions&&<>
-          <button type="button" onClick={()=>actions.onDefense(level.price,periodNames[period]+' · 斐波那契 '+ratio)}>设为防守</button>
+          <button type="button" onClick={()=>actions.onDefense(level.price,periodNames[period]+(level.ratio>1?' · 顺势扩展 ':' · 斐波那契 ')+ratio)}>设为防守</button>
           <button type="button" onClick={()=>actions.onTarget(level.price)}>设为止盈</button>
         </>}
       </div>;
@@ -34,6 +34,7 @@ export function FibonacciLevels({value,symbol,period,actions}:{
 export function PlanFibonacci({symbol,period,mode,refresh,actions}:{
   symbol:string; period:PlanPeriod; mode:string; refresh:number; actions:Actions;
 }) {
+  const [extensionMode,setExtensionMode]=useState('auto');
   const [open,setOpen] = useState(false);
   const [result,setResult] = useState<{key:string; fibonacci?:Retracement|null; stale?:boolean; error?:string}>();
   const key = [symbol,period,mode,refresh].join(':');
@@ -58,7 +59,12 @@ export function PlanFibonacci({symbol,period,mode,refresh,actions}:{
     {!symbol ? <p>请先选择标的。</p> : result?.key!==key ? <p role="status">正在读取波段…</p> :
       result.error ? <p role="alert">{result.error}</p> : <>
         {result.stale&&<p>使用缓存行情</p>}
-        {result.fibonacci?<FibonacciLevels value={result.fibonacci} symbol={symbol} period={period} actions={actions}/>:
+        {result.fibonacci?<><label>顺势扩展
+          <select value={extensionMode} onChange={e=>setExtensionMode(e.target.value)}>
+            <option value="auto">收盘突破时显示</option><option value="always">显示</option><option value="off">隐藏</option>
+          </select></label>
+          <FibonacciLevels value={{...result.fibonacci,levels:[...result.fibonacci.levels,
+            ...(extensionMode==='always'||extensionMode==='auto'&&result.fibonacci.extend_by_default?result.fibonacci.extensions||[]:[])]}} symbol={symbol} period={period} actions={actions}/></>:
           <p>当前周期还没有确认一段完整波段。</p>}
       </>}
   </details>;

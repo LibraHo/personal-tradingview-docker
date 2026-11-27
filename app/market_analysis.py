@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 from typing import Literal, get_args
 from urllib import parse, request
 
-from fastapi import HTTPException
+from fastapi import Header, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import Field
 
 from .analysis_drawings import drawing_proposals, fibonacci_for_frame
+from .analysis_archive import ReportArchive, timestamp
 from .agent_client import complete
 from .agent_settings import active_config
 from .ledger import Input, PlanPeriod, transaction
@@ -25,7 +27,7 @@ PROMPT = (
     '先概括主周期走势和成交量变化，再结合较高周期说明趋势一致或分歧、关键价位和后续观察条件。'
     '引用具体周期、价量或时间作为依据。同周期、可比时段内比较成交量，不直接比较不同周期总量。'
     '每组最后一根可能尚未收盘，其成交量可能不完整。时间戳为 UTC 秒，按给定时区解释。'
-    '如主周期有 fibonacci，结合量价说明邻近回撤位，注明波段方向；缺少确认波段时不要推算点位。'
+    '文字分析只讨论量价、结构和观察条件，不计算或讨论斐波那契回撤、扩展。'
     '标明缺失周期、过期缓存和样本不足对结论的影响，不编造行情，不调用工具。使用简短中文段落。'
 )
 
@@ -38,6 +40,7 @@ class Chart(Input):
 
 class AnalysisRequest(Chart):
     drawing_focus: Literal['levels', 'range', 'strokes', 'fibonacci'] | None = None
+    extensions: Literal['auto','always','off'] = 'auto'
     references: list[PlanPeriod] | None = Field(default=None, max_length=3)
 
 
@@ -132,13 +135,12 @@ def install(app, connect_db, path='/api/trade/market-analysis', synchronous=True
                    'frames': frames}
         if body.drawing_focus:
             return drawing_proposals(context, body.drawing_focus,
-                                     lambda prompt, facts: complete(url, token, agent or 'default', prompt, facts))
-        context['fibonacci'] = fibonacci_for_frame(primary)
+                                     lambda prompt, facts: complete(url, token, agent or 'default', prompt, facts), body.extensions)
         report = complete(url, token, agent or 'default', PROMPT, context)
         coverage = [{'period': f['period'], 'mode': f['mode'], 'count': len(f['bars']),
                      'last': f['bars'][-1][0] if f['bars'] else None, 'stale': f['stale'],
                      'issue': f.get('issue')} for f in frames]
-        return {'analysis': report, 'coverage': coverage, 'fibonacci': context['fibonacci']}
+        return {'analysis': report, 'coverage': coverage}
 
     # Keep the original authenticated API for existing callers. Browser jobs also
     # work through remote-access proxies with short response timeouts.
@@ -146,9 +148,25 @@ def install(app, connect_db, path='/api/trade/market-analysis', synchronous=True
         app.post(path, summary='使用当前 AI 助手分析多周期量价数据')(analyze)
     from .analysis_jobs import AnalysisJobs
     jobs = AnalysisJobs()
+    archive = ReportArchive(connect_db)
+    archive_key = Header(alias='X-Analysis-Archive', pattern=r'^[a-f0-9]{64}$')
+
+    @app.get(path + '/archive', summary='按完成时间查看分析归档')
+    def history(owner: str = archive_key, before: int = Query(2**63-1, ge=1, le=2**63-1)):
+        return JSONResponse(archive.page(owner, before), headers={'Cache-Control':'private, no-store'})
+
+    @app.get(path + '/archive/{job_id}', summary='打开已归档的分析')
+    def archived(job_id: str, owner: str = archive_key):
+        result = archive.get(owner, job_id)
+        if result is None:
+            raise HTTPException(404, '没有找到这份归档')
+        return JSONResponse(result, headers={'Cache-Control':'private, no-store'})
 
     @app.post(path + '/jobs', status_code=202, summary='开始盘面分析')
-    def submit(body: AnalysisRequest):
+    def submit(body: AnalysisRequest, owner: str | None = Header(None, alias='X-Analysis-Archive', pattern=r'^[a-f0-9]{64}$')):
+        if owner and not body.drawing_focus:
+            started = timestamp()
+            return jobs.submit(analyze, body, lambda key, result: archive.save(owner, key, body, started, result))
         return jobs.submit(analyze, body)
 
     @app.get(path + '/jobs/{job_id}', summary='读取本次盘面分析')

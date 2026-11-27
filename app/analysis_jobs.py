@@ -15,7 +15,7 @@ class AnalysisJobs:
         self.lock = Lock()
         self.records = {}
 
-    def submit(self, analyze, body):
+    def submit(self, analyze, body, on_done=None):
         with self.lock:
             now = monotonic()
             self.records = {key: job for key, job in self.records.items() if job['expires'] > now}
@@ -26,12 +26,13 @@ class AnalysisJobs:
                 del self.records[oldest]
             key = secrets.token_urlsafe(24)
             self.records[key] = {'state':'running', 'expires':float('inf')}
-            self.executor.submit(self._run, key, analyze, body)
+            self.executor.submit(self._run, key, analyze, body, on_done)
         return {'id':key}
 
-    def _run(self, key, analyze, body):
+    def _run(self, key, analyze, body, on_done):
         try:
-            result = {'state':'done', 'result':analyze(body)}
+            report = analyze(body)
+            result = {'state':'done', 'result':on_done(key, report) if on_done else report}
         except HTTPException as exc:
             result = {'state':'failed', 'message':str(exc.detail)}
         except Exception:
