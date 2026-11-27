@@ -18,6 +18,9 @@ def evaluate_graph(bars, nodes):
     values = {k: [b[k] for b in bars] for k in ('open', 'high', 'low', 'close', 'volume')}
     values['turnover'] = [v if isinstance(v, (int, float)) and math.isfinite(v) and v > 0 else None
                           for v in (b.get('turnover') for b in bars)]
+    if any(key == 'inst_control' for key, _, _ in nodes):
+        for field in ('chip_winner_95', 'chip_cost_85'):
+            values[field] = [bar.get('fields', {}).get(field) for bar in bars]
     def arg(x):
         return values[x] if isinstance(x, str) else [x] * size
     for key, op, args in nodes:
@@ -128,7 +131,6 @@ def evaluate_graph(bars, nodes):
 
 
 def calculate_tdx(bars, name, params=None):
-    if name == 'INSTITUTION_TREND': raise ValueError('机构动向已撤下：筹码数据未具备')
     if name == 'FULAI' and any(not re.match(r'^(SH|SZ)\.[036]\d{5}$', b.get('symbol', '')) for b in bars):
         raise ValueError('福来仅支持沪深A股')
     if name not in NAMES: return None

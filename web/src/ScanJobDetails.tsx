@@ -16,10 +16,18 @@ export default function ScanJobDetails({job}:{job:Record<string,any>}){
  const plan=job.execution_plan||job.plan,snapshot=job.scope_snapshot;
  if(!plan)return <p>此历史任务未保存条件快照。</p>;
  const targetGroups=[...new Set<string>((job.targets||job.results||[]).flatMap((row:any)=>row.groups||[]))];
+ const basisLabels:Record<string,string>={qfq:'前复权',none:'不复权',hfq:'后复权'};
+ const [legacyProvider,legacyBasis]=String(job.market_feed||'').split('/');
+ const historySources=Object.entries(job.market_sources||{}).map(([market,route]:[string,any])=>{
+  const live=route.live_supported===false?' · '+(route.live_reason||'推送不可用'):
+    route.live&&route.live!==route.history?' · 推送 '+route.live:'';
+  return (market==='US'?'美股':'沪深')+' '+route.history+' · '+(basisLabels[route.adjustment]||route.adjustment)+live+' · 日历 '+route.calendar;
+ });
+ const feedLabel=historySources.join('；')||(basisLabels[legacyBasis]?legacyProvider+' · '+basisLabels[legacyBasis]:'历史任务未记录口径');
  const selected=snapshot?.selected_groups||[];
  const empty=new Set(snapshot?.empty_groups||[]);
  const exportRecord=()=>{
-  const data={job_id:job.id,source:job.source,monitor_id:job.monitor_id,created:job.created,started:job.started,finished:job.finished,status:job.status,
+  const data={job_id:job.id,source:job.source,market_feed:job.market_feed,market_sources:job.market_sources,monitor_id:job.monitor_id,created:job.created,started:job.started,finished:job.finished,status:job.status,
    plan:job.plan,execution_plan:job.execution_plan,scope_snapshot:snapshot,targets:job.targets,failures:job.failures,controls:job.controls};
   const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
   const a=document.createElement('a');a.href=url;a.download=`scan-${job.id}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -29,7 +37,7 @@ export default function ScanJobDetails({job}:{job:Record<string,any>}){
   <dl className="scan-audit-overview"><div><dt>触发来源</dt><dd>{scanSourceText(job)}{job.monitor_snapshot?.name?` · ${job.monitor_snapshot.name}`:''}</dd></div>
    <div><dt>方案</dt><dd>{plan.name||'未命名'} · v{plan.version||1}</dd></div><div><dt>决策周期</dt><dd>{plan.periods?.map(period).join('、')}</dd></div>
    <div><dt>条件组合</dt><dd>{plan.join==='any'?'任意一条满足（OR）':'全部条件满足（AND）'} · 最近 {plan.lookback??1} 根寻找命中</dd></div>
-   <div><dt>行情口径</dt><dd>{plan.live?'包含当前未收线 K 线':'仅已收线 K 线'} · 常规时段 · 不复权</dd></div>
+   <div><dt>行情口径</dt><dd>{plan.live?'包含当前未收线 K 线':'仅已收线 K 线'} · 常规时段 · {feedLabel}</dd></div>
   </dl>
   <div className="scan-audit-scope"><h5>当时的扫描范围</h5>
    <p>{({all:'全部关注分组',groups:'指定分组',favorites:'关注板块',symbols:'指定代码',members:'指定板块成分'} as Record<string,string>)[plan.scope?.kind||'all']} · {snapshot?`快照 ${formatScanTime(snapshot.captured_at)}`:'历史任务未保存分组快照'}</p>

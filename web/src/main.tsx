@@ -19,6 +19,7 @@ import{backfillHistory,marketDateWindow}from'./historyTools';
 import{createSeriesMarkers,type SeriesMarker,createChart,CandlestickSeries,HistogramSeries,LineSeries,CrosshairMode,TickMarkType,type IChartApi,type ISeriesApi,type MouseEventParams,type Time,type UTCTimestamp}from'lightweight-charts';
 import './analysis-tool.css';
 import{Activity,Sparkles,Plus,Settings2,Trash2,Save,LayoutGrid,Wifi,WifiOff,RotateCw,Minus}from'lucide-react';
+import {inputIssue} from './indicatorInputs';
 import{type Bar,type Indicator,compute,indicatorPane}from'./indicators';
 import{formula}from'./formula';
 import './style.css';
@@ -35,6 +36,7 @@ import SettingsPanel,{type SettingsTab} from './SettingsPanel';
 import AgentSettings from './AgentSettings';
 import NotificationSettings from './NotificationSettings';
 import OpenDPanel from './OpenDPanel';
+import ChipSummary from './ChipSummary';
 import CandleSettings from './CandleSettings';
 import {defaultCandleAppearance,normalizeCandleAppearance,candleSeriesOptions,candleBodyColor,volumePalette,type CandleAppearance} from './candleAppearance';
 import type {CSSProperties} from 'react';
@@ -177,11 +179,17 @@ function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrossh
  const chartName=!isUS&&stockName&&/[\u3400-\u9fff]/.test(stockName)?stockName:tile.symbol.replace('US.','');
  const displayTime=isUS?{clock:etClock,day:etDay,full:etFull}:{clock:cnClock,day:cnDay,full:cnFull};
  const previousRefresh=useRef(version);
+ const seriesRevision=useRef('');
+ const priceBasis=bars[0]?.adjustment;
+ const [feedLabel,setFeedLabel]=useState('');
  const [cacheSyncTime,setCacheSyncTime]=useState(0);
  useEffect(()=>{let stop=false,ws:WebSocket|null=null,timer:number|undefined,initialized=false,openedOnce=false,retryDelay=5000;
   const group=chartGroup.get(index);if(group&&loadedKey!==key){group.ready=false;group.suppressSyncUntil=Infinity}pendingHistoryJump.current=null;
   historyGeneration.current++;historicView.current=false;historyInteraction.current=false;olderBusy.current=false;setLoadingOlder(false);setHistoryCursor(null);setHasMore(true);setHistoryError('');
   const controller=new AbortController();
+  let liveSupported=true;
+  seriesRevision.current='';
+  setFeedLabel('');
   const barsUrl=`/api/bars?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}`;
   let requestId=0;
   let pushedDuringLoad:Map<number,Bar>|null=null;
@@ -194,7 +202,15 @@ function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrossh
     const data=await response.json();
     if(!response.ok)throw Error(data.detail||'读取 K 线失败');
     if(stop||id!==requestId||historicView.current)return false;
-    const first=!initialized;
+    const changed=!!seriesRevision.current&&seriesRevision.current!==data.series_revision;
+    const first=!initialized||changed;
+    if(changed){
+      pushes.clear();historyGeneration.current++;olderBusy.current=false;
+      setLoadingOlder(false);setHasMore(true);setHistoryError('');
+    }
+    seriesRevision.current=data.series_revision||'';
+    liveSupported=data.live_supported!==false;
+    setFeedLabel([data.provider,data.adjustment_label,data.history_notice,liveSupported&&data.live_provider!==data.provider?'实时 '+data.live_provider:'',liveSupported?'':(data.live_reason||'')+' · 定时刷新'].filter(Boolean).join(' · '));
     initialized=true;
     const incoming=pushes.size?mergeBars(data.bars,[...pushes.values()]):data.bars;
     setBars(old=>first?incoming:mergeBars(old,incoming));
@@ -210,7 +226,7 @@ function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrossh
    }catch(e){if(!stop&&id===requestId)setError(String(e))}
    finally{if(pushedDuringLoad===pushes)pushedDuringLoad=null}
   };
-  const open=()=>{if(stop)return;ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/${secureChart?'market/':''}stream?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}`);ws.onopen=()=>{setLive(false);liveRef.current=false};ws.onmessage=e=>{if(stop||currentKey.current!==key)return;const msg=JSON.parse(e.data);if(msg.type==='status'&&msg.connected){setLive(true);liveRef.current=true;retryDelay=5000;if(openedOnce)load(true);openedOnce=true}if(msg.type==='heartbeat'){setLive(!!msg.connected);liveRef.current=!!msg.connected}if(msg.type==='bar'&&!historicView.current){pushedDuringLoad?.set(msg.bar.time,msg.bar);setBars(old=>mergeBars(old,[msg.bar]))}if(msg.type==='error'){setError(msg.message);setLive(false);liveRef.current=false;if(msg.code==='permission_denied'){retryDelay=300000;setStale(true)}}};ws.onclose=()=>{if(stop)return;setLive(false);liveRef.current=false;timer=window.setTimeout(open,retryDelay)}};
+  const open=()=>{if(stop||!liveSupported)return;ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/${secureChart?'market/':''}stream?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}`);ws.onopen=()=>{setLive(false);liveRef.current=false};ws.onmessage=e=>{if(stop||currentKey.current!==key)return;const msg=JSON.parse(e.data);if(msg.type==='status'&&msg.live_supported===false){liveSupported=false;setLive(false);return}if(msg.type==='status'&&msg.connected){setLive(true);liveRef.current=true;retryDelay=5000;if(openedOnce)load(true);openedOnce=true}if(msg.type==='heartbeat'){setLive(!!msg.connected);liveRef.current=!!msg.connected}if(msg.type==='bar'&&!historicView.current){if(msg.series_revision&&msg.series_revision!==seriesRevision.current){if(!pushedDuringLoad)void load(true);return}pushedDuringLoad?.set(msg.bar.time,msg.bar);setBars(old=>mergeBars(old,[msg.bar]))}if(msg.type==='error'){setError(msg.message);setLive(false);liveRef.current=false;if(msg.code==='permission_denied'){retryDelay=300000;setStale(true)}}};ws.onclose=()=>{if(stop)return;setLive(false);liveRef.current=false;if(liveSupported)timer=window.setTimeout(open,retryDelay)}};
   const returnLive=(event:Event)=>{if((event as CustomEvent).detail!==index)return;historyGeneration.current++;historyInteraction.current=false;olderBusy.current=false;setLoadingOlder(false);initialized=false;historicView.current=false;pendingHistoryJump.current=null;fittedKey.current='';setHasMore(true);setHistoryError('');load(true)};window.addEventListener('market-return-live',returnLive);
   const force=previousRefresh.current!==version;
   previousRefresh.current=version;
@@ -225,7 +241,7 @@ function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrossh
   const requestKey=key,requestGeneration=historyGeneration.current;const stopped=()=>currentKey.current!==requestKey||historyGeneration.current!==requestGeneration;
   try{
    const result=await backfillHistory({before:historyCursor,target:target?.to,stopped,
-    fetchPage:async before=>{const r=await fetch(`/api/bars/older?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}&before=${before}`);const data=await r.json();if(!r.ok)throw Error(data.detail||'加载历史 K 线失败');return data},
+    fetchPage:async before=>{const r=await fetch(`/api/bars/older?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}&before=${before}`);const data=await r.json();if(!r.ok)throw Error(data.detail||'加载历史 K 线失败');if(data.series_revision!==seriesRevision.current)throw Error('行情来源或复权基准已更新，请返回实时图表重新加载');return data},
     onPage:data=>{if(data.bars.length){if(jumpToOlder&&target===undefined){pendingHistoryJump.current={from:data.bars[0].time,to:historyCursor};historyInteraction.current=false}setBars(old=>mergeBars(old,data.bars))}setHistoryCursor(data.next_before);setHasMore(Boolean(data.has_more));}
    });
    if(result.cancelled)return;
@@ -239,6 +255,7 @@ function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrossh
   historyInteraction.current=false;olderBusy.current=true;setLoadingOlder(true);setHistoryError('');setHistoryNotice('正在读取目标日期…');
   try{const start=target.from-7*86400,end=Math.min(target.to+86400,Math.floor(Date.now()/1000));
    const response=await fetch(`/api/bars/window?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}&start=${start}&end=${end}`);const data=await response.json();if(!response.ok)throw Error(data.detail||'目标日期加载失败');if(stopped())return;
+   if(data.series_revision!==seriesRevision.current){setHistoryNotice('行情来源或复权基准已更新，请返回实时图表重新加载');return}
    if(!data.bars.length){setHistoryNotice('该日期附近没有行情：可能为休市、未上市或数据源不提供');return}
    // Keep a contiguous window: merging a distant date into today's bars hides the unrequested gap.
    historicView.current=true;pendingHistoryJump.current=target;setHistoryCursor(data.bars[0].time);setHasMore(true);setBars(data.bars);setHistoryNotice('已载入目标日期；点击实时可回到最新行情');
@@ -254,7 +271,7 @@ function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrossh
  },[key,historyCursor,hasMore,loadingOlder,loadedKey,historyError]);
  const filtered=useMemo(()=>bars.filter(x=>mode==='all'||x.session!=='overnight').filter(x=>mode!=='regular'||x.session==='regular'),[bars,mode]);
  const resonanceName=activeIndicators.find(ind=>isChiefResonance(ind.name))?.name;
- const resonanceValues=useMemo(()=>resonanceName&&loadedKey===key?compute(filtered,resonanceName,'{}'):null,[resonanceName,loadedKey,key,filtered]);
+ const resonanceValues=useMemo(()=>resonanceName&&loadedKey===key&&!inputIssue(filtered,resonanceName,'{}')?compute(filtered,resonanceName,'{}'):null,[resonanceName,loadedKey,key,filtered]);
  const resonanceIndex=resonanceValues?.['共振'].lastIndexOf(1)??-1;
  const resonanceBar=filtered[resonanceIndex];
  const resonanceUnavailable=indicators.some(ind=>isChiefResonance(ind.name)&&appliesTo(ind,index,tile.period)&&!tdxAvailable(ind.name,tile.symbol));
@@ -345,7 +362,7 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
    timeScale:{borderColor:axis},
   });
  },[theme,index,snapCrosshairTime]);
- useEffect(()=>{const candle=candleRef.current;if(!candle)return;candle.applyOptions(candleSeriesOptions(appearance));if(loadedKey!==key)return;candle.setData(filtered.map(x=>({time:toTime(x.time),open:x.open,high:x.high,low:x.low,close:x.close,color:candleBodyColor(x.open,x.close,appearance)})));for(const item of volumeSeries.current){const colors=volumePalette(appearance,item.colors);item.series.setData(filtered.map(x=>({time:toTime(x.time),value:x.volume,color:volumeColor(x.open,x.close,colors)})))}},[appearance,filtered,key,loadedKey]);
+ useEffect(()=>{const candle=candleRef.current;if(!candle)return;candle.applyOptions(candleSeriesOptions(appearance));if(loadedKey!==key)return;candle.setData(filtered.map(x=>({time:toTime(x.time),open:x.open,high:x.high,low:x.low,close:x.close,color:candleBodyColor(x.open,x.close,appearance)})));for(const item of volumeSeries.current){const colors=volumePalette(appearance,item.colors);item.series.setData(filtered.map(x=>({time:toTime(x.time),value:x.volume??undefined,color:volumeColor(x.open,x.close,colors)})))}},[appearance,filtered,key,loadedKey]);
  useEffect(()=>{const chart=chartRef.current,candle=candleRef.current;if(!chart||!candle||loadedKey!==key)return;const data=filtered;const series:ISeriesApi<any>[]=[];const lines:any[]=[];const primitives:ReturnType<typeof trendExtension>[]=[];const signalMarkers:SeriesMarker<Time>[]=[];const tdxCleanup:(()=>void)[]=[];const msigPrimitives:ReturnType<typeof msigm8Overlay>[]=[];const sixPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sixPulsePanel>}[]=[];const sessionPrimitives:{series:ISeriesApi<any>;primitive:ReturnType<typeof sessionBackground>}[]=[];
   const levelPrimitives:ReturnType<typeof sixPulseLevelsOverlay>[]=[];
   if(!drawingsHidden){
@@ -355,12 +372,14 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
   }
   let pane=1;let indicatorIssue='';for(const ind of activeIndicators){let values:Record<string,(number|null)[]>;try{
    if(ind.name==='ORB5')continue;
+   const issue=inputIssue(filtered,ind.name,ind.params);
+   if(issue)throw Error(issue);
    if(ind.name==='PYTHON'){
     const result=pythonResults[ind.id];if(!result)continue;
     const times=new Map(result.time.map((time,i)=>[time,i]));
     values=Object.fromEntries(Object.entries(result.values).map(([name,row])=>[name,filtered.map(bar=>{const i=times.get(bar.time);return i===undefined?null:row[i]??null})]));
    }else values=ind.name===resonanceName&&resonanceValues?resonanceValues:compute(filtered,ind.name,ind.params);
-  }catch(e){indicatorIssue=`${ind.title||ind.name}: ${String(e)}`;continue}const overlay=indicatorPane(ind)==='main';const target=overlay?0:pane++;const effectiveColors=ind.name==='VOLUME'?volumePalette(appearance,ind.colors):ind.colors;
+  }catch(e){indicatorIssue+=[indicatorIssue?'；':'',ind.title||ind.name,'：',e instanceof Error?e.message:String(e)].join('');continue}const overlay=indicatorPane(ind)==='main';const target=overlay?0:pane++;const effectiveColors=ind.name==='VOLUME'?volumePalette(appearance,ind.colors):ind.colors;
    if(drawTdx(chart,filtered,ind,values,target,series,signalMarkers,tdxCleanup))continue;
    if(ind.name==='MSIGM8'){const primitive=msigm8Overlay(filtered,values,ind.colors);candle.attachPrimitive(primitive);msigPrimitives.push(primitive);continue}
    if(ind.name==='SIXPULSE_SIGNAL'){
@@ -409,7 +428,7 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
   else{const samples=barTimes.flatMap(time=>{const x=chart.timeScale().timeToCoordinate(toTime(time));return x===null?[]:[{time,x}]});const time=typeof p.time==='number'?p.time:drawingTimeAtX(p.point.x,samples,drawingStep,chart.timeScale().options().barSpacing);if(time===null)return;const point={time,price:drawPrice};if(!trendStart)setTrendStart(point);else if(point.time!==trendStart.time){record();if(draw==='fib')onFibos([...fibos,{id:newDrawingId(),points:[trendStart,point],...drawingStyle({},'fib')}]);else{const id=newDrawingId();onTrend([...trends,{id,points:[trendStart,point],extend:'none' as const,...drawingStyle({},'trend')}]);setSelectedDrawing({kind:'trend',id})}setTrendStart(null);setDraw('off')}}
  };
  useEffect(()=>{const chart=chartRef.current;if(!chart)return;const handler=(p:any)=>drawingClick.current(p);chart.subscribeClick(handler);return()=>chart.unsubscribeClick(handler)},[index]);
- useEffect(()=>{const candle=candleRef.current,chart=chartRef.current;if(!candle)return;const lines=depthLines.map(l=>candle.createPriceLine({price:l.price,color:l.side==='buy'?'#42d4a3':'#ff718b',lineWidth:2,lineStyle:l.cached?2:0,axisLabelVisible:true,title:`${l.cached?'缓存':'当前'}挂${l.side==='buy'?'买':'卖'} ${new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1}).format(l.qty)}股`}));return()=>{if(chartRef.current===chart)for(const line of lines)candle.removePriceLine(line)}},[depthLines,key]);
+ useEffect(()=>{const candle=candleRef.current,chart=chartRef.current;if(!candle||priceBasis==='hfq')return;const lines=depthLines.map(l=>candle.createPriceLine({price:l.price,color:l.side==='buy'?'#42d4a3':'#ff718b',lineWidth:2,lineStyle:l.cached?2:0,axisLabelVisible:true,title:`${l.cached?'缓存':'当前'}挂${l.side==='buy'?'买':'卖'} ${new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1}).format(l.qty)}股`}));return()=>{if(chartRef.current===chart)for(const line of lines)candle.removePriceLine(line)}},[depthLines,key,priceBasis]);
  const stopTrendDrag=(commit:boolean)=>{
   const state=dragState.current;if(!state)return;dragState.current=null;suppressDrawingClick.current=performance.now()+350;
   const chart=chartRef.current;if(chart){chart.applyOptions({handleScroll:state.scroll,handleScale:state.scale});chart.priceScale('right').applyOptions({autoScale:state.autoScale});}
@@ -477,8 +496,8 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
   {resonanceBar?<button type="button" onClick={locateResonance}>定位最近买点 · {resonanceBar.trade_date}{!isLongPeriod(tile.period)&&` ${((isUS?etClock:cnClock).format(resonanceBar.time*1000))}`}</button>:<span>{resonanceValues?.['共振'].includes(0)?'已载入 K 线暂无共振':'等待有效量价数据'}</span>}
  </div>:null;
  const tools=<><div className="chart-tools"><span>{draw!=='off'?(draw==='horizontal'?'在主图选择水平线价格':trendStart?'在主图选择另一横向位置作为终点 · Esc 取消':'在主图选择起点 · Esc 取消'):isUS?(isLongPeriod(tile.period)?'常规时段':mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div className="drawing-toolbar" role="toolbar" aria-label="画图工具"><label className="chart-date">日期<input type="date" aria-label="定位日期" value={dateTarget} onChange={e=>setDateTarget(e.target.value)}/></label><button disabled={!dateTarget||loadingOlder} onClick={jumpToDate}>{loadingOlder?'补载中…':'前往'}</button><button onClick={()=>{historicView.current=false;setHistoryNotice('');setDateTarget('');window.dispatchEvent(new CustomEvent('market-return-live',{detail:index}))}}>实时</button><button aria-label="重置视图" title="恢复适量近期 K 线，并自动适配各图价格轴" disabled={loadedKey!==key||!filtered.length} onClick={resetView}>重置视图</button><button aria-pressed={showExtremes} onClick={()=>{const next=!showExtremes;setShowExtremes(next);try{localStorage.setItem('chart-visible-extremes',next?'on':'off')}catch{}}}>区间高低</button><button aria-pressed={draw==='off'} onClick={()=>{setDraw('off');setTrendStart(null)}}>选择 / 编辑</button><button aria-pressed={draw==='horizontal'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='horizontal'?'off':'horizontal')}}>水平线</button><button aria-pressed={draw==='trend'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>趋势线</button><button aria-pressed={draw==='fib'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='fib'?'off':'fib')}}>斐波那契</button>{draw!=='off'&&<button onClick={()=>{setDraw('off');setTrendStart(null)}}>取消绘制</button>}<button disabled={!drawingUndo} onClick={()=>{if(!drawingUndo)return;onDraw(drawingUndo.horizontal);onTrend(drawingUndo.trends);onFibos(drawingUndo.fibos);onDrawingsHidden(drawingUndo.hidden);setSelectedDrawing(null);setDrawingUndo(null)}}>撤销</button><button aria-pressed={drawingsHidden} title="整体隐藏不改变单个对象的显隐设置" onClick={()=>toggleAllDrawings(!drawingsHidden)}>{drawingsHidden?'全部显示':'全部隐藏'}</button><button type="button" className="chart-plan-create" onClick={()=>setShowPlan(true)}>创建交易计划</button><QuickIndicators indicators={indicators} index={index} period={tile.period} symbol={tile.symbol} onToggle={onIndicatorToggle}/><div className="drawing-analysis-tools"><DrawingsPanel hidden={drawingsHidden} onHidden={toggleAllDrawings} selected={selectedDrawing} onSelect={setSelectedDrawing} editorRequest={editorRequest} horizontal={drawings} trends={trends} fibos={fibos} onHorizontal={saveHorizontal} onTrends={saveTrends} onFibos={saveFibos}/><button className="chart-analysis-tool" type="button" aria-haspopup="dialog" onClick={()=>onAnalysis(tile,mode)}><Sparkles size={14} strokeWidth={1.7} aria-hidden="true"/>AI 盘面分析</button></div></div></div><div className="drawing-interaction-row">{selectedDrawing?<div className="drawing-selection-actions" role="toolbar" aria-label="选中画线操作"><strong>已选：{drawingLabel(selectedDrawing)}</strong>{selectedDrawing.kind==='trend'&&<span className="trend-drag-help">{draggingTrend?'正在拖动 · 松开保存 · Esc 取消':'拖动两端圆点可调整长度与角度'}</span>}<button onClick={()=>setEditorRequest(n=>n+1)}>编辑样式</button><button aria-label="删除选中画线" onClick={deleteSelectedDrawing}>删除此对象</button><button onClick={()=>setSelectedDrawing(null)}>取消选择</button></div>:<div className="drawing-interaction-help" role="status">{draw!=='off'?(draw==='horizontal'?'绘制水平线：在主图点击目标价格':trendStart?'已选起点，请点击另一横向位置完成绘制 · Esc 取消':'绘制：先点击起点，再点击另一横向位置作为终点 · Esc 取消'):drawingsHidden?'画线已隐藏，点击“全部显示”恢复':hoveredDrawing?`可选：${drawingLabel(hoveredDrawing)} · 点击打开编辑`:'选择模式：靠近自己画的线，出现手形后点击；也可打开“画线管理”'}</div>}</div></>;
- return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div>{active&&<span className="current-chart-tag">当前图</span>}<strong>{chartName}</strong><span className="chart-symbol-code">{tile.symbol}</span><span className="market-tag">{isUS?"美股":`${tile.symbol} · 沪深 A 股`} · {periodLabel(tile.period)}</span>{stale&&<span className="warning">NAS 缓存 · 未同步最新行情{cacheSyncTime>0?' · 上次同步 '+new Date(cacheSyncTime*1000).toLocaleString('zh-CN'):''}</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'OpenD 实时订阅成功':'实时行情未连接；可能正在重试或等待权限'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div>{active&&drawingHost&&createPortal(tools,drawingHost)}{active&&isUS&&<MarketFlowPanel key={tile.symbol} symbol={tile.symbol}/>}{isUS&&<DepthPanel symbol={tile.symbol} onLines={setDepthLines} settingsHost={depthHost}/>}
-{showPlan&&<Suspense fallback={<p role="status">正在打开交易计划…</p>}><ChartPlanDialog market={isUS?'US':'CN'} symbol={tile.symbol} period={tile.period} mode={mode} indicators={activeIndicators} bars={filtered} stockName={stockName} onClose={()=>setShowPlan(false)}/></Suspense>}{resonanceInfo}{(drawingIssue||error||formulaError||pythonError||(openingEnabled&&(openingStyleError||(opening.key===key&&opening.error))))&&<div className="chart-error">{drawingIssue||error||formulaError||pythonError||openingStyleError||opening.error}</div>}{candleReadout}<div className={`chart-canvas ${draw!=='off'?'drawing-mode':hoveredDrawing?'drawing-hit':''} ${draggingTrend?'trend-dragging':hoveredHandle?'trend-handle-hover':''}`} ref={box} style={activeIndicators.some(ind=>tdxCatalog[ind.name])?{height:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length,minHeight:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length}:undefined} onClickCapture={createDrawingFromClick} onPointerDownCapture={startTrendDrag} onPointerMoveCapture={moveTrendDrag} onPointerUpCapture={e=>endTrendDrag(e,true)} onPointerCancelCapture={e=>endTrendDrag(e,false)} onLostPointerCapture={()=>{if(dragState.current)cancelDrag.current()}} onPointerLeave={()=>{setHoverTime(null);setHoveredDrawing(null);setHoveredHandle(false)}} onPointerDown={()=>{historyInteraction.current=true}} onWheel={()=>{historyInteraction.current=true}}/><div className="chart-foot"><span>NAS 缓存 · {filtered.length} 根 K 线{live?' · 实时更新中':''}</span><button className="older-button" disabled={!hasMore||loadingOlder||historyCursor===null} onClick={()=>void requestOlder(true)}>{loadingOlder?'加载中…':hasMore?'← 更早 K 线':'已到历史保留范围'}</button><span>{historyError||historyNotice||(openingEnabled&&opening.key===key&&opening.data?.message)}</span></div></div>
+ return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div>{active&&<span className="current-chart-tag">当前图</span>}<strong>{chartName}</strong><span className="chart-symbol-code">{tile.symbol}</span><span className="market-tag">{isUS?"美股":`${tile.symbol} · 沪深 A 股`} · {periodLabel(tile.period)}{feedLabel&&' · '+feedLabel}</span>{stale&&<span className="warning">NAS 缓存 · 未同步最新行情{cacheSyncTime>0?' · 上次同步 '+new Date(cacheSyncTime*1000).toLocaleString('zh-CN'):''}</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时订阅成功':'实时行情未连接；可能正在重试或等待权限'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div>{active&&drawingHost&&createPortal(tools,drawingHost)}{active&&isUS&&<MarketFlowPanel key={tile.symbol} symbol={tile.symbol}/>}{isUS&&priceBasis==='hfq'&&depthLines.length>0&&<span className="warning">盘口使用实际报价，后复权图隐藏盘口价格线</span>}{isUS&&<DepthPanel symbol={tile.symbol} onLines={setDepthLines} settingsHost={depthHost}/>}
+{showPlan&&<Suspense fallback={<p role="status">正在打开交易计划…</p>}><ChartPlanDialog market={isUS?'US':'CN'} symbol={tile.symbol} period={tile.period} mode={mode} indicators={activeIndicators} bars={filtered} stockName={stockName} onClose={()=>setShowPlan(false)}/></Suspense>}{resonanceInfo}{(drawingIssue||error||formulaError||pythonError||(openingEnabled&&(openingStyleError||(opening.key===key&&opening.error))))&&<div className="chart-error">{[drawingIssue,error,formulaError,pythonError,openingEnabled&&(openingStyleError||opening.error)].filter(Boolean).join('；')}</div>}{candleReadout}<div className={`chart-canvas ${draw!=='off'?'drawing-mode':hoveredDrawing?'drawing-hit':''} ${draggingTrend?'trend-dragging':hoveredHandle?'trend-handle-hover':''}`} ref={box} style={activeIndicators.some(ind=>tdxCatalog[ind.name])?{height:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length,minHeight:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length}:undefined} onClickCapture={createDrawingFromClick} onPointerDownCapture={startTrendDrag} onPointerMoveCapture={moveTrendDrag} onPointerUpCapture={e=>endTrendDrag(e,true)} onPointerCancelCapture={e=>endTrendDrag(e,false)} onLostPointerCapture={()=>{if(dragState.current)cancelDrag.current()}} onPointerLeave={()=>{setHoverTime(null);setHoveredDrawing(null);setHoveredHandle(false)}} onPointerDown={()=>{historyInteraction.current=true}} onWheel={()=>{historyInteraction.current=true}}/><div className="chart-foot"><span>NAS 缓存 · {filtered.length} 根 K 线{live?' · 实时更新中':''}</span><button className="older-button" disabled={!hasMore||loadingOlder||historyCursor===null} onClick={()=>void requestOlder(true)}>{loadingOlder?'加载中…':hasMore?'← 更早 K 线':'已到历史保留范围'}</button><span>{historyError||historyNotice||(openingEnabled&&opening.key===key&&opening.data?.message)}</span></div></div>
 }
 type Market = 'US' | 'CN';
 type WatchGroup = {id:string; name:string; symbols:string[]};
@@ -750,11 +769,12 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
     return ()=>controller.abort();
   },[templateAttempt]);
   useEffect(()=>{
-    const loadStatus=()=>fetch('/api/status').then(r=>r.json()).then(setStatus).catch(()=>{});
+    let stopped=false;
+    const loadStatus=()=>fetch('/api/status?market='+market).then(r=>r.json()).then(s=>{if(!stopped)setStatus(s)}).catch(()=>{});
     loadStatus();
     const t=setInterval(loadStatus,5000);
-    return()=>clearInterval(t);
-  },[]);
+    return()=>{stopped=true;clearInterval(t)};
+  },[market]);
   useEffect(()=>{
     clearTimeout(saveRetryTimer.current);if(!ready||JSON.stringify(state)===lastSavedWorkspace.current)return;
     const snapshot=state,payload=JSON.stringify(state);
@@ -785,7 +805,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   const importGroups=async()=>{
     setImportingGroups(true);setImportMessage('');
     try{
-      const r=await fetch('/api/watchlists/import-moomoo',{method:'POST'});
+      const r=await fetch('/api/watchlists/import?market='+market,{method:'POST'});
       const data=await r.json();
       if(!r.ok)throw Error(data.detail||'读取失败');
       setState(restoreWorkspace(data.value));
@@ -887,7 +907,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   const indicatorSettings=<div className="indicator-panel"><div className="settings-section-heading"><h3>主图与副图指标</h3><p>搜索并添加指标；下方可开关显示，点击“设置”调整参数。</p></div><IndicatorPicker onConfigureDepth={hasDepthIndicator?()=>{
     const options=depthHost?.querySelector('details');
     if(options){options.open=true;options.querySelector('summary')?.focus()}
-  }:undefined} marketLabel={market==='CN'?'A 股':'美股'} names={names.filter(name=>tdxAvailable(name,market))} value={newIndicator} pane={newIndicatorPane} onSelect={name=>{setNewIndicator(name);setNewIndicatorPane(indicatorPane({name}))}} onPaneChange={setNewIndicatorPane} onAdd={(name,pane)=>updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name,title:name==='MSIGM8'?'MACD突破':undefined,pane,params:JSON.stringify(indicatorDefaults[name]||{}),visible:true}]}))}/><div className="indicator-list">{(['main','separate'] as const).map(pane=><section className="indicator-pane-group" key={pane}><h3>{pane==='main'?'主图叠加指标':'独立副图指标'} <small>{ws.indicators.filter(ind=>indicatorPane(ind)===pane).length+Number(pane==='main'&&hasDepthIndicator)}</small></h3>
+  }:undefined} marketLabel={market==='CN'?'A 股':'美股'} names={names.filter(name=>tdxAvailable(name,market)&&(name!=='INSTITUTION_TREND'||status.historical_chips===true))} value={newIndicator} pane={newIndicatorPane} onSelect={name=>{setNewIndicator(name);setNewIndicatorPane(indicatorPane({name}))}} onPaneChange={setNewIndicatorPane} onAdd={(name,pane)=>updateMarket(w=>({...w,indicators:[...w.indicators,{id:`i-${Date.now()}-${Math.random().toString(36).slice(2)}`,name,title:name==='MSIGM8'?'MACD突破':undefined,pane,params:JSON.stringify(indicatorDefaults[name]||{}),visible:true}]}))}/><div className="indicator-list">{(['main','separate'] as const).map(pane=><section className="indicator-pane-group" key={pane}><h3>{pane==='main'?'主图叠加指标':'独立副图指标'} <small>{ws.indicators.filter(ind=>indicatorPane(ind)===pane).length+Number(pane==='main'&&hasDepthIndicator)}</small></h3>
   {pane==='main'&&hasDepthIndicator&&<div ref={setDepthHost}/>}
   {ws.indicators.filter(ind=>indicatorPane(ind)===pane).map(ind=><IndicatorSettings key={ind.id} indicator={ind} onPatch={patch=>patchIndicator(ind.id,patch)} onDelete={()=>updateMarket(w=>({...w,indicators:w.indicators.filter(x=>x.id!==ind.id)}))}/>)}{!(pane==='main'&&hasDepthIndicator)&&!ws.indicators.some(ind=>indicatorPane(ind)===pane)&&<p className="settings-empty">暂无此类指标，可从上方添加。</p>}</section>)}</div><details className="indicator-advanced-tools"><summary>自定义指标与模板</summary><div className="custom-editor"><h3>新建自定义指标</h3>
   <div className="custom-language" role="tablist" aria-label="自定义指标语言"><button role="tab" aria-selected={customLanguage==='formula'} className={customLanguage==='formula'?'chosen':''} onClick={()=>selectCustomLanguage('formula')}>简易公式</button><button role="tab" aria-selected={customLanguage==='python'} className={customLanguage==='python'?'chosen':''} onClick={()=>selectCustomLanguage('python')}>Python</button></div>
@@ -928,7 +948,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
           <div className="group-manager-current"><span>{selectedGroup.name}</span>{selectedGroup.id!=='featured'&&<div><button onClick={()=>{setEditingGroup(selectedGroup.id);setGroupDraft(selectedGroup.name)}}>重命名</button><button onClick={()=>deleteGroup(selectedGroup.id)}>删除</button></div>}</div>
           {editingGroup===selectedGroup.id&&<input className="group-edit" aria-label="分组名称" value={groupDraft} autoFocus onChange={e=>setGroupDraft(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')renameGroup();if(e.key==='Escape')setEditingGroup('')}} onBlur={renameGroup}/>}
           <div className="add-group"><input aria-label="新分组名称" value={newGroupName} onChange={e=>setNewGroupName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addGroup()} placeholder="新建分组"/><button title="创建分组" onClick={addGroup}><Plus size={15}/></button></div>
-          <button className="moomoo-import" onClick={importGroups} disabled={importingGroups}>{importingGroups?'正在同步…':'从 moomoo 同步分组'}</button>
+          <button className="moomoo-import" onClick={importGroups} disabled={importingGroups||status.capabilities?.watchlists===false} title={status.capabilities?.watchlists===false?'当前数据源未提供自选分组':undefined}>{importingGroups?'正在同步…':'从 '+(status.routes?.[market]?.watchlists||'行情源')+' 同步分组'}</button>
           {importMessage&&<div className="quote-notice" title={importMessage}>{importMessage}</div>}
           {groupError&&<div className="side-error">{groupError}</div>}
         </div>}
@@ -937,7 +957,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
         {quotesStale&&<div className="quote-notice">报价为上次缓存数据</div>}
         {!selectedGroup.symbols.includes(current.symbol)&&(selectedGroup.symbols.length>0||previewSymbol===current.symbol)&&<div className="preview-instrument" aria-label="临时查看股票"><span>正在查看 · 未加入当前分组</span><strong>{stockNames[current.symbol]||quotes[current.symbol]?.name||current.symbol.replace('US.','')}</strong><div><code>{current.symbol}</code><button onClick={()=>addSymbol(current.symbol,stockNames[current.symbol]||quotes[current.symbol]?.name)}>＋ 加入本组</button></div></div>}
         <div className="symbol-list" role="region" aria-label="自选股票列表" tabIndex={0}>{selectedGroup.symbols.map(s=><div key={s} className={`symbol ${current?.symbol===s?'active':''}`}>
-          <button className="stock-select" onClick={()=>{setTile({symbol:s});setMobileWatchOpen(false)}} title={quotes[s]?.update_time?`OpenD 更新：${quotes[s].update_time}`:s}>
+          <button className="stock-select" onClick={()=>{setTile({symbol:s});setMobileWatchOpen(false)}} title={quotes[s]?.update_time?`报价更新：${quotes[s].update_time}`:s}>
             <span className="symbol-icon">{s.split('.')[1].slice(0,1)}</span>
             <span className="stock-main"><span className="stock-top"><strong>{market==='CN'&&(stockNames[s]||quotes[s]?.name)&&/[\u3400-\u9fff]/.test(stockNames[s]||quotes[s].name)?stockNames[s]||quotes[s].name:s.split('.')[1]}</strong><b>{priceText(quotes[s]?.price??null,market)}</b></span>
               <span className="stock-middle"><small>{market==='CN'?s:quotes[s]?.name||s}</small><em className={quotes[s]?.change_percent==null?'flat':quotes[s].change_percent!>=0?'positive':'negative'}>{percent(quotes[s]?.change_percent??null)}</em></span>
@@ -949,7 +969,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
         <StockSearch key={market} market={market} query={newSymbol} onQuery={value=>{setNewSymbol(value);setSymbolError('')}} onView={viewSymbol} onAdd={addSymbol}/>
         {symbolError&&<div className="side-error">{symbolError}</div>}
       </div>
-      <div className="side-bottom"><div className="resource"><span>实时订阅</span><strong>{status.active_streams||0} / {status.max_streams||32}</strong></div><p>行情由本机 OpenD 提供。美股交易使用独立 HTTPS 入口。</p></div>
+      <div className="side-bottom"><div className="resource"><span>实时订阅</span><strong>{status.active_streams||0} / {status.max_streams||32}</strong></div><p>行情来源：{status.provider||'加载中'}。美股交易使用独立 HTTPS 入口。</p></div>
     </aside><main className={showRadar||showScanner||showApi||showReview?"workspace-panel-view":undefined}>
 
       {showApi&&<ApiManagement/>}
@@ -977,7 +997,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
       busy={backgroundReport.busy} opened={openedReport} onOpen={showReport}
       onStart={refs=>{void backgroundReport.start(analysisChart,refs);setAnalysisChart(null)}} onApply={applyAnalysisDrawings} onClose={()=>setAnalysisChart(null)} onSettings={()=>{setAnalysisChart(null);setSettingsTab('agents')}}/></Suspense>}
     {workspaceView!=='chart'&&hasDepthIndicator&&depthHost&&<DepthPanel key={current.symbol} symbol={current.symbol} settingsHost={depthHost}/>}
-    {settingsTab&&<SettingsPanel tab={settingsTab} onTab={tab=>{if(tab==='appearance')setAppearanceMarket(market);setSettingsTab(tab)}} onClose={()=>setSettingsTab(null)}>{settingsTab==='notifications'?<NotificationSettings secureUrl={new URL('/chart?settings=notifications',secureChart?location.origin:tradingUrl).href}/>:settingsTab==='agents'?<AgentSettings secureUrl={new URL('/chart?settings=agents',secureChart?location.origin:tradingUrl).href}/>:settingsTab==='connection'?<OpenDPanel tradingUrl={tradingUrl} onReady={()=>setRefresh(v=>v+1)}/>:settingsTab==='appearance'?<CandleSettings snapCrosshairTime={snapCrosshairTime} onCrosshairSnapChange={changeCrosshairSnap} market={appearanceMarket} onMarket={setAppearanceMarket} appearance={state.markets[appearanceMarket].chartAppearance} onChange={patch=>setState(old=>({...old,markets:{...old.markets,[appearanceMarket]:{...old.markets[appearanceMarket],chartAppearance:{...old.markets[appearanceMarket].chartAppearance,...patch}}}}))}/>:settingsTab==='indicators'?indicatorSettings:<CachePanel embedded symbol={current?.symbol} onClose={()=>setSettingsTab(null)}/>}</SettingsPanel>}
+    {settingsTab&&<SettingsPanel tab={settingsTab} onTab={tab=>{if(tab==='appearance')setAppearanceMarket(market);setSettingsTab(tab)}} onClose={()=>setSettingsTab(null)}>{settingsTab==='notifications'?<NotificationSettings secureUrl={new URL('/chart?settings=notifications',secureChart?location.origin:tradingUrl).href}/>:settingsTab==='agents'?<AgentSettings secureUrl={new URL('/chart?settings=agents',secureChart?location.origin:tradingUrl).href}/>:settingsTab==='connection'?<><p>{market==='US'?'美股':'沪深'}历史行情 {status.routes?.[market]?.history} · 报价 {status.routes?.[market]?.snapshots} · 实时 {status.routes?.[market]?.live}</p>{status.historical_chips===false&&<p>机构动向需要逐根历史筹码；当前历史源未声明提供这项数据。</p>}{status.capabilities?.chip_summary&&<ChipSummary key={market} market={market}/>}{status.opend_configured&&<OpenDPanel tradingUrl={tradingUrl} onReady={()=>setRefresh(v=>v+1)}/>}</>:settingsTab==='appearance'?<CandleSettings snapCrosshairTime={snapCrosshairTime} onCrosshairSnapChange={changeCrosshairSnap} market={appearanceMarket} onMarket={setAppearanceMarket} appearance={state.markets[appearanceMarket].chartAppearance} onChange={patch=>setState(old=>({...old,markets:{...old.markets,[appearanceMarket]:{...old.markets[appearanceMarket],chartAppearance:{...old.markets[appearanceMarket].chartAppearance,...patch}}}}))}/>:settingsTab==='indicators'?indicatorSettings:<CachePanel embedded symbol={current?.symbol} onClose={()=>setSettingsTab(null)}/>}</SettingsPanel>}
 
   </div>;
 }

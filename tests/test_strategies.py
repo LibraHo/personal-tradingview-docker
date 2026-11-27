@@ -64,7 +64,7 @@ class RuleTests(unittest.TestCase):
         cfg=config();key=('US.SNDK','5m','regular')
         fake=MagicMock();fake.active={key:1}
         async def cached(*args,**kwargs):return {'bars':bars([3,2,4]),'stale':False}
-        with patch.object(market,'bridge',fake),patch.object(market,'bars',cached):
+        with patch.object(market,'streams',fake),patch.object(market,'bars',cached):
             try:
                 request=market.StrategyEvaluation(config=cfg,lease=True)
                 asyncio.run(market.strategy_evaluate(request));asyncio.run(market.strategy_evaluate(request))

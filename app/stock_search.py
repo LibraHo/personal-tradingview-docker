@@ -55,11 +55,12 @@ def refresh_directory(bridge, connect_db, key):
         db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (key, str(now)))
 
 
-async def maintain_directory(bridge, connect_db, stop, connection_factory=None):
+async def maintain_directory(bridge, connect_db, stop, connection_factory=None, markets=('CN','US')):
     def pending():
         with connect_db() as db:
             fresh = fresh_directories(db)
-        return [key for key in DIRECTORIES if key not in fresh]
+        return [key for key,(exchange,_,_) in DIRECTORIES.items()
+                if key not in fresh and ('US' if exchange == 'US' else 'CN') in markets]
 
     def refresh_pending():
         keys = pending()

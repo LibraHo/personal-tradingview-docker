@@ -282,7 +282,15 @@ class TradeReview(Input):
 
 class Reconcile(Input):
     manual_id: Key
-    opend_id: Key
+    broker_fill_id: Key
+
+    @model_validator(mode='before')
+    @classmethod
+    def legacy_field(cls, value):
+        if isinstance(value, dict) and 'opend_id' in value and 'broker_fill_id' not in value:
+            return {**{key: item for key, item in value.items() if key != 'opend_id'},
+                    'broker_fill_id': value['opend_id']}
+        return value
 
 
 class PlanFillLink(Input):
@@ -445,7 +453,7 @@ def new_fill(db, market, account, fields, source, broker_id, plan_id=None):
 def save_manual(db, market, body):
     body.check(market)
     if market == 'US' and not body.manual_confirm:
-        fail('美股成交由 OpenD 同步，明确补录时请传 manual_confirm=true')
+        fail('美股成交由券商同步，明确补录时请传 manual_confirm=true')
     fields = trade_fields(body)
     payload = {**fields, 'account': body.account, 'broker_id': body.broker_id, 'plan_id': body.plan_id, 'source': body.source}
     old_id = request_record(db, market, 'fill', body.request_id, payload)
@@ -466,13 +474,17 @@ def save_manual(db, market, body):
     return result
 
 
-def candidate_pair(manual, opend):
-    if manual['source'] == 'opend' or opend['source'] != 'opend' or manual.get('broker_id') or opend['broker_status'] == 'CANCELLED':
+def broker_source(source):
+    return source == 'opend' or source.startswith('broker:')
+
+
+def candidate_pair(manual, imported):
+    if broker_source(manual['source']) or not broker_source(imported['source']) or manual.get('broker_id') or imported['broker_status'] == 'CANCELLED':
         return False
     keys = ('market', 'account', 'code', 'symbol', 'side', 'qty', 'price', 'expiry', 'strike', 'right')
-    if any(manual[k] != opend[k] for k in keys):
+    if any(manual[k] != imported[k] for k in keys):
         return False
-    delta = datetime.fromisoformat(manual['at']) - datetime.fromisoformat(opend['at'])
+    delta = datetime.fromisoformat(manual['at']) - datetime.fromisoformat(imported['at'])
     return abs(delta.total_seconds()) < 60
 
 
@@ -502,7 +514,7 @@ def save_snapshot(db, market, body, source):
             fail('同一份持仓截图中合约代码重复')
         rows[item.code] = {**item.model_dump(mode='json'), 'account': account, 'as_of': as_of, 'source': source}
     fingerprint = None
-    if source != 'opend':
+    if not broker_source(source):
         fingerprint = digest([as_of, body.complete, source, rows])
         receipt = db.execute('SELECT result FROM ledger_snapshot_receipts WHERE market=? AND account=? AND fingerprint=?',
                              (market, account, fingerprint)).fetchone()
@@ -510,7 +522,7 @@ def save_snapshot(db, market, body, source):
             return {**json.loads(receipt[0]), 'status': 'already_imported'}
     previous = db.execute('SELECT * FROM ledger_accounts WHERE market=? AND account=?', (market, account)).fetchone()
     if previous and previous['as_of'] > as_of:
-        if source == 'opend':
+        if broker_source(source):
             return {'status': 'older_snapshot', 'as_of': previous['as_of']}
         fail('该账户已有更新的持仓记录，请核对截图时间', 409)
     same_stamp = previous and previous['as_of'] == as_of
@@ -537,10 +549,15 @@ def save_snapshot(db, market, body, source):
 
 
 def ingest_opend(connect_db, account, as_of, rows, fills):
+    return ingest_broker(connect_db, account, as_of, rows, fills, provider='opend')
+
+
+def ingest_broker(connect_db, account, as_of, rows, fills, *, provider):
+    source = 'opend' if provider == 'opend' else 'broker:' + provider
     snapshot = Snapshot(account=account, as_of=as_of, complete=True, rows=rows)
     counts = {'inserted': 0, 'updated': 0, 'unchanged': 0}
     with transaction(connect_db, True) as db:
-        positions = save_snapshot(db, 'US', snapshot, 'opend')
+        positions = save_snapshot(db, 'US', snapshot, source)
         for raw in fills:
             cancelled = raw.get('broker_status') == 'CANCELLED'
             if cancelled:
@@ -558,7 +575,7 @@ def ingest_opend(connect_db, account, as_of, rows, fills):
                 counts['unchanged'] += 1
                 continue
             if not row:
-                item = new_fill(db, 'US', account, trade_fields(broker), 'opend', broker_id)
+                item = new_fill(db, 'US', account, trade_fields(broker), source, broker_id)
                 if broker.broker_status != 'OK':
                     write_fill(db, {**item, 'broker_status': broker.broker_status})
                 counts['inserted'] += 1
@@ -568,7 +585,7 @@ def ingest_opend(connect_db, account, as_of, rows, fills):
                 counts['unchanged'] += 1
                 continue
             corrected = {'broker_status': 'CANCELLED'} if cancelled else {**trade_fields(broker), 'broker_status': broker.broker_status}
-            updated = {**old, **corrected, 'source': 'opend'}
+            updated = {**old, **corrected, 'source': source}
             if updated != old:
                 if old['plan_id']:
                     try:
@@ -729,11 +746,11 @@ def save_review(db, market, ident, body):
 
 def reconcile(db, market, body):
     if market != 'US':
-        fail('此操作仅用于核对美股 OpenD 成交')
+        fail('此操作仅用于核对美股券商成交')
     manual = fill_data(db, market, body.manual_id)
-    broker = fill_data(db, market, body.opend_id)
+    broker = fill_data(db, market, body.broker_fill_id)
     if manual['id'] == broker['id']:
-        if body.manual_id == body.opend_id:
+        if body.manual_id == body.broker_fill_id:
             fail('请分别选择手工记录与券商记录')
         return fill_view(db, manual)
     if not candidate_pair(manual, broker):
@@ -862,7 +879,7 @@ def install(app, agent, connect_db):
         with transaction(connect_db, True) as db:
             return save_review(db, market, ident, body)
 
-    @route('reconcile', 'POST', '核对手工补录与 OpenD 成交并保留原引用')
+    @route('reconcile', 'POST', '核对手工补录与券商成交并保留原引用')
     def reconcile_fills(market: Market, body: Reconcile):
         with transaction(connect_db, True) as db:
             return reconcile(db, market, body)

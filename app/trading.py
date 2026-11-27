@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import secrets
@@ -14,30 +13,14 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from .protection import ProtectionMixin, stop_config, stop_prices
+from .broker_provider import BrokerRejected, BrokerUncertain, OPTION_SYMBOL, STOCK_SYMBOL, SYMBOL, TradeError, broker_config
 from .option_tools import OptionToolsMixin
-
-
-class TradeError(Exception):
-    pass
-
-
-class BrokerRejected(TradeError):
-    pass
-
-
-class BrokerUncertain(Exception):
-    pass
+from .protection import ProtectionMixin, stop_config, stop_prices
 
 
 ACTIVE = {'UNSUBMITTED', 'WAITING_SUBMIT', 'SUBMITTING', 'SUBMITTED', 'FILLED_PART',
           'CANCELLING_PART', 'CANCELLING_ALL', 'DISABLED'}
 TYPES = {'NORMAL', 'MARKET', 'STOP', 'STOP_LIMIT', 'TRAILING_STOP', 'TRAILING_STOP_LIMIT'}
-STOCK_SYMBOL = re.compile(r'^US\.[A-Z][A-Z0-9.]{0,11}$')
-OPTION_SYMBOL = re.compile(r'^US\.[A-Z][A-Z0-9.]{0,11}\d{6}[CP]\d{1,10}$')
-SYMBOL = re.compile(r'^US\.(?:[A-Z][A-Z0-9.]{0,11}|[A-Z][A-Z0-9.]{0,11}\d{6}[CP]\d{1,10})$')
-
-
 def number(value, name, positive=True):
     if isinstance(value, bool):
         raise TradeError(f'{name}须为有效数字')
@@ -58,190 +41,11 @@ def price(value, name='价格'):
     return float(n)
 
 
-def records(frame):
-    """Preserve large broker IDs as strings (JavaScript numbers are not safe)."""
-    rows = frame.to_dict('records')
-    result = []
-    for row in rows:
-        out = {}
-        for key, value in row.items():
-            if key in {'acc_id', 'order_id', 'position_id'}:
-                out[key] = str(value)
-            elif hasattr(value, 'item'):
-                value = value.item()
-                out[key] = None if isinstance(value, float) and not math.isfinite(value) else value
-            elif isinstance(value, float) and not math.isfinite(value):
-                out[key] = None
-            elif isinstance(value, (str, int, float, bool, list)) or value is None:
-                out[key] = value
-            else:
-                out[key] = str(value)
-        result.append(out)
-    return result
-
-
-class OpenDBroker:
-    def __init__(self):
-        self.ctx = None
-        self.quote_ctx = None
-        self.generation = 0
-        self.security_types = {}
-        self.option_metadata = {}
-
-    def ensure(self):
-        if self.ctx is None:
-            import moomoo as mm
-            rsa = os.getenv('OPEND_RSA_FILE', '')
-            if rsa:
-                mm.SysConfig.enable_proto_encrypt(True)
-                mm.SysConfig.set_init_rsa_file(rsa)
-            self.ctx = mm.OpenSecTradeContext(
-                filter_trdmarket=mm.TrdMarket.US,
-                host=os.getenv('OPEND_HOST', 'moomoo-opend'),
-                port=int(os.getenv('OPEND_PORT', '11111')), is_encrypt=bool(rsa),
-                security_firm=os.getenv('TRADING_SECURITY_FIRM', 'N/A'))
-            self.generation += 1
-        return self.ctx
-
-    @staticmethod
-    def unpack(response):
-        ret, data = response
-        if ret != 0:
-            raise BrokerRejected(str(data)[:600])
-        return records(data)
-
-    def accounts(self):
-        rows = self.unpack(self.ensure().get_acc_list())
-        return [r for r in rows if 'US' in str(r.get('trdmarket_auth', ''))
-                and r.get('trd_env') in {'REAL', 'SIMULATE'} and r.get('sim_acc_type') != 'FUTURES']
-
-    def positions(self, acc, env):
-        return self.unpack(self.ensure().position_list_query(
-            position_market='US', acc_id=int(acc), trd_env=env, refresh_cache=True))
-
-    def funds(self, acc, env):
-        return self.unpack(self.ensure().accinfo_query(acc_id=int(acc), trd_env=env, currency='USD'))
-
-    def orders(self, acc, env, refresh=True):
-        return self.unpack(self.ensure().order_list_query(
-            order_market='US', acc_id=int(acc), trd_env=env, refresh_cache=refresh))
-
-    def capacity(self, order, order_id=None):
-        rows = self.unpack(self.ensure().acctradinginfo_query(
-            order_type=order['order_type'], code=order['code'], price=order['reference_price'],
-            acc_id=int(order['acc_id']), trd_env=order['env'], session=order['session'],
-            order_id=order_id))
-        if not rows:
-            raise TradeError('券商没有返回可交易数量')
-        return rows[0]
-
-    def unlock(self, password=None, lock=False):
-        ret, _ = self.ensure().unlock_trade(password=password, is_unlock=not lock)
-        if ret != 0:
-            # Never reflect SDK errors from credential-bearing requests.
-            raise TradeError('交易解锁/锁定失败，请检查密码、账号状态及券商令牌限制')
-
-    def ensure_quote(self):
-        if self.quote_ctx is None:
-            import moomoo as mm
-            from .opend_connection import connect_quote_context
-            self.ensure()
-            self.quote_ctx = connect_quote_context(mm.OpenQuoteContext, host=os.getenv('OPEND_HOST', 'moomoo-opend'),
-                port=int(os.getenv('OPEND_PORT', '11111')), is_encrypt=bool(os.getenv('OPEND_RSA_FILE')))
-        return self.quote_ctx
-
-    def option_chain(self, symbol, expiry=''):
-        if not STOCK_SYMBOL.fullmatch(symbol) or OPTION_SYMBOL.fullmatch(symbol):
-            raise TradeError('请输入美股正股或 ETF 代码')
-        ctx = self.ensure_quote()
-        if not expiry:
-            rows = self.unpack(ctx.get_option_expiration_date(symbol))
-            return {'expirations': sorted({r['strike_time'] for r in rows}), 'contracts': []}
-        try:
-            datetime.strptime(expiry, '%Y-%m-%d')
-        except ValueError:
-            raise TradeError('到期日格式应为 YYYY-MM-DD')
-        stamp, rows = self.option_metadata.get((symbol, expiry), (0, None))
-        if time.time()-stamp > 300:
-            rows = self.unpack(ctx.get_option_chain(symbol, start=expiry, end=expiry))
-            if len(self.option_metadata) >= 32:
-                self.option_metadata.clear()
-            self.option_metadata[(symbol, expiry)] = (time.time(), rows)
-        keys = ('code', 'name', 'option_type', 'strike_price', 'strike_time', 'lot_size', 'option_standard_type')
-        return {'expirations': [expiry], 'contracts': [{k:r.get(k) for k in keys} for r in rows]}
-
-    def quote(self, symbol):
-        if not SYMBOL.fullmatch(symbol):
-            raise TradeError('请输入美股股票、ETF 或期权合约代码')
-        self.ensure_quote()
-        rows = self.unpack(self.quote_ctx.get_market_snapshot([symbol]))
-        if not rows:
-            raise TradeError('没有行情数据')
-        r = rows[0]
-        if r.get('option_valid'):
-            self.security_types[symbol] = 'OPTION'
-            owner = str(r.get('stock_owner') or '')
-            if not STOCK_SYMBOL.fullmatch(owner):
-                raise TradeError('无法确认期权标的')
-            if owner not in self.security_types:
-                basic = self.unpack(self.quote_ctx.get_stock_basicinfo(market='US', code_list=[owner]))
-                self.security_types[owner] = basic[0].get('stock_type') if basic else None
-            if self.security_types[owner] not in {'STOCK', 'ETF'}:
-                raise TradeError('当前仅开放股票和 ETF 期权，不支持指数期权')
-            chain = self.option_chain(owner, str(r.get('strike_time') or ''))
-            contract = next((c for c in chain['contracts'] if c['code'] == symbol), {})
-            r['option_standard_type'] = contract.get('option_standard_type')
-        elif symbol not in self.security_types:
-            basic = self.unpack(self.quote_ctx.get_stock_basicinfo(market='US', code_list=[symbol]))
-            self.security_types[symbol] = basic[0].get('stock_type') if basic else None
-        if self.security_types[symbol] not in {'STOCK', 'ETF', 'OPTION'}:
-            raise TradeError('仅支持美股股票、ETF 和标准股票/ETF 单腿期权')
-        r['stock_type'] = self.security_types[symbol]
-        states = self.unpack(self.quote_ctx.get_market_state([symbol]))
-        r['market_state'] = states[0].get('market_state') if states else None
-        return {k: r.get(k) for k in ('code', 'name', 'last_price', 'update_time', 'stock_type', 'market_state',
-            'option_valid', 'lot_size', 'option_contract_size', 'option_contract_multiplier',
-            'option_type', 'stock_owner', 'strike_time', 'option_strike_price', 'bid_price', 'ask_price', 'option_standard_type')}
-
-    def place(self, order, remark):
-        kwargs = dict(price=order.get('price', 0), qty=order['qty'], code=order['code'],
-                      trd_side=order['side'], order_type=order['order_type'],
-                      trd_env=order['env'], acc_id=int(order['acc_id']),
-                      time_in_force=order['time_in_force'], session=order['session'], remark=remark)
-        for key in ('aux_price', 'trail_type', 'trail_value', 'trail_spread'):
-            if key in order:
-                kwargs[key] = order[key]
-        ret, data = self.ensure().place_order(**kwargs)
-        if ret != 0:
-            # The SDK collapses transport failures and broker errors into RET_ERROR.
-            # Never assume a RET_ERROR proves that no order reached the broker.
-            raise BrokerUncertain(str(data)[:400])
-        return records(data)
-
-    def modify(self, order, cancel=False):
-        kwargs = dict(modify_order_op='CANCEL' if cancel else 'NORMAL',
-                      order_id=order['order_id'], qty=order.get('qty', 0), price=order.get('price', 0),
-                      acc_id=int(order['acc_id']), trd_env=order['env'])
-        if not cancel:
-            for key in ('aux_price', 'trail_type', 'trail_value', 'trail_spread'):
-                if key in order:
-                    kwargs[key] = order[key]
-        ret, data = self.ensure().modify_order(**kwargs)
-        if ret != 0:
-            raise BrokerUncertain(str(data)[:400])
-        return records(data)
-
-    def close(self):
-        for ctx in (self.ctx, self.quote_ctx):
-            if ctx is not None:
-                ctx.close()
-        self.ctx = self.quote_ctx = None
-
-
 class TradeEngine(ProtectionMixin, OptionToolsMixin):
     """All methods run on one dedicated thread; SQLite is also a crash journal."""
-    def __init__(self, path, broker=None):
-        self.broker = broker or OpenDBroker()
+    def __init__(self, path, broker=None, *, config=None):
+        self.config = config or broker_config(broker)
+        self.broker = self.config.trading_broker()
         self.path = str(path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.grant = None
@@ -255,6 +59,16 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
         self.quote_cache = {}
         self.option_chain_cache = {}
         with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            legacy = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'").fetchone()
+            db.execute('CREATE TABLE IF NOT EXISTS broker_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), source TEXT NOT NULL)')
+            identity = db.execute('SELECT source FROM broker_identity WHERE singleton=1').fetchone()
+            if identity is None:
+                if legacy and self.config.source_id != 'opend':
+                    raise ValueError('旧交易数据库属于 OpenD，其他券商需要独立的数据库')
+                db.execute('INSERT INTO broker_identity VALUES(1,?)', (self.config.source_id,))
+            elif identity[0] != self.config.source_id:
+                raise ValueError('交易数据库属于另一券商')
             db.execute('CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, owner TEXT, '
                        'kind TEXT, payload TEXT, state TEXT, result TEXT, created REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT)')
@@ -277,10 +91,15 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
         stamp, rows = self.account_cache
         if time.time() - stamp > 15:
             rows = self.broker.accounts()
+            if any(not isinstance(row.get('acc_id'), str) or not row['acc_id'].strip()
+                   or row.get('trd_env') not in {'REAL', 'SIMULATE'} for row in rows):
+                raise TradeError('券商账户缺少精确的账户编号或交易环境')
             self.account_cache = (time.time(), rows)
         return rows
 
     def account(self, acc, env):
+        if env not in {'REAL', 'SIMULATE'}:
+            raise TradeError('请选择有效的交易环境')
         match = next((r for r in self.accounts() if str(r['acc_id']) == str(acc)
                       and r['trd_env'] == env), None)
         if not match:
@@ -329,7 +148,7 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
     def state(self, owner):
         self.last_activity = time.time()
         g = self.grant
-        return {'real_enabled': True, 'unlock': {k:v for k,v in g.items() if k != 'owner'} if g and g['owner'] == owner else None,
+        return {'broker_provider': self.config.source_id, 'real_enabled': 'trading' in self.config.capabilities, 'unlock': {k:v for k,v in g.items() if k != 'owner'} if g and g['owner'] == owner else None,
                 'max_notional': self.max_notional, 'max_shares': self.max_shares,
                 'server_time': time.time()}
 
@@ -386,6 +205,8 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
                 raise TradeError('平仓仅支持卖出限价单或市价单')
             out['close_position'] = True
         q = self.quote(code)
+        if q.get('code') != code or q.get('stock_type') not in {'STOCK', 'ETF', 'OPTION'}:
+            raise TradeError('券商行情缺少匹配的证券代码或类型，无法确认交易标的')
         is_option = q.get('stock_type') == 'OPTION' or bool(OPTION_SYMBOL.fullmatch(code))
         multiplier = 1
         if is_option:
@@ -413,7 +234,9 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
             if q.get('market_state') != 'AFTERNOON':
                 raise TradeError('当前不在美股常规交易时段，禁止提交市价单')
             try:
-                dt = datetime.fromisoformat(str(q['update_time'])).replace(tzinfo=ZoneInfo('America/New_York'))
+                dt = datetime.fromisoformat(str(q['update_time']).replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=ZoneInfo('America/New_York'))
                 age = time.time() - dt.timestamp()
             except (ValueError, KeyError, TypeError):
                 age = 999
@@ -473,17 +296,17 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
     def check_capacity(self, order, existing=None):
         acc, env = order['acc_id'], order['env']
         cap = self.broker.capacity(order, existing['order_id'] if existing else None)
-        remaining = order['qty'] - (float(existing.get('dealt_qty', 0)) if existing else 0)
+        remaining = order['qty'] - (float(number(existing.get('dealt_qty'), '券商已成交数量', positive=False)) if existing else 0)
         if remaining <= 0:
             raise TradeError('订单数量须大于已成交数量')
         if order['side'] == 'BUY':
-            if (order['qty'] if existing else remaining) > float(cap.get('max_cash_buy') or 0):
+            if (order['qty'] if existing else remaining) > number(cap.get('max_cash_buy'), '券商现金购买能力', positive=False):
                 raise TradeError('现金购买能力不足；第一版不启用融资买入')
         else:
             pos = next((p for p in self.broker.positions(acc, env) if p['code'] == order['code']), None)
-            if not pos or float(pos.get('qty') or 0) <= 0 or pos.get('position_side') == 'SHORT':
+            if not pos or number(pos.get('qty'), '券商持仓数量', positive=False) <= 0 or pos.get('position_side') == 'SHORT':
                 raise TradeError('没有可卖出的多头持仓；第一版不允许做空')
-            available = float(pos.get('can_sell_qty') or 0)
+            available = float(number(pos.get('can_sell_qty'), '券商可卖持仓', positive=False))
             if order.get('close_position'):
                 if existing or float(pos['qty']) != order['qty']:
                     raise TradeError('持仓数量已变化或含碎股，请重新打开平仓面板')
@@ -494,8 +317,8 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
                 if pending_buys:
                     raise TradeError('该股仍有未结束的买单，可能继续增加持仓；请先撤销并确认买单结束')
             if existing:
-                available += max(0, float(existing['qty']) - float(existing.get('dealt_qty', 0)))
-            if remaining > available or (order['qty'] if existing else remaining) > float(cap.get('max_position_sell') or 0):
+                available += max(0, float(number(existing.get('qty'), '券商订单数量')) - float(number(existing.get('dealt_qty'), '券商已成交数量', positive=False)))
+            if remaining > available or (order['qty'] if existing else remaining) > number(cap.get('max_position_sell'), '券商可卖数量', positive=False):
                 raise TradeError('可卖数量不足，已有卖单/止损单可能占用了持仓；请先检查订单')
 
     def find_order(self, acc, env, order_id):
@@ -527,7 +350,7 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
                     raise TradeError('第一版只支持限价及固定止损改单；其他类型请撤单后重设')
                 session = existing.get('session')
                 if session not in {'RTH', 'ETH', 'OVERNIGHT', 'ALL'}:
-                    raise TradeError('无法确认原订单交易时段，请在 moomoo 客户端修改')
+                    raise TradeError('无法确认原订单交易时段，请在券商客户端修改')
                 order = self.normalize({**data, 'code': existing['code'], 'side': existing['trd_side'],
                     'order_type': existing['order_type'], 'session': session,
                     'time_in_force': existing.get('time_in_force', 'DAY')})
@@ -619,7 +442,7 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
         except BrokerRejected as exc:
             state, result = 'REJECTED', {'message': str(exc)}
         except BrokerUncertain as exc:
-            state, result = 'UNKNOWN', {'message': f'OpenD 未明确确认：{exc}。请核对券商订单，不会自动重发。'}
+            state, result = 'UNKNOWN', {'message': f'券商未明确确认：{exc}。请核对券商订单，不会自动重发。'}
         except Exception:
             state, result = 'UNKNOWN', {'message': '连接异常，结果待核对。系统不会自动重发此操作。'}
         with self.db() as db:
@@ -653,7 +476,8 @@ class TradeEngine(ProtectionMixin, OptionToolsMixin):
         op = self.operation(op_id)
         if not op or op['state'] != 'UNKNOWN' or time.time() - op['created'] < 60:
             raise TradeError('请至少等待一分钟并先核对券商订单')
-        if confirmation != f'已在moomoo核对 {op_id}':
+        if confirmation != f'已在券商核对 {op_id}' and not (
+                self.config.source_id == 'opend' and confirmation == f'已在moomoo核对 {op_id}'):
             raise TradeError('请完整输入核对确认文字')
         with self.db() as db:
             db.execute("UPDATE operations SET state='MANUALLY_REVIEWED' WHERE id=?", (op_id,))

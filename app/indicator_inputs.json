@@ -1,0 +1,87 @@
+{
+  "VOLUME": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "VWAP": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "VWMA": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "OBV": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "CMF": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "MFI": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "PVT": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "ADL": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "CHO": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "FULAI": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "CHIEF_RESONANCE": {
+    "fields": [
+      "turnover",
+      "volume"
+    ],
+    "adjustment": "none"
+  },
+  "CHIEF_RESONANCE_PANE": {
+    "fields": [
+      "turnover",
+      "volume"
+    ],
+    "adjustment": "none"
+  },
+  "HALFDAY_RVOL": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "HOURLY_RVOL": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "DAILY_RVOL": {
+    "fields": [
+      "volume"
+    ]
+  },
+  "INSTITUTION_TREND": {
+    "fields": [
+      "chip_winner_95",
+      "chip_cost_85"
+    ]
+  }
+}

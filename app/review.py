@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from .scan_api import bearer, token_scopes
-from . import ledger, ledger_opend
+from . import ledger, ledger_broker
 
 Market = Literal['CN', 'US']
 DEFAULT_RULES = ['下单前写好交易计划', '控制单笔风险与总仓位', '按计划止损，不随意扩大止损',
@@ -166,7 +166,7 @@ def install(app: FastAPI, connect_db):
 
     agent = APIRouter(prefix='/api/v1/review', tags=['每日复盘 API'], dependencies=[Depends(authorize)])
     ledger.install(app, agent, connect_db)
-    ledger_opend.install(app, agent, connect_db)
+    ledger_broker.install(app, agent, connect_db)
 
     @agent.get('/ledger/backlinks', summary='查找引用计划或成交的每日及每周复盘')
     @app.get('/api/review/ledger/backlinks')

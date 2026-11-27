@@ -49,7 +49,7 @@ class CacheTests(unittest.TestCase):
                 self.calls.append((requested_key, days, end_date))
                 market.save_bars(requested_key, [sample(before - 3600, 20)])
         fake = FakeBridge()
-        with patch.object(market, 'bridge', fake):
+        with patch.object(market.market_data, 'history', fake.history):
             response = asyncio.run(market.older_bars('US.HIST2', '5m', 'all', before))
         self.assertEqual(response['bars'][0]['close'], 20)
         self.assertEqual(fake.calls[0][0], key)
@@ -113,12 +113,11 @@ class PushTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_daily_loads_two_years_then_refreshes_recent_days(self):
         key = ('US.SNDQ', '1d', 'regular')
-        market.last_fetch.pop(key, None)
-        market.fetched_days.pop(key, None)
-        with patch.object(market.bridge, 'history', return_value=0) as history:
+        market.last_fetch.pop(market.cache_key(key), None)
+        with patch.object(market.market_data, 'history', return_value=0) as history:
             await market.bars(*key)
             self.assertEqual(history.call_args.args, (key, market.DAILY_HISTORY_DAYS))
-            market.last_fetch[key] = 0
+            market.last_fetch[market.cache_key(key)] = 0
             await market.bars(*key)
             self.assertEqual(history.call_args.args, (key, 2))
 

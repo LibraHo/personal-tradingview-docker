@@ -29,7 +29,7 @@ class HistoryNavigationTests(unittest.TestCase):
         stamp = int(time.time()) - 90 * 86400
         def history(key, days, end_date=None):
             market.save_bars(key, [dict(time=stamp, open=1, high=2, low=1, close=2, volume=5, turnover=8)])
-        with patch.object(market.bridge, 'history', side_effect=history) as fetch:
+        with patch.object(market.market_data, 'history', side_effect=history) as fetch:
             for _ in range(2):
                 result = asyncio.run(market.bars_window('US.AAPL', '15m', 'all', stamp-3600, stamp+3600))
                 self.assertEqual(len(result['bars']), 1)
@@ -39,14 +39,14 @@ class HistoryNavigationTests(unittest.TestCase):
 
     def test_invalid_window_does_not_contact_opend(self):
         stamp=int(time.time())-90*86400
-        with patch.object(market.bridge,'history') as fetch:
+        with patch.object(market.market_data,'history') as fetch:
             with self.assertRaises(market.HTTPException):
                 asyncio.run(market.bars_window('US.AAPL','15m','all',stamp,stamp+32*86400))
             fetch.assert_not_called()
 
     def test_failed_fetch_is_not_saved_as_successful_coverage(self):
         stamp=int(time.time())-90*86400
-        with patch.object(market.bridge,'history',side_effect=RuntimeError('disconnected')):
+        with patch.object(market.market_data,'history',side_effect=RuntimeError('disconnected')):
             with self.assertRaises(market.HTTPException):
                 asyncio.run(market.bars_window('US.AAPL','15m','all',stamp-3600,stamp+3600))
         with market.connect_db() as db:
@@ -58,7 +58,7 @@ class HistoryNavigationTests(unittest.TestCase):
         row=lambda stamp:dict(time=stamp,open=1,high=2,low=1,close=2,volume=5,turnover=8)
         market.save_bars(key,[row(far)])
         market.remember_history_window(key,far-86400,far+86400)
-        with patch.object(market.bridge,'history',side_effect=lambda *a:market.save_bars(key,[row(near)])) as fetch:
+        with patch.object(market.market_data,'history',side_effect=lambda *a:market.save_bars(key,[row(near)])) as fetch:
             result=asyncio.run(market.older_bars(*key,before))
             self.assertEqual([b['time'] for b in result['bars']],[near])
             fetch.assert_called_once()

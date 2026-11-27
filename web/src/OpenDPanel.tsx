@@ -9,7 +9,7 @@ const fields:Record<string,{label:string;hint:string;button:string}>={account:{l
 export default function OpenDPanel({tradingUrl,onReady}:{tradingUrl:string;onReady:()=>void}){
  const [readError,setReadError]=useState('');
  const [status,setStatus]=useState<Status|null>(null),[value,setValue]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[picture,setPicture]=useState<string|null>(null),[notice,setNotice]=useState('');
- const [expired,setExpired]=useState(false);
+ const [expired,setExpired]=useState(false),[disabled,setDisabled]=useState(false);
  const polling=useRef<number|undefined>(undefined);
  const live=useRef(true),revision=useRef(''),requestBusy=useRef(false),previousStage=useRef(''),readyCallback=useRef(onReady),input=useRef<HTMLInputElement>(null),epoch=useRef(0),sending=useRef(false);
  readyCallback.current=onReady;
@@ -30,6 +30,10 @@ export default function OpenDPanel({tradingUrl,onReady}:{tradingUrl:string;onRea
   try{
    const r=await fetch('/api/trade/opend/status',{cache:'no-store'});
    if(!live.current||currentEpoch!==epoch.current||sessionExpired(r))return;
+   if(r.status===404){
+    window.clearInterval(polling.current);polling.current=undefined;
+    setDisabled(true);setStatus(null);setPicture(null);setValue('');return;
+   }
    const s=await r.json();
    if(!r.ok)throw Error(s.detail||'无法读取连接状态');
    if(!live.current||currentEpoch!==epoch.current)return;
@@ -67,6 +71,7 @@ export default function OpenDPanel({tradingUrl,onReady}:{tradingUrl:string;onRea
   }catch(e){if(live.current)setError(e instanceof Error?e.message:'请求失败，请刷新状态后重试')}
   finally{sending.current=false;if(live.current){setBusy(false);void read()}}
  };
+ if(disabled)return <section className="opend-panel"><h3>OpenD 登录管理未启用</h3><p>当前交易网关使用其他券商配置。</p></section>;
  if(!secureChart){const url=new URL(tradingUrl);url.pathname='/chart';url.search='?settings=connection';return <section className="opend-panel"><div className="opend-heading"><LockKeyhole/><div><h3>安全连接 OpenD</h3><p>请进入 HTTPS 看盘页，使用平台密码登录后管理 OpenD。</p></div></div><a className="opend-primary" href={url.toString()}>打开安全登录页面</a><p className="opend-muted">账号和密码只在加密页面输入。</p></section>}
  if(expired){
   const url=new URL(location.href);

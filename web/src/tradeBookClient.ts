@@ -20,7 +20,7 @@ export type Account={account:string;as_of:string;complete:boolean;source:string}
 export type BookPage={plans:Plan[];fills:Fill[];positions:Holding[];accounts:Account[];next_offset:number|null};
 export type RecordTarget={kind:'plan'|'fill';id:string;symbol?:string};
 export type Backlink={kind:'day'|'week';day:string};
-export type SyncStatus={state:'idle'|'queued'|'running'|'ready'|'error';last_success?:string|null;message?:string;accounts:{account:string;through?:string;as_of?:string}[];interval_seconds:number};
+export type SyncStatus={provider?:string;state:'disabled'|'idle'|'queued'|'running'|'ready'|'error';last_success?:string|null;message?:string;accounts:{account:string;through?:string;as_of?:string}[];interval_seconds:number};
 
 export const sideNames:Record<string,string>={BUY:'买入',SELL:'卖出',SELL_SHORT:'卖空',BUY_BACK:'买入平仓'};
 export const periodNames={ '1m':'1 分钟','5m':'5 分钟','15m':'15 分钟','30m':'30 分钟','60m':'1 小时','120m':'2 小时','240m':'4 小时','1d':'日线','1w':'周线','1mo':'月线' };
@@ -70,3 +70,5 @@ export function absoluteTime(market:ReviewMarket,wall:string){
  if(matches.length!==1)throw Error('此市场时间无效或处于夏令时重复时段，请核对成交时间和时区。');
  return matches[0].toISOString();
 }
+
+export const sourceName = (source:string) => source.startsWith('broker:') ? source.slice(7) : sourceNames[source] || source;

@@ -13,7 +13,7 @@ export function drawTdx(chart:IChartApi,bars:Bar[],ind:Indicator,values:Record<s
   s.setData(bars.map((b,i)=>{const color=colors[String(values['K线状态'][i])],time=b.time as UTCTimestamp;return color?{time,open:b.open,close:b.close,high:b.high,low:b.low,color,wickColor:color,borderColor:color}:{time}}));series.push(s);
  }
  for(const [key,style] of Object.entries(item.plots)){
-  const hist=['relative-volume','hist','band','control','resonance-deviation'].includes(style.kind);
+  const hist=['institution-bar','institution-retail','relative-volume','hist','band','control','resonance-deviation'].includes(style.kind);
   const threshold=style.kind==='resonance-threshold',reference=threshold||style.kind==='resonance-zero';
   const s=chart.addSeries(hist?HistogramSeries:LineSeries,{color:ind.colors?.[key]||style.color,lineWidth:reference||style.kind==='dotted'?1:2,lineStyle:threshold?LineStyle.Dashed:style.kind==='dotted'?LineStyle.Dotted:LineStyle.Solid,
    ...(ind.name==='CHIEF_RESONANCE_PANE'?{priceFormat:{type:'percent' as const,precision:1,minMove:.1}}:{}),
@@ -21,6 +21,8 @@ export function drawTdx(chart:IChartApi,bars:Bar[],ind:Indicator,values:Record<s
   s.setData(values[key].map((v,i)=>{
    const time=bars[i].time as UTCTimestamp;if(v===null||!Number.isFinite(v))return {time};
    let color=ind.colors?.[key]||style.color,value=v;
+   if(style.kind==='institution-bar'&&v===0)return {time};
+   if(style.kind==='institution-retail'){if(v!==1)return {time};value=0.3}
    if(style.kind==='band'){value=95;color=({'-1':'#26a69a','0':'#546e7a','1':'#fdd835','2':'#ef5350','3':'#f48fb1','4':'#e040fb'} as Record<string,string>)[String(v)]}
    if(style.kind==='trend')color=v>=(values[key][i-1]??v)?'#e040fb':'#26a69a';
    if(style.kind==='fuline')color=v>(values['B2均线'][i]??v)?'#ef5350':'#26a69a';
@@ -29,6 +31,7 @@ export function drawTdx(chart:IChartApi,bars:Bar[],ind:Indicator,values:Record<s
    return {time,value,color};
   }));
   if(style.kind==='relative-volume')s.createPriceLine({price:1,color:'#8495a7',lineWidth:1,lineStyle:LineStyle.Dashed,axisLabelVisible:true,title:'1 倍'});
+  if(style.kind==='institution-retail')s.applyOptions({base:-0.3});
   if(style.kind==='band')s.applyOptions({base:94});
   series.push(s);
  }

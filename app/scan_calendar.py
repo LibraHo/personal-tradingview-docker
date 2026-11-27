@@ -1,4 +1,4 @@
-"""OpenD trading calendar; timestamps are UTC seconds, prices use regular sessions."""
+"""Regular-session boundaries calculated from the selected market calendar."""
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import time
@@ -9,17 +9,7 @@ class TradingCalendar:
         self.radar = radar
 
     def days(self, symbol):
-        market = 'US' if symbol.startswith('US.') else 'CN'
-        today = datetime.now(ZoneInfo('America/New_York' if market == 'US' else 'Asia/Shanghai')).date()
-        def fetch():
-            # TradeDateMarket uses CN, unlike plate APIs which use Market.SH.
-            rows, = self.radar.call('request_trading_days', market=market,
-                start=str(today-timedelta(days=100)), end=str(today+timedelta(days=40)))
-            return {'days': {r['time']: r['trade_date_type'] for r in rows}}
-        result = self.radar.cached('calendar:'+market+':'+str(today), 21600, fetch)
-        if result.get('stale'):
-            raise ValueError('交易日历失效：'+result.get('error', ''))
-        return result['days']
+        return self.radar.trading_days(symbol)
 
 
 def close_time(stamp, symbol, period, days):
@@ -39,7 +29,7 @@ def close_time(stamp, symbol, period, days):
     end = datetime.combine(day, datetime.min.time(), dt.tzinfo).replace(hour=(13 if kind == 'MORNING' else 16) if us else 15)
     if period in ('1d', '1w', '1mo') or (not us and period == '240m'):
         return end.timestamp()
-    # OpenD intraday timestamps mark the beginning of a candle.
+    # Canonical scanner timestamps identify the beginning of an intraday candle.
     end = min(end, dt+timedelta(minutes=int(period[:-1])))
     if not us and dt.hour < 12:
         end = min(end, dt.replace(hour=11, minute=30, second=0))

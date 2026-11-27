@@ -13,7 +13,7 @@ export default function ScanScopePicker({market,groups,scope,setScope,chosen,set
   const c=new AbortController();setBoards([]);setLoading(true);setError('');setMeta('');setPage(0);
   fetch('/api/radar/catalog?'+new URLSearchParams({market,kind}),{signal:c.signal}).then(async r=>{const v=await r.json();if(!r.ok)throw Error(v.detail||'板块目录读取失败');return v}).then(v=>{
    setBoards(v.rows);setKnown(n=>({...n,...Object.fromEntries(v.rows.map((r:Board)=>[r.symbol,r.name]))}));
-   setMeta(`${v.source||'OpenD'}${v.updated?' · 更新 '+new Date(v.updated*1000).toLocaleString():''}`);
+   setMeta(`${v.source||v.provider||'板块目录'}${v.updated?' · 更新 '+new Date(v.updated*1000).toLocaleString():''}`);
    if(v.stale)setError('当前为缓存目录：'+(v.error||'数据源暂不可用'));
   }).catch(e=>{if(!c.signal.aborted)setError(e.message)}).finally(()=>{if(!c.signal.aborted)setLoading(false)});
   return()=>c.abort();

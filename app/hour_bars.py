@@ -40,6 +40,8 @@ def aggregate_hours(bars, period):
         else:
             item = result[bucket]
             item.update(high=max(item['high'], bar['high']), low=min(item['low'], bar['low']),
-                        close=bar['close'], volume=item['volume'] + bar['volume'],
-                        turnover=item['turnover'] + bar['turnover'])
+                        close=bar['close'])
+            for field in ('volume', 'turnover'):
+                left, right = item[field], bar[field]
+                item[field] = None if left is None or right is None else left + right
     return list(result.values())

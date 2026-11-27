@@ -12,6 +12,9 @@ def execute_strategy(engine,owner,config,side,signal,arm):
     engine.authorize(owner,acc,env)
     if arm['expires']<=time.time():raise TradeError('策略交易授权已过期')
     if side not in {'BUY','SELL'}:raise TradeError('信号方向无效')
+    basis = signal.get('execution_close') if signal.get('adjustment', 'none') != 'none' else signal['close']
+    if not isinstance(basis, (int, float)) or not math.isfinite(basis) or basis <= 0:
+        raise TradeError('缺少信号对应的不复权收盘价，无法校验下单价格')
     code=config['symbol'];e=config['execution']
     orders=engine.broker.orders(acc,env)
     if any(o.get('code')==code and o.get('order_status') in ACTIVE for o in orders):
@@ -22,7 +25,7 @@ def execute_strategy(engine,owner,config,side,signal,arm):
     qty=e['qty'] if side=='BUY' else math.floor(float((position or {}).get('can_sell_qty') or 0)*e['sell_percent']/100)
     if qty<1:raise TradeError('没有符合条件的可卖整股')
     engine.quote_cache.pop(code,None)
-    quote=engine.quote(code);last=float(quote['last_price']);basis=float(signal['close'])
+    quote=engine.quote(code);last=float(quote['last_price'])
     if e['session']!='RTH' or quote.get('market_state')!='AFTERNOON':
         raise TradeError('首版自动策略只在美股常规交易时段提交；其他时段可监控信号')
     try:age=time.time()-datetime.fromisoformat(str(quote['update_time'])).replace(tzinfo=ZoneInfo('America/New_York')).timestamp()

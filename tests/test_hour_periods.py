@@ -70,7 +70,7 @@ class HourPeriodTests(unittest.TestCase):
         with patch.dict(sys.modules, {'moomoo':sdk}), patch.object(market, 'save_bars'):
             for symbol, period, mode, kind in [('SH.000001','240m','regular','day'),
                     ('SH.000001','120m','regular','two'), ('US.AAPL','240m','all','hour')]:
-                bridge.history((symbol,period,mode),2)
+                bridge.fetch_bars((symbol,period,mode),2,None,'none')
                 self.assertEqual(ctx.request_history_kline.call_args.kwargs['ktype'],kind)
             a=('SH.000001','240m','regular');b=('SH.000001','1d','regular')
             bridge.subscribe(a);bridge.subscribe(b)

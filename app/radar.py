@@ -3,7 +3,9 @@ import asyncio
 import json
 import math
 import re
+from datetime import datetime, timedelta
 import time
+from zoneinfo import ZoneInfo
 
 BOARD = re.compile(r'^(?:SH|SZ|US)\.(?:BK|LIST)[0-9]{1,10}$')
 SYMBOL = re.compile(r'^(?:US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.(?:[0-9]{6}|(?:BK|LIST)[0-9]{1,10}))$')
@@ -181,9 +183,82 @@ class Radar:
         return self.cached(f'emotion:{market}:{symbol}', 60, fetch)
 
 
-def install(app, bridge, connect_db):
-    from fastapi import HTTPException
+    def trading_days(self, symbol):
+        market = 'US' if symbol.startswith('US.') else 'CN'
+        today = datetime.now(ZoneInfo('America/New_York' if market == 'US' else 'Asia/Shanghai')).date()
+
+        def fetch():
+            # TradeDateMarket uses CN, unlike the OpenD plate API.
+            rows, = self.call('request_trading_days', market=market,
+                              start=str(today-timedelta(days=100)), end=str(today+timedelta(days=40)))
+            return {'days': {r['time']: r['trade_date_type'] for r in rows}}
+
+        result = self.cached(f'calendar:{market}:{today}', 21600, fetch)
+        if result.get('stale'):
+            raise ValueError('交易日历失效：' + result.get('error', ''))
+        return result['days']
+
+
+def bind_opend_radar(bridge, connect_db):
     radar = Radar(bridge, connect_db)
+    for feature in ('catalog', 'members', 'heatmap', 'emotion', 'trading_days'):
+        setattr(bridge, feature, getattr(radar, feature))
+    return radar
+
+
+def select_feed(feed, market, capability):
+    """A single MarketData is also a valid configuration for embedded callers."""
+    return feed.for_market(market, capability) if hasattr(feed, 'for_market') else feed
+
+
+def save_labels(connect_db, source, capability, labels):
+    if not labels:
+        return
+    with connect_db() as db:
+        db.execute('CREATE TABLE IF NOT EXISTS scan_symbol_labels(source TEXT, capability TEXT, '
+                   'symbol TEXT, name TEXT, PRIMARY KEY(source,capability,symbol))')
+        db.executemany('INSERT OR REPLACE INTO scan_symbol_labels VALUES(?,?,?,?)',
+                       ((source, capability, symbol, name) for symbol, name in labels.items() if name))
+
+
+class ProviderRadar:
+    def __init__(self, cache, market_data):
+        self.cache, self.market_data = cache, market_data
+
+    def cached(self, key, *args, **kwargs):
+        # Auxiliary analytics already include the actual contributing provider in their keys.
+        return self.cache.cached(key, *args, **kwargs)
+
+    def request(self, capability, scope, *args):
+        feed = select_feed(self.market_data, scope, capability)
+        result = feed.feature(capability)(scope, *args)
+        return {**result, 'provider': feed.provider.source_id, 'source': result.get('source') or feed.provider.source_id}
+
+    def catalog(self, market, kind):
+        result = self.request('catalog', market, kind)
+        if result['provider'] != 'opend' and not result.get('stale'):
+            save_labels(self.cache.connect_db, result['provider'], 'catalog',
+                        {row['symbol']: row.get('name') for row in result['rows']})
+        return result
+
+    def members(self, symbol):
+        return self.request('members', symbol)
+
+    def heatmap(self, market, kind, page):
+        return self.request('heatmap', market, kind, page)
+
+    def emotion(self, market, symbol=''):
+        return self.request('emotion', market, symbol)
+
+    def trading_days(self, symbol):
+        return select_feed(self.market_data, symbol, 'trading_days').feature('trading_days')(symbol)
+
+
+def install(app, bridge, connect_db, external=None, opend_radar=None):
+    from fastapi import HTTPException
+    radar = opend_radar or bind_opend_radar(bridge, connect_db)
+    if external is not None:
+        radar = ProviderRadar(radar, external)
 
     async def invoke(callback, *args):
         try:

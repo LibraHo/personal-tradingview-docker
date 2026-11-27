@@ -14,10 +14,10 @@ def range_times(symbol, day):
             'day_end':int((midnight+timedelta(days=1)).timestamp())-1}
 
 
-def select_opening_range(rows, symbol, times):
+def select_opening_range(rows, symbol, times, label=None):
     # Verified on the deployed OpenD: both CN and US first 5m bars are labelled 09:35.
     # Keep start-labelled installations configurable rather than guessing a later bar.
-    label=os.getenv('OPENING_RANGE_BAR_LABEL','end')
+    label=label or os.getenv('OPENING_RANGE_BAR_LABEL','end')
     if label not in {'start','end'}:
         raise ValueError('OPENING_RANGE_BAR_LABEL 须为 start 或 end')
     stamp=times['open_at'] if label=='start' else times['confirmed_at']

@@ -72,6 +72,48 @@ Compose 默认使用 `Dockerfile.nas`，复用本机已有的 `moomoo-opend:loca
 - 可画水平价格线和两点趋势线并持久化。多图可同步时间轴与十字光标；不同股票价格轴不共用尺度，十字光标的横向价格值仅作参考。现版本应视为首个可用版本，而非与 TradingView 功能完全对等。
 - 当前 K 线通过 OpenD 回调写入缓存和 WebSocket；同时间戳用 SQLite 主键覆盖，处理校正与重复推送。浏览器断线 5 秒重连；后端每 20 秒检查订阅并重新订阅，每 10 分钟重新拉取最近两天用于修正缺口。最近历史默认 2 分钟以内不重复请求。非交易时段或无成交时不会生成虚假 K 线。
 
+## 行情源与复权
+
+复权用于消除拆股、分红等公司行动给历史走势图带来的价格跳变。例如一股拆成两股，拆股前收盘 100 元，拆股后每股 50 元。前复权把此前的 100 元调整到约 50 元，便于跨日计算均线和涨跌幅。后复权以较早的价格为基准向后调整。不复权保留当时的成交价格。图表和指标默认前复权，报价、成交、交易计划价位及下单校验使用实际价格。每个市场可以单独选择图表口径。
+
+看盘服务启动时读取 MARKET_DATA_PROVIDER（默认 opend）、MARKET_DATA_ADJUSTMENT（默认 qfq，也支持 none、hfq）和 MARKET_DATA_ROUTES（JSON 对象）。先合并公共配置 * 和市场配置 US 或 CN，同名项以市场配置为准。每项能力先取合并后的单项设置，再取 default，最后使用全局源。更改后重启服务。禁用某项能力可显式设为 disabled。下面的示例将美股交给 Alpaca，沪深日线读腾讯本地归档，券商关闭。
+
+~~~dotenv
+MARKET_DATA_PROVIDER=disabled
+MARKET_DATA_ROUTES={"US":{"default":"app.alpaca_data:factory","adjustment":"qfq"},"CN":{"history":"app.tencent_archive:factory","adjustment":"none","limit_pool":"disabled"}}
+BROKER_PROVIDER=disabled
+~~~
+
+路由键包括 history（历史 K 线）、live（推送）、snapshots（报价快照）、search_symbols（搜索）、names（名称）、depth（盘口）、ticks（逐笔）、option_profile（期权分布）、catalog 和 members（板块与成分）、heatmap 和 emotion（热力图与涨跌分布）、limit_pool（涨跌停池）、chip_summary（当前筹码汇总）、trading_days（日历）、watchlists（自选）。可通过 GET /api/status?market=CN 核对各项来源和能力。
+
+启动前配置 Alpaca 凭证及 TENCENT_ARCHIVE_DIR。[Alpaca 配置](docs/ALPACA-DATA.md) · [腾讯归档配置](docs/TENCENT-ARCHIVE.md) · [券商配置](docs/BROKER-PROVIDERS.md)
+
+历史和实时使用不同源时，两侧必须声明相同的 bar_profiles[复权口径] 和相同的 bar_label（start 或 end），明确保证价格、量、时间及公司行动口径兼容。否则图表显示原因并通过历史接口定时刷新。OpenD 原生推送只用于前复权，每批检查推送口径。
+
+接入新源时，将服务端的 `MARKET_DATA_PROVIDER` 设置为可导入的 `模块名:工厂函数`。工厂无参数，返回满足 [行情适配器协议](app/market_data.py) 的实例。使用长期稳定、独有的 `source_id`，声明可用的 `adjustments` 与 `live_adjustments`。适配器负责交易所代码、交易时段、币种、手数和字段别名的转换。
+
+| 适配器入口 | 约定 |
+| --- | --- |
+| `fetch_bars(key, days, end_date, adjustment)` | key 是 (证券代码、周期、时段)。返回覆盖结束日及前 days 个自然日的 K 线，days 为 0 时只取结束日。结束日缺省取当地今天。时间为 UTC 秒，价格使用指定口径，成交量以股计，成交额以报价货币计。无法核实单位或没有数值时返回 null。可选 `fields` 保存附加的数值字段。 |
+| `snapshots(symbols)` | 返回 (快照列表, 是否过期)。使用统一的 symbol、price、change_percent，按数据源覆盖范围提供盘前、盘后与夜盘字段。 |
+| `subscribe_bars(key, adjustment, emit)` | 支持推送时实现。把指定周期的标准 K 线列表传给 emit，并返回取消订阅函数。仅提供历史行情时将 live_adjustments 设为空。 |
+| 其他可选能力 | 股票目录 search_symbols、names，盘口 depth、逐笔 ticks、期权 option_profile，板块 catalog、members、heatmap、emotion，交易日历 trading_days。沪深涨跌停池默认使用东方财富，也可实现 limit_pool(kind, day) 并返回同结构数据。自选导入使用 watchlists()，返回由 name、kind 和 symbols 构成的分组列表。历史归档可实现 history_status(symbol)，返回 stale、archive_as_of 和 history_notice。账户、订单与成交由独立的 BROKER_PROVIDER 配置。 |
+
+[指标输入清单](app/indicator_inputs.json) 由图表、后端指标和扫描共用。指标可声明所需字段、复权口径及允许的 providers。缺少必需数据时，图表标出指标、字段和受影响的 K 线根数，其他指标继续计算。例如价格数据可以计算 MACD，VWAP 需要成交量，主力共振还要用实际成交额与原始价格作比较。
+
+K 线、历史抓取状态和分页覆盖范围按来源、复权口径隔离。前复权按交易所当地日期分开缓存，每天首次读取会重新抓取所需区间，以反映公司行动。升级前的无标记缓存保存在原数据库的 legacy_bars、legacy_cache_sync、legacy_history_windows 表。首次加载需要上游可用；布局、自选和交易记录沿用原数据。历史和实时源组合拥有独立缓存，逐根 K 线记录实际来源。
+
+### 筹码快照与机构动向
+
+在设置的连接页展开“筹码汇总快照”，可按市场分页查看获利比例、筹码区间重合度。行情路由使用 chip_summary，接口为 GET /api/chips/summary?market=CN&offset=0&limit=20。两个比例使用 0 至 1，页面显示为百分比。空值表示该证券的对应字段缺失。OpenD 的这两个字段是当次查询的快照，上游未提供筹码计算时间。
+
+历史行情适配器能提供逐根筹码时，声明 historical_chips = True，设置页才开放添加「机构动向」。有两种输入形式。
+
+- 每根 K 线的 fields 提供 chip_winner_95（成本低于本根收盘价 95% 的筹码占比，0 至 1）和 chip_cost_85（累计达到 85% 对应的成本价，与本根收盘价使用相同复权口径）。
+- 或在该根 K 线的 chip_distribution 对象中提供 symbol、period、mode、time、adjustment，以及 levels。levels 的每项为 [价格, 持股数量]，数量为非负整数股。适配器负责把证券、交易周期、当期有效的持仓分布和价格基准对齐；服务再核对五个标识，按价位计算上述两个输入。密度区间须由数据源先明确其离散价位语义。相同价位等于获利判定阈值时不计入获利股数。
+
+任一必需输入缺失时，机构动向的图表、HTTP 指标和选股都提示受影响的字段并停止该指标计算。换手率、今日汇总及其他时点的分布均无法补足这一历史输入。OpenD 当前仅接入汇总快照。
+
 ## 数据与 API
 
 | 接口 | 用途 |
@@ -104,7 +146,7 @@ result = {"MACD": diff, "Signal": signal, "Histogram": diff - signal}
 
 ## 备用数据源
 
-目前 OpenD 不可用时，网页可显示本地 SQLite 的最近缓存并标注“缓存数据”；不会把其他供应商数据悄悄混入指标。可选的免费历史数据候选有 [yfinance](https://ranaroussi.github.io/yfinance/)（美股等，非 Yahoo 官方 SDK；盘中历史有时间范围限制）和 [AKShare](https://github.com/akfamily/akshare)（A 股历史与近期分钟线，依赖第三方网页接口）。它们适合以后做**显式标注来源的历史补充**，都不能保证替代 OpenD 的美股 24/5 实时推送。需要稳定、合规的实时备份时，应按实际行情权限评估有许可的服务。
+可配置 OpenD、Alpaca 美股只读接口、腾讯沪深本地日线归档，以及东方财富沪深涨跌停池。沪深未显式设置 limit_pool 且默认源缺少该能力时，使用东方财富，状态接口显示实际选源。行情源临时不可用时可读取同一配置下的缓存。归档图表显示最后交易日期，实时扫描使用过期数据时提示原因。
 
 ## 资源预算
 

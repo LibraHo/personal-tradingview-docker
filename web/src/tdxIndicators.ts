@@ -1,3 +1,4 @@
+import {inputIssue} from './indicatorInputs';
 import spec from '../../app/tdx_formulas.json';
 import type {Bar} from './indicators';
 type V=(number|null)[];
@@ -6,7 +7,6 @@ export type TdxEntry={label:string;pane:'main'|'separate';description:string;sou
 export const tdxCatalog=spec.indicators as unknown as Record<string,TdxEntry>;
 export const fixedPeriodLabel=(period:string)=>({'60m':'1小时','120m':'2小时','1d':'日线'} as Record<string,string>)[period]||period;
 export function tdxAvailable(name:string,marketOrSymbol:string){
- if(name==='INSTITUTION_TREND')return false;
  if(name==='FULAI')return marketOrSymbol==='CN'||/^(SH|SZ)\.[036]\d{5}$/.test(marketOrSymbol);
  const item=tdxCatalog[name];
  if(marketOrSymbol==='CN'||marketOrSymbol==='US')return !item?.market||item.market===marketOrSymbol;
@@ -14,7 +14,10 @@ export function tdxAvailable(name:string,marketOrSymbol:string){
 }
 export const isChiefResonance=(name:string)=>name==='CHIEF_RESONANCE'||name==='CHIEF_RESONANCE_PANE';
 export function computeTdx(b:Bar[],name:string):Record<string,V>|null{
- if(name==='INSTITUTION_TREND')throw Error('机构动向已撤下：筹码数据未具备');
+ if(name==='INSTITUTION_TREND'){
+  const issue=inputIssue(b,name,'{}');
+  if(issue)throw Error(issue);
+ }
  if(name==='FULAI'&&b.some(x=>!tdxAvailable(name,(x as Bar&{symbol?:string}).symbol||'')))throw Error('福来仅支持沪深A股');
  const item=tdxCatalog[name];if(!item)return null;
  if(b.some((bar:Bar&{symbol?:string;period?:string})=>
@@ -24,6 +27,9 @@ export function computeTdx(b:Bar[],name:string):Record<string,V>|null{
  const selected:Node[]=[];for(let i=nodes.length-1;i>=0;i--){const node=nodes[i];if(needed.has(node[0])){selected.push(node);for(const x of node[2])if(typeof x==='string')needed.add(x)}}
  const values:Record<string,V>=Object.fromEntries(['open','high','low','close','volume'].map(k=>[k,b.map(x=>x[k as keyof Bar] as number)]));
  values.turnover=b.map(({turnover})=>typeof turnover==='number'&&Number.isFinite(turnover)&&turnover>0?turnover:null);
+ if(name==='INSTITUTION_TREND'){
+  for(const field of ['chip_winner_95','chip_cost_85'])values[field]=b.map(bar=>bar.fields?.[field]??null);
+ }
  const arg=(x:string|number|null):V=>typeof x==='string'?values[x]:b.map(()=>x);
  for(const [key,op,args] of selected.reverse()){
   const a=args.map(arg);let out:V=[];
@@ -81,7 +87,7 @@ export function computeTdx(b:Bar[],name:string):Record<string,V>|null{
    });
   }
   else if(op==='barscount')out=b.map((_,i)=>i+1);
-  else if(op==='cn_volume')out=b.map(x=>/^(SH|SZ)\.[036]\d{5}$/.test((x as Bar&{symbol?:string}).symbol||'')?x.volume/100:null);
+  else if(op==='cn_volume')out=b.map(x=>/^(SH|SZ)\.[036]\d{5}$/.test((x as Bar&{symbol?:string}).symbol||'')&& x.volume !== null?x.volume/100:null);
   else if(op==='date_gate')out=b.map(x=>{const d=new Date(((x.time||0)+28800)*1000);return Number(!(d.getUTCFullYear()>=2099&&d.getUTCMonth()>=2))});
   else if(op==='available')out=a[0].map(x=>Number(x!==null));
   else out=b.map((_,i)=>{const xs=a.map(v=>v[i]);if(op==='if')return xs[0]===null?null:xs[0]?xs[1]:xs[2];if(xs.some(x=>x===null))return null;const x=xs[0]!,y=xs[1]??0;let z:number|null;

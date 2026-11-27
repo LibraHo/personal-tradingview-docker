@@ -5,7 +5,7 @@ import math
 import re
 import time
 
-from .indicators import calculate
+from .indicators import calculate, check_inputs
 from .python_indicator_worker import validate_code, validate_inputs
 
 PERIOD_SECONDS={'1m':60,'5m':300,'15m':900,'30m':1800,'60m':3600}
@@ -112,6 +112,8 @@ def evaluate(config,bars,now=None,python_runner=None):
         return series[ref][index]
     evidence={}
     def test(rule):
+        if 'volume' in (rule['left'], rule['right']):
+            check_inputs(closed, '策略', ['volume'])
         a,b=value(rule['left'],-1),value(rule['right'],-1)
         evidence[rule['left']]=a
         if isinstance(rule['right'],str):evidence[rule['right']]=b

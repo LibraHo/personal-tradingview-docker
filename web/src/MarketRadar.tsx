@@ -4,7 +4,7 @@ import LimitBoard from './LimitBoard';
 import MarketAnalytics from './MarketAnalytics';
 
 export type RadarItem={symbol:string;name:string;instrument?:string;change?:number|null;turnover?:number|null;up?:number|null;down?:number|null;flat?:number|null;leader?:string};
-type Emotion={up:number;down:number;flat:number;total:number;up_ratio:number|null;net_advances:number;limit_up:number|null;limit_down:number|null;scope:string;definition?:string;coverage_note?:string;time_note?:string;updated:number;stale:boolean;error?:string;bins:{label:string;count:number;side:string}[]};
+type Emotion={source?:string;provider?:string;up:number;down:number;flat:number;total:number;up_ratio:number|null;net_advances:number;limit_up:number|null;limit_down:number|null;scope:string;definition?:string;coverage_note?:string;time_note?:string;updated:number;stale:boolean;error?:string;bins:{label:string;count:number;side:string}[]};
 type Props={market:'US'|'CN';view:'radar'|'emotion';emotionBoard:RadarItem|null;onShowEmotion:(item:RadarItem|null)=>void;favorites:string[];onFavorite:(item:RadarItem)=>void;onOpen:(item:RadarItem)=>void;onScan:(name:string,items:RadarItem[])=>void};
 const types:Record<string,string>={industry:'行业板块',concept:'概念题材',theme:'主题板块',etf:'11 行业 ETF'};
 const percent=(value:number|null|undefined)=>value==null?'—':`${value>0?'+':''}${value.toFixed(2)}%`;
@@ -19,6 +19,7 @@ export default function MarketRadar({market,view,emotionBoard,onShowEmotion,favo
   const [kind,setKind]=useState('industry'),[query,setQuery]=useState('');
   const [items,setItems]=useState<RadarItem[]>([]),[picked,setPicked]=useState<string[]>([]),[sort,setSort]=useState('change');
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[refresh,setRefresh]=useState(0);
+  const [sources,setSources]=useState<string[]>([]);
   const [updated,setUpdated]=useState<number|null>(null),[emotion,setEmotion]=useState<Emotion|null>(null),[emotionError,setEmotionError]=useState('');
   const [memberOf,setMemberOf]=useState<RadarItem|null>(null),[members,setMembers]=useState<RadarItem[]>([]),[memberError,setMemberError]=useState(''),[memberBusy,setMemberBusy]=useState(false);
   const selectedEmotion=emotionBoard?.symbol||'';
@@ -38,17 +39,22 @@ export default function MarketRadar({market,view,emotionBoard,onShowEmotion,favo
   },[market,view,selectedEmotion,refresh]);
   useEffect(()=>{
     if(view!=='radar'||showBoard)return;
-    const controller=new AbortController();setItems([]);setPicked([]);setError('');setNotice('');setUpdated(null);setBusy(true);
+    const controller=new AbortController();setSources([]);setItems([]);setPicked([]);setError('');setNotice('');setUpdated(null);setBusy(true);
     async function load(){
       let rows:RadarItem[]=[];
+      const showSource=(label:string,source:string|undefined)=>{
+        if(source&&!controller.signal.aborted)setSources(current=>[...new Set([...current,label+' '+source])]);
+      };
       try{
         if(kind!=='theme'){
           const data=await read('radar/catalog?'+new URLSearchParams({market,kind}),controller.signal);
+          showSource('目录',data.source||data.provider);
           rows=data.rows;setItems(rows);setUpdated(data.updated);
           if(data.stale)setNotice('目录为缓存：'+(data.error||'上游暂不可用'));
         }
         if(kind==='etf'){
           const data=await read('quotes?'+new URLSearchParams({symbols:rows.map(r=>r.symbol).join(',')}),controller.signal);
+          showSource('报价',data.provider||data.quotes?.[0]?.provider);
           const quotes=new Map<string,any>(data.quotes.map((r:any)=>[r.symbol,r]));
           setItems(rows.map(r=>({...r,change:quotes.get(r.symbol)?.change_percent})));
           setUpdated(Date.now()/1000);if(data.stale)setNotice('ETF 行情为缓存');
@@ -56,6 +62,7 @@ export default function MarketRadar({market,view,emotionBoard,onShowEmotion,favo
           let page='';const seen=new Set<string>();
           do{
             const data=await read('radar/heatmap?'+new URLSearchParams({market,kind,page}),controller.signal);
+            showSource('热力图',data.source||data.provider);
             const map=new Map(rows.map(r=>[r.symbol,r]));
             for(const item of data.rows)map.set(item.symbol,{...map.get(item.symbol),...item,instrument:'板块指数'});
             rows=[...map.values()];setItems(rows);setUpdated(data.updated);
@@ -92,7 +99,7 @@ export default function MarketRadar({market,view,emotionBoard,onShowEmotion,favo
       <div className="radar-toolbar"><label>分类<select value={kind} onChange={e=>{setKind(e.target.value);setMemberOf(null)}}>{Object.entries(types).filter(([key])=>market==='US'||!['etf','theme'].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label><input aria-label="搜索板块" placeholder="搜索名称或代码" value={query} onChange={e=>setQuery(e.target.value)}/><label>排序<select value={sort} onChange={e=>setSort(e.target.value)}><option value="change">涨幅优先</option><option value="changeAsc">跌幅优先</option><option value="turnover">成交额优先</option><option value="name">名称</option></select></label></div>
       <div className="radar-toolbar"><span>{visible.length} / {items.length} 个{busy?' · 加载中…':''}</span><button disabled={!visible.length} onClick={()=>setPicked(visible.map(r=>r.symbol))}>全选当前结果</button><button disabled={!picked.length} onClick={()=>setPicked([])}>清空选择</button><button disabled={!picked.length} onClick={()=>onScan(types[kind],items.filter(r=>picked.includes(r.symbol)))}>扫描已选（{picked.length}）</button></div>
       {error&&<p className="radar-error" role="alert">{error}</p>}{notice&&<p className="radar-warning">{notice}</p>}
-      <p className="radar-meta">{kind==='etf'?'State Street 行业 ETF；走势图和扫描使用 ETF 价格':'OpenD 板块目录 / 热力图；走势图和扫描使用板块指数'}{updated?` · 抓取 ${new Date(updated*1000).toLocaleString()}`:''}</p>
+      <p className="radar-meta">{sources.join(' · ')}{updated?` · 抓取 ${new Date(updated*1000).toLocaleString()}`:''}</p>
       <div className="radar-table"><table><thead><tr><th>选择</th><th>板块 / 题材</th><th>涨跌幅</th><th>成交额</th><th>上涨 / 下跌 / 平盘</th><th>领涨股</th><th>操作</th></tr></thead><tbody>{visible.map(item=><tr key={item.symbol}><td><input aria-label={`选择 ${item.name}`} type="checkbox" checked={picked.includes(item.symbol)} onChange={e=>setPicked(list=>e.target.checked?[...list,item.symbol]:list.filter(s=>s!==item.symbol))}/></td><td><button className="radar-name" onClick={()=>onOpen(item)}>{item.name}</button><small>{item.symbol}</small></td><td className={(item.change??0)>=0?'radar-up':'radar-down'}>{percent(item.change)}</td><td>{amount(item.turnover)}</td><td>{item.up??'—'} / {item.down??'—'} / {item.flat??'—'}</td><td>{item.leader?<button onClick={()=>onOpen({symbol:item.leader!,name:item.leader!})}>{item.leader}</button>:'—'}</td><td><div className="radar-actions"><button aria-label={`收藏 ${item.name}`} onClick={()=>onFavorite(item)}>{favoriteSet.has(item.symbol)?'★ 已关注':'☆ 关注'}</button>{kind!=='etf'&&<button onClick={()=>showMembers(item)}>成分股</button>}<button onClick={()=>onScan(item.name,[item])}>扫描</button></div></td></tr>)}</tbody></table></div>
       {!busy&&!items.length&&!error&&<p>数据源暂未提供这一分类的板块。</p>}
       {memberOf&&<dialog ref={membersDialog} className="radar-members-dialog" aria-labelledby="radar-members-title" onCancel={closeMembers} onClose={closeMembers} onClick={e=>{if(e.target===e.currentTarget)closeMembers()}}>
@@ -111,7 +118,7 @@ export default function MarketRadar({market,view,emotionBoard,onShowEmotion,favo
         {emotion.stale&&<p className="radar-warning">正在显示缓存 · {emotion.error}</p>}
         <div className="emotion-cards">{[['上涨家数',emotion.up],['下跌家数',emotion.down],['平盘家数',emotion.flat],['上涨占比',emotion.up_ratio==null?'—':emotion.up_ratio.toFixed(1)+'%'],['涨跌家数差',emotion.net_advances],...(market==='CN'?[['涨停',emotion.limit_up??'—'],['跌停',emotion.limit_down??'—']]:[])].map(([label,value])=><article key={String(label)}><span>{label}</span><strong>{value}</strong></article>)}</div>
         <div className="emotion-distribution" aria-label="涨跌分布图">{emotion.bins.map((bin,i)=><div className="emotion-bin" key={i}><span>{bin.label}</span><div><i className={'bin-'+bin.side} style={{width:`${Math.max(0,bin.count/Math.max(1,...emotion.bins.map(b=>b.count))*100)}%`}}/></div><b>{bin.count}</b></div>)}</div>
-        <p className="radar-meta">OpenD 涨跌分布 · 范围 {emotion.scope||market} · 抓取 {new Date(emotion.updated*1000).toLocaleString()}。上涨占比按可分类区间计算；涨跌停按数据源单列，未重复加进区间总数。{emotion.coverage_note} {emotion.time_note}</p>
+        <p className="radar-meta">{emotion.source||emotion.provider||'涨跌分布'} · 范围 {emotion.scope||market} · 抓取 {new Date(emotion.updated*1000).toLocaleString()}。上涨占比按可分类区间计算；涨跌停按数据源单列，未重复加进区间总数。{emotion.coverage_note} {emotion.time_note}</p>
       </>}
       <MarketAnalytics market={market} onOpen={onOpen}/>
     </>}

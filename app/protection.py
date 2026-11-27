@@ -100,7 +100,7 @@ class ProtectionMixin:
                 rows = self.broker.orders(p['acc_id'], p['env'])
                 parent = next((r for r in rows if r.get('remark') == 'NMT:' + p['id']), None)
                 if not parent:
-                    raise TradeError('未查到买单，请在 moomoo 核对')
+                    raise TradeError('未查到买单，请在券商端核对')
                 for child_id in p['children']:
                     prior = next((r for r in rows if r.get('remark') == 'NMT:' + child_id), None)
                     if not prior or prior.get('order_status') not in {'SUBMITTED', 'FILLED_PART', 'FILLED_ALL'}:
@@ -121,7 +121,7 @@ class ProtectionMixin:
                         self.save_protection(p)
                         continue
                     if child.get('order_status') not in {'SUBMITTED', 'FILLED_PART', 'FILLED_ALL'}:
-                        raise TradeError('止损未处于有效状态，请在 moomoo 核对处理')
+                        raise TradeError('止损未处于有效状态，请在券商端核对处理')
                     if float(child.get('qty') or 0) != pending['qty'] or child.get('trd_side') != 'SELL' or child.get('code') != p['code'] or child.get('order_type') != p['config']['mode']:
                         raise TradeError('止损订单内容已变化，请人工核对保护数量')
                     if float(child.get('aux_price') or 0) != pending['order']['aux_price'] or (p['config']['mode'] == 'STOP_LIMIT' and float(child.get('price') or 0) != pending['order']['price']):

@@ -15,7 +15,7 @@ class ChartLoadingTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(tmp.cleanup)
         for name, value in (
             ('DB', str(Path(tmp.name) / 'chart.db')),
-            ('last_fetch', {}), ('fetch_locks', {}), ('fetched_days', {}), ('history_failures', {}),
+            ('last_fetch', {}), ('fetch_locks', {}), ('history_failures', {}),
         ):
             replacement = patch.object(market, name, value)
             replacement.start()
@@ -34,7 +34,7 @@ class ChartLoadingTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError('test did not release refresh')
             market.save_bars(key, [dict(self.row, close=2)])
 
-        with patch.object(market.bridge, 'history', side_effect=update) as history:
+        with patch.object(market.market_data, 'history', side_effect=update) as history:
             first = asyncio.create_task(market.bars(*self.key))
             try:
                 self.assertTrue(await asyncio.to_thread(started.wait, 2))
@@ -53,7 +53,7 @@ class ChartLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_refresh_backs_off_and_manual_refresh_can_retry(self):
         market.save_bars(self.key, [self.row])
-        with patch.object(market.bridge, 'history', side_effect=[RuntimeError('offline'), 1]) as history:
+        with patch.object(market.market_data, 'history', side_effect=[RuntimeError('offline'), 1]) as history:
             self.assertEqual((await market.bars(*self.key))['error'], 'offline')
             preview = await market.bars(*self.key, prefer_cache=True)
             self.assertEqual(preview['error'], 'offline')
@@ -63,7 +63,7 @@ class ChartLoadingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(history.call_count, 2)
 
     async def test_empty_cache_uses_upstream_and_propagates_outage(self):
-        with patch.object(market.bridge, 'history', side_effect=RuntimeError('offline')):
+        with patch.object(market.market_data, 'history', side_effect=RuntimeError('offline')):
             with self.assertRaises(market.HTTPException) as caught:
                 await market.bars(*self.key, prefer_cache=True)
             self.assertEqual(caught.exception.status_code, 503)

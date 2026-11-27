@@ -47,9 +47,9 @@ def register_chart_gateway(app, sessions, cookie):
 
     allowed = {
         'GET': {'status', 'cache/status', 'trading-config', 'depth', 'symbols/names', 'symbols/search',
-                'quotes', 'order-flow', 'option-profile', 'bars', 'bars/older', 'bars/window', 'indicators', 'opening-range',
+                'quotes', 'chips/summary', 'order-flow', 'option-profile', 'bars', 'bars/older', 'bars/window', 'indicators', 'opening-range',
                 'radar/catalog', 'radar/members', 'radar/heatmap', 'radar/emotion', 'radar/analytics', 'radar/limit-up'},
-        'POST': {'quote/retry', 'python-indicator/validate', 'python-indicator', 'watchlists/import-moomoo', 'strategy/evaluate'},
+        'POST': {'quote/retry', 'python-indicator/validate', 'python-indicator', 'watchlists/import', 'watchlists/import-moomoo', 'strategy/evaluate'},
     }
 
     @app.patch('/api/v1/review/days/{day}')
@@ -91,8 +91,8 @@ def register_chart_gateway(app, sessions, cookie):
         scanner = re.fullmatch(r'scanner/(?:watchlists|scope-preview|plans|jobs|monitors|events|health)(?:/[a-f0-9]{32}(?:/(?:copy|run|results|cancel|start|pause|resume))?)?',path)
         review_methods = {'review/dashboard': {'GET'}, 'review/export': {'GET'}, 'review/rules': {'POST'}}
         ledger_routes = {
-            'GET': r'autofill/history|book|backlinks|opend|(?:plans|fills)/[a-f0-9]{32}|plans/[a-f0-9]{32}/(?:daily|bars)',
-            'POST': r'autofill|plans|fills|positions|reconcile|opend/sync',
+            'GET': r'autofill/history|book|backlinks|broker|opend|(?:plans|fills)/[a-f0-9]{32}|plans/[a-f0-9]{32}/(?:daily|bars)',
+            'POST': r'autofill|plans|fills|positions|reconcile|(?:broker|opend)/sync',
             'PUT': r'plans/[a-f0-9]{32}(?:/fills/[a-f0-9]{32})?|fills/[a-f0-9]{32}/review',
             'DELETE': r'plans/[a-f0-9]{32}(?:/fills/[a-f0-9]{32})?',
         }

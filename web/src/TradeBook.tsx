@@ -4,7 +4,7 @@ import type {ReviewMarket} from './reviewClient';
 import PlanDailyHistory from './PlanDailyHistory';
 import {displayPlanPrice} from './tradePlanAnalysis';
 import {EntryForm,ExecutionForm,PlanForm,PlanSummary} from './TradeBookForms';
-import {description,displayTime,ledgerRequest,ledgerSymbol,periodNames,sideNames,sourceNames,statusNames,unit,type Backlink,type BookPage,type Fill,type Holding,type Plan,type RecordTarget,type SyncStatus} from './tradeBookClient';
+import {description,displayTime,ledgerRequest,ledgerSymbol,periodNames,sideNames,sourceName,statusNames,unit,type Backlink,type BookPage,type Fill,type Holding,type Plan,type RecordTarget,type SyncStatus} from './tradeBookClient';
 import './trade-book.css';
 
 type Area='plans'|'fills'|'positions';
@@ -16,7 +16,7 @@ const emptyBook:BookPage={plans:[],fills:[],positions:[],accounts:[],next_offset
 function FillTitle({fill}:{fill:Fill}){
  return <><strong>{description(fill)}</strong><span>{sideNames[fill.side]||fill.side} {fill.qty} {unit(fill)} @ {fill.price}</span></>;
 }
-function OpenDSync({onChange}:{onChange:()=>void}){
+function BrokerSync({onChange}:{onChange:()=>void}){
  const [status,setStatus]=useState<SyncStatus|null>(null),[error,setError]=useState(''),[pending,setPending]=useState(false),[poll,setPoll]=useState(0);
  const last=useRef<string|null|undefined>(undefined),onChangeRef=useRef(onChange);
  onChangeRef.current=onChange;
@@ -25,7 +25,7 @@ function OpenDSync({onChange}:{onChange:()=>void}){
   const controller=new AbortController();
   async function load(){
    try{
-    const result=await ledgerRequest<SyncStatus>('US','opend','GET',undefined,controller.signal);
+    const result=await ledgerRequest<SyncStatus>('US','broker','GET',undefined,controller.signal);
     if(controller.signal.aborted)return;
     if(last.current!==undefined&&result.last_success!==last.current)onChangeRef.current();
     last.current=result.last_success??null;setStatus(result);setError('');
@@ -36,12 +36,12 @@ function OpenDSync({onChange}:{onChange:()=>void}){
  },[poll,active]);
  async function sync(){
   setPending(true);setError('');
-  try{await ledgerRequest('US','opend/sync','POST');setStatus(old=>({...old,accounts:old?.accounts||[],interval_seconds:old?.interval_seconds||300,state:'queued'}));setPoll(n=>n+1)}
+  try{await ledgerRequest('US','broker/sync','POST');setStatus(old=>({...old,accounts:old?.accounts||[],interval_seconds:old?.interval_seconds||300,state:'queued'}));setPoll(n=>n+1)}
   catch(e){setError((e as Error).message)}finally{setPending(false)}
  }
- return <div className="book-sync"><div><strong>OpenD 自动同步</strong><small>{status?.message||({idle:'等待首次同步',queued:'已加入同步队列',running:'正在读取券商记录',ready:'最近一次同步完成',error:'同步失败'}[status?.state||'idle'])}
+ return <div className="book-sync"><div><strong>{status?.provider==='opend'?'OpenD':status?.provider==='disabled'?'券商':status?.provider||'券商'} 自动同步</strong><small>{status?.message||({disabled:'当前未启用券商账户归档',idle:'等待首次同步',queued:'已加入同步队列',running:'正在读取券商记录',ready:'最近一次同步完成',error:'同步失败'}[status?.state||'idle'])}
   {status?.last_success&&' · '+displayTime('US',status.last_success)+' 美东'}</small>{error&&<small role="alert" className="book-warning">{error}</small>}</div>
-  <button type="button" onClick={sync} disabled={pending||active}><RefreshCw size={14}/>{pending||active?'同步中…':'立即同步'}</button></div>;
+  <button type="button" onClick={sync} disabled={status?.state==='disabled'||pending||active}><RefreshCw size={14}/>{pending||active?'同步中…':'立即同步'}</button></div>;
 }
 
 function RelatedJournals({market,target,onJournal}:{market:ReviewMarket;target:RecordTarget;onJournal:Props['onJournal']}){
@@ -66,16 +66,17 @@ function Candidate({market,fill,id,onSaved}:{market:ReviewMarket;fill:Fill;id:st
   if(!other)return;
   setBusy(true);setError('');
   try{
-   const result=await ledgerRequest<Fill>(market,'reconcile','POST',{manual_id:fill.source==='opend'?other.id:fill.id,opend_id:fill.source==='opend'?fill.id:other.id});
+   const imported=fill.source==='opend'||fill.source.startsWith('broker:');
+   const result=await ledgerRequest<Fill>(market,'reconcile','POST',{manual_id:imported?other.id:fill.id,broker_fill_id:imported?fill.id:other.id});
    onSaved({kind:'fill',id:result.id,symbol:result.symbol});
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
- return <div className="book-candidate">{other&&<><div><FillTitle fill={other}/><small>{displayTime(market,other.at)} · {sourceNames[other.source]||other.source} · {other.account} · {other.broker_id||'无券商编号'}</small></div>
+ return <div className="book-candidate">{other&&<><div><FillTitle fill={other}/><small>{displayTime(market,other.at)} · {sourceName(other.source)} · {other.account} · {other.broker_id||'无券商编号'}</small></div>
   <button onClick={()=>void merge()} disabled={busy}>{busy?'合并中…':'确认是同一笔，合并'}</button></>}
   {error&&<p role="alert" className="review-error">{error}</p>}</div>;
 }
 function HoldingRow({holding,market}:{holding:Holding;market:ReviewMarket}){
- return <tr><td><strong>{description(holding)}</strong>{holding.kind==='option'&&<small>{holding.code}</small>}</td><td>{holding.account}</td><td>{holding.qty} {unit(holding)}</td><td>{holding.cost??'—'}</td><td>{sourceNames[holding.source]||holding.source}<small>{displayTime(market,holding.as_of)}</small></td></tr>;
+ return <tr><td><strong>{description(holding)}</strong>{holding.kind==='option'&&<small>{holding.code}</small>}</td><td>{holding.account}</td><td>{holding.qty} {unit(holding)}</td><td>{holding.cost??'—'}</td><td>{sourceName(holding.source)}<small>{displayTime(market,holding.as_of)}</small></td></tr>;
 }
 function PlanFillManager({market,plan,onChange,openRecord}:{market:ReviewMarket;plan:Plan;onChange:()=>void;openRecord:(target:RecordTarget)=>void}){
  const [fills,setFills]=useState<Fill[]>([]),[selected,setSelected]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
@@ -110,7 +111,7 @@ function PlanFillManager({market,plan,onChange,openRecord}:{market:ReviewMarket;
     {f&&<button disabled={busy} onClick={()=>void change(f,true)}>解除关联</button>}</span>;
   }):<span className="review-muted">尚未关联成交</span>}</div>
   <div className="book-plan-link"><select aria-label="选择要关联的成交" value={selected} onChange={e=>setSelected(e.target.value)}><option value="">选择同标的、同方向的未关联成交</option>
-   {candidates.map(f=><option key={f.id} value={f.id}>{displayTime(market,f.at)} · {sideNames[f.side]} {f.qty}{unit(f)} @ {f.price} · {f.account} · {sourceNames[f.source] || f.source}</option>)}</select>
+   {candidates.map(f=><option key={f.id} value={f.id}>{displayTime(market,f.at)} · {sideNames[f.side]} {f.qty}{unit(f)} @ {f.price} · {f.account} · {sourceName(f.source)}</option>)}</select>
    <button disabled={busy||!selected} onClick={()=>{const f=candidates.find(row=>row.id===selected);if(f)void change(f,false)}}>关联成交</button></div>
   <p className="review-muted">{loading?'正在读取同标的成交…':!candidates.length?'暂无同方向、未关联且未撤销的成交。':'成交时计划尚未生效的，可以补关联用于复盘。'}</p>
   {error&&<p role="alert" className="review-error">{error}</p>}
@@ -178,7 +179,7 @@ export default function TradeBook({market,currentSymbol,target,onJournal}:Props)
   <header className="book-header"><div><h2>交易档案</h2><span className="review-muted">{market==='CN'?'A 股 · 北京时间 · 人民币':'美股 · 美东时间 · 美元'}</span></div>
    <button type="button" onClick={refresh} disabled={loading}><RefreshCw size={14}/>刷新档案</button></header>
   <nav className="book-areas" aria-label="档案内容">{(Object.keys(sectionNames) as Area[]).map(k=><button key={k} aria-pressed={area===k} onClick={()=>switchArea(k)}>{sectionNames[k]}</button>)}</nav>
-  {market==='US'&&<OpenDSync onChange={refresh}/>}
+  {market==='US'&&<BrokerSync onChange={refresh}/>}
   {notice&&<p role="status" className="review-success"><Check size={14}/>{notice}</p>}
   {error&&<p role="alert" className="review-error">{error}</p>}
   {!isDetail&&!form&&<>
@@ -196,7 +197,7 @@ export default function TradeBook({market,currentSymbol,target,onJournal}:Props)
     <span>{p.details?.title||p.trigger}<small>仓位 {p.size||'待定'} · 防守 {p.stop==null?'待定':displayPlanPrice(p.stop)}</small></span><span>{statusNames[p.status]}</span><ChevronRight size={15}/></button>)}</div>}
    {area==='fills'&&<div className="book-rows">{visibleFills.map(f=><button key={f.id} className="book-list-row" onClick={()=>openRecord({kind:'fill',id:f.id,symbol:f.symbol})}>
     <span><strong>{description(f)}</strong><small>{displayTime(market,f.at)} · {f.account}</small></span>
-    <span>{sideNames[f.side]||f.side} {f.qty} {unit(f)} @ {f.price}<small>{sourceNames[f.source]||f.source}{f.candidate_ids?.length?' · 有待核对成交':''}</small></span>
+    <span>{sideNames[f.side]||f.side} {f.qty} {unit(f)} @ {f.price}<small>{sourceName(f.source)}{f.candidate_ids?.length?' · 有待核对成交':''}</small></span>
     <span>{f.broker_status==='CANCELLED'?'券商已撤销':f.review?'已复盘':'待复盘'}</span><ChevronRight size={15}/></button>)}</div>}
    {area==='positions'&&<>
     {visiblePositions.length>0&&<div className="book-table"><table><thead><tr><th>股票 / 合约</th><th>账户</th><th>数量</th><th>成本</th><th>来源 / 时间</th></tr></thead><tbody>{visiblePositions.map(p=><HoldingRow key={p.account+'|'+p.code} market={market} holding={p}/>)}</tbody></table></div>}
@@ -217,7 +218,7 @@ export default function TradeBook({market,currentSymbol,target,onJournal}:Props)
    <PlanFillManager market={market} plan={plan} onChange={refresh} openRecord={openRecord}/>
   </article>}
   {fill&&!form&&<article className="book-detail">
-   <header><div><h3>{description(fill)}</h3><small>{displayTime(market,fill.at)} · {sourceNames[fill.source]||fill.source} · {fill.account}</small></div><button className="review-primary" onClick={()=>setForm('review')}>{fill.review?'修改复盘':'写逐笔复盘'}</button></header>
+   <header><div><h3>{description(fill)}</h3><small>{displayTime(market,fill.at)} · {sourceName(fill.source)} · {fill.account}</small></div><button className="review-primary" onClick={()=>setForm('review')}>{fill.review?'修改复盘':'写逐笔复盘'}</button></header>
    <dl className="book-metrics"><div><dt>方向 / 数量</dt><dd>{sideNames[fill.side]||fill.side} {fill.qty} {unit(fill)}</dd></div><div><dt>成交价</dt><dd>{fill.price}</dd></div><div><dt>券商成交编号</dt><dd>{fill.broker_id||'待补充'}</dd></div>
     {fill.kind==='option'&&<div><dt>合约代码</dt><dd>{fill.code}</dd></div>}{fill.broker_status&&fill.broker_status!=='OK'&&<div><dt>券商状态</dt><dd>{fill.broker_status==='CANCELLED'?'券商已撤销':fill.broker_status==='CHANGED'?'券商已更正':fill.broker_status}</dd></div>}</dl>
    <h3>成交时的交易计划</h3>{fill.plan_snapshot?<PlanSummary plan={fill.plan_snapshot}/>:<p className="review-muted">{fill.plan_id?'复盘补关联 · 成交时没有生效的计划版本':'未关联计划'}</p>}

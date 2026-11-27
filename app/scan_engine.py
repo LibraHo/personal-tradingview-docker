@@ -2,7 +2,7 @@
 import bisect
 import math
 import time
-from .indicators import calculate
+from .indicators import calculate, check_inputs
 from .tdx_indicators import SPEC as TDX_SPEC
 
 PERIODS = {'1m','5m','15m','30m','60m','120m','240m','1d','1w','1mo'}
@@ -53,6 +53,10 @@ def series(bars, o):
     name, line = o['name'], o.get('line')
     defaults={'SMA':20,'EMA':20,'RSI':14,'BOLL':20,'VOLUME':20,'DMI':14,'ATR':14}
     params={**({'period':defaults[name]} if name in defaults else {}),**o.get('params',{})}
+    if name == 'PRICE' and line == 'volume':
+        check_inputs(bars, name, ['volume'])
+    else:
+        check_inputs(bars, name)
     if name == 'NUMBER': result = [o['value']]*len(bars)
     elif name == 'PRICE': result = [b[line] for b in bars]
     else:

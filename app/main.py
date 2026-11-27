@@ -9,9 +9,10 @@ import re
 import sqlite3
 import subprocess
 import sys
-import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -21,34 +22,18 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .indicators import calculate
+from .market_data import (CAPABILITIES, MarketRoutes, DisabledFeed, RoutedStreams, QuotePermissionError, market_of)
+from .broker_provider import broker_config
+from .indicators import calculate, check_inputs
 from .python_indicator_worker import validate_code, validate_inputs
-from .depth import DepthFeed
-from .market_flow import option_profile, quote_result
-from .opend_connection import connect_quote_context
+from .opend_market import PERIODS, OpenDMarket, frame_to_bars, opend_kline, period_from_push, push_matches, subscription_key
 from . import drawing_api
-from .stock_search import maintain_directory, search_directory
-from .hour_bars import is_us_hour, aggregate_hours, hour_bucket
+from .stock_search import maintain_directory
 from .opening_range import range_times, select_opening_range
-
-depth_feed = DepthFeed()
-ticker_feed = DepthFeed("TICKER")
-
-
-async def depth_maintenance():
-    while True:
-        await asyncio.sleep(10)
-        try:
-            await asyncio.gather(asyncio.to_thread(depth_feed.cleanup),
-                                 asyncio.to_thread(ticker_feed.cleanup))
-        except Exception:
-            pass
 
 ET = ZoneInfo('America/New_York')
 CN_TZ = ZoneInfo('Asia/Shanghai')
 DB = os.getenv('DB_PATH', '/data/market.sqlite3')
-HOST = os.getenv('OPEND_HOST', 'host.docker.internal')
-PORT = int(os.getenv('OPEND_PORT', '11111'))
 MAX_STREAMS = int(os.getenv('MAX_ACTIVE_STREAMS', '32'))
 REFRESH = int(os.getenv('HISTORY_REFRESH_SECONDS', '120'))
 DEFAULT_DAYS = int(os.getenv('HISTORY_DAYS', '5'))
@@ -58,7 +43,6 @@ RETENTION_DAYS = max(1, int(os.getenv('CACHE_RETENTION_DAYS', '30')))
 DAILY_HISTORY_DAYS = max(1, int(os.getenv('DAILY_HISTORY_DAYS', '730')))
 DAILY_RETENTION_DAYS = max(DAILY_HISTORY_DAYS, int(os.getenv('DAILY_CACHE_RETENTION_DAYS', '1825')))
 SYMBOL_RE = re.compile(r'^(?:US\.[A-Z0-9.]{1,12}|(?:SH|SZ)\.(?:[0-9]{6}|(?:BK|LIST)[0-9]{1,10}))$')
-PERIODS = {'1m': 'K_1M', '5m': 'K_5M', '15m': 'K_15M', '30m': 'K_30M', '60m': 'K_60M', '120m': 'K_120M', '240m': 'K_240M', '1d': 'K_DAY', '1w': 'K_WEEK', '1mo': 'K_MON'}
 LONG_PERIODS = {'1d','1w','1mo'}
 WEEKLY_HISTORY_DAYS = max(1,int(os.getenv('WEEKLY_HISTORY_DAYS','1825')))
 MONTHLY_HISTORY_DAYS = max(1,int(os.getenv('MONTHLY_HISTORY_DAYS','3650')))
@@ -83,39 +67,14 @@ def retention_days(period, symbol=''):
         return DAILY_RETENTION_DAYS
     return LONG_RETENTION_DAYS if period in {'1w','1mo'} else DAILY_RETENTION_DAYS if period=='1d' else RETENTION_DAYS
 
-def opend_kline(symbol, period):
-    # Current OpenD returns two half-day candles for CN K_240M.
-    # Four trading hours in CN therefore use the native daily candle.
-    if is_us_hour(symbol, period):
-        return 'K_60M'
-    return 'K_DAY' if symbol.startswith(('SH.', 'SZ.')) and period == '240m' else PERIODS[period]
-
-
-def subscription_key(key):
-    return key[0], opend_kline(key[0], key[1])
-
-
-def push_matches(key, symbol, period):
-    return key[0] == symbol and opend_kline(key[0], key[1]) == PERIODS[period]
-
-
-def period_from_push(value):
-    label=str(value).replace('K_','').lower()
-    return label if label in PERIODS else {'day':'1d','week':'1w','mon':'1mo'}.get(label)
-
-MODES = {'all': 'ALL', 'extended': 'ETH', 'regular': 'RTH'}
+MODES = {'all', 'extended', 'regular'}
 listeners: dict[tuple[str, str, str], set[asyncio.Queue]] = {}
-last_fetch: dict[tuple[str, str, str], float] = {}
-fetched_days: dict[tuple[str, str, str], int] = {}
+last_fetch: dict[tuple[str, str, str, str], float] = {}
 fetch_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
-history_failures: dict[tuple[str, str, str], tuple[float, str, str]] = {}
+history_failures: dict[tuple[str, str, str, str], tuple[float, str, str]] = {}
 python_slots = asyncio.Semaphore(1)
 strategy_leases = {}
 loop = None
-
-
-class QuotePermissionError(RuntimeError):
-    pass
 
 
 @contextmanager
@@ -137,19 +96,31 @@ def connect_db():
 def init_db():
     Path(DB).parent.mkdir(parents=True, exist_ok=True)
     with connect_db() as db:
-        db.executescript('''
-        CREATE TABLE IF NOT EXISTS bars(symbol TEXT, period TEXT, mode TEXT, time INTEGER,
-          open REAL, high REAL, low REAL, close REAL, volume REAL, turnover REAL,
-          PRIMARY KEY(symbol,period,mode,time));
-        CREATE INDEX IF NOT EXISTS bars_lookup ON bars(symbol,period,mode,time);
+        # Keep unversioned history readable for recovery. Its push basis is unknown.
+        db.execute('BEGIN IMMEDIATE')
+        for table in ('bars', 'cache_sync', 'history_windows'):
+            columns = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+            if columns and 'scope' not in columns:
+                db.execute(f'ALTER TABLE {table} RENAME TO legacy_{table}')
+        for statement in CACHE_SCHEMA.split(';'):
+            if statement.strip():
+                db.execute(statement)
+        if 'origin' not in {row[1] for row in db.execute('PRAGMA table_info(bars)')}:
+            db.execute('ALTER TABLE bars ADD COLUMN origin TEXT')
+
+
+CACHE_SCHEMA = """
+        CREATE TABLE IF NOT EXISTS bars(scope TEXT NOT NULL, symbol TEXT, period TEXT, mode TEXT, time INTEGER,
+          open REAL, high REAL, low REAL, close REAL, volume REAL, turnover REAL, extra_fields TEXT, origin TEXT,
+          PRIMARY KEY(scope,symbol,period,mode,time));
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS cache_sync(symbol TEXT, period TEXT, mode TEXT,
-          requested_days INTEGER, last_success REAL, PRIMARY KEY(symbol,period,mode));
-        CREATE TABLE IF NOT EXISTS history_windows(symbol TEXT, period TEXT, mode TEXT,
-          start INTEGER, end INTEGER, checked REAL, PRIMARY KEY(symbol,period,mode,start,end));
+        CREATE TABLE IF NOT EXISTS cache_sync(scope TEXT NOT NULL,symbol TEXT, period TEXT, mode TEXT,
+          requested_days INTEGER, last_success REAL, PRIMARY KEY(scope,symbol,period,mode));
+        CREATE TABLE IF NOT EXISTS history_windows(scope TEXT NOT NULL,symbol TEXT, period TEXT, mode TEXT,
+          start INTEGER, end INTEGER, checked REAL, PRIMARY KEY(scope,symbol,period,mode,start,end));
         CREATE TABLE IF NOT EXISTS symbol_names(symbol TEXT PRIMARY KEY, name TEXT, updated REAL);
         CREATE TABLE IF NOT EXISTS symbol_kinds(symbol TEXT PRIMARY KEY, kind TEXT NOT NULL);
-        ''')
+        """
 
 
 def prune_cache():
@@ -157,8 +128,12 @@ def prune_cache():
     intraday_cutoff = int((now - timedelta(days=RETENTION_DAYS)).timestamp())
     daily_cutoff = int((now - timedelta(days=DAILY_RETENTION_DAYS)).timestamp())
     with connect_db() as db:
+        # Adjusted snapshots from earlier sessions are superseded by a fresh fetch.
+        old = str((now - timedelta(days=2)).date())
+        for table in ('bars', 'history_windows', 'cache_sync'):
+            db.execute(f"DELETE FROM {table} WHERE substr(scope,-10) GLOB '????-??-??' AND substr(scope,-10) < ?", (old,))
         db.execute("DELETE FROM history_windows WHERE checked < ?", (time.time()-BROWSED_CACHE_DAYS*86400,))
-        db.execute("DELETE FROM bars WHERE period NOT IN ('1d','1w','1mo') AND NOT (period='240m' AND (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*')) AND time < ? AND (period NOT IN ('60m','120m') OR NOT (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*') OR time < ?) AND NOT EXISTS (SELECT 1 FROM history_windows w WHERE w.symbol=bars.symbol AND w.period=bars.period AND w.mode=bars.mode AND bars.time BETWEEN w.start AND w.end)", (intraday_cutoff, int((now-timedelta(days=CN_VOLUME_HISTORY_DAYS)).timestamp())))
+        db.execute("DELETE FROM bars WHERE period NOT IN ('1d','1w','1mo') AND NOT (period='240m' AND (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*')) AND time < ? AND (period NOT IN ('60m','120m') OR NOT (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*') OR time < ?) AND NOT EXISTS (SELECT 1 FROM history_windows w WHERE w.scope=bars.scope AND w.symbol=bars.symbol AND w.period=bars.period AND w.mode=bars.mode AND bars.time BETWEEN w.start AND w.end)", (intraday_cutoff, int((now-timedelta(days=CN_VOLUME_HISTORY_DAYS)).timestamp())))
         long_cutoff=int((now-timedelta(days=LONG_RETENTION_DAYS)).timestamp())
         db.execute("DELETE FROM bars WHERE period IN ('1w','1mo') AND time < ?", (long_cutoff,))
         db.execute("DELETE FROM bars WHERE (period = '1d' OR (period='240m' AND (symbol GLOB 'SH.*' OR symbol GLOB 'SZ.*'))) AND time < ?", (daily_cutoff,))
@@ -195,6 +170,12 @@ def session_fields(ts, symbol='US.AAPL'):
 
 def row_to_bar(row):
     d = dict(row)
+    extra = d.pop('extra_fields', None)
+    if extra:
+        d['fields'] = json.loads(extra)
+    scope = d.pop('scope', None) or scope_for(d['symbol'])
+    sources, d['adjustment'], _ = scope.split('/')
+    d['provider'] = d.pop('origin', None) or d.get('provider') or sources.split('~')[0]
     d['session'], d['calendar_date'], d['trade_date'] = session_fields(d['time'], d['symbol'])
     if d['period'] in LONG_PERIODS:
         d['session'] = 'regular'
@@ -205,25 +186,27 @@ def row_to_bar(row):
 def save_bars(key, bars):
     if not bars:
         return
+    scope = scope_for(key[0])
     with connect_db() as db:
-        db.executemany('''INSERT INTO bars VALUES(?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(symbol,period,mode,time) DO UPDATE SET
+        db.executemany('''INSERT INTO bars VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(scope,symbol,period,mode,time) DO UPDATE SET
             open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,
-            volume=excluded.volume,turnover=excluded.turnover''',
-            [(key[0], key[1], key[2], b['time'], b['open'], b['high'], b['low'], b['close'], b['volume'], b['turnover']) for b in bars])
+            volume=excluded.volume,turnover=excluded.turnover,extra_fields=excluded.extra_fields,origin=excluded.origin''',
+            [(scope, *key, b['time'], b['open'], b['high'], b['low'], b['close'], b['volume'], b['turnover'],
+              json.dumps(b['fields'], allow_nan=False) if b.get('fields') else None, b.get('provider') or scope.split('/')[0].split('~')[0]) for b in bars])
 
 
 def read_bars(key, days, limit):
     since = int((datetime.now(ET) - timedelta(days=days)).timestamp())
     with connect_db() as db:
-        rows = db.execute('SELECT * FROM bars WHERE symbol=? AND period=? AND mode=? AND time>=? ORDER BY time DESC LIMIT ?', (*key, since, limit)).fetchall()
+        rows = db.execute('SELECT * FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=? AND time>=? ORDER BY time DESC LIMIT ?', (scope_for(key[0]), *key, since, limit)).fetchall()
     return [row_to_bar(r) for r in reversed(rows)]
 
 
 def sync_state(key):
     with connect_db() as db:
-        row = db.execute('SELECT requested_days,last_success FROM cache_sync WHERE symbol=? AND period=? AND mode=?', key).fetchone()
-        latest = db.execute('SELECT MAX(time) FROM bars WHERE symbol=? AND period=? AND mode=?', key).fetchone()[0]
+        row = db.execute('SELECT requested_days,last_success FROM cache_sync WHERE scope=? AND symbol=? AND period=? AND mode=?', (scope_for(key[0]), *key)).fetchone()
+        latest = db.execute('SELECT MAX(time) FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=?', (scope_for(key[0]), *key)).fetchone()[0]
     return (int(row[0]), float(row[1]), latest) if row else (0, 0, latest)
 
 
@@ -242,31 +225,23 @@ def refresh_span(key, days, known_days=0, latest=None, last_success=0):
 
 def save_sync_state(key, days):
     with connect_db() as db:
-        db.execute('INSERT INTO cache_sync VALUES(?,?,?,?,?) ON CONFLICT(symbol,period,mode) DO UPDATE SET '
+        db.execute('INSERT INTO cache_sync VALUES(?,?,?,?,?,?) ON CONFLICT(scope,symbol,period,mode) DO UPDATE SET '
                    'requested_days=MAX(requested_days,excluded.requested_days),last_success=excluded.last_success',
-                   (*key, days, time.time()))
+                   (scope_for(key[0]), *key, days, time.time()))
 
 
 def read_bars_before(key, before, limit):
     cutoff = int(time.time()) - HISTORY_LOOKBACK_DAYS*86400
     with connect_db() as db:
-        rows = db.execute('SELECT * FROM bars WHERE symbol=? AND period=? AND mode=? AND time<? AND time>=? ORDER BY time DESC LIMIT ?',
-                          (*key, before, cutoff, limit)).fetchall()
+        rows = db.execute('SELECT * FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=? AND time<? AND time>=? ORDER BY time DESC LIMIT ?',
+                          (scope_for(key[0]), *key, before, cutoff, limit)).fetchall()
     return [row_to_bar(r) for r in reversed(rows)]
 
 
-def frame_to_bars(frame, symbol):
-    result = []
-    zone = ET if symbol.startswith('US.') else CN_TZ
-    for record in frame.to_dict('records'):
-        dt = datetime.strptime(str(record['time_key']), '%Y-%m-%d %H:%M:%S').replace(tzinfo=zone)
-        result.append({'time': int(dt.timestamp()), 'open': float(record['open']), 'high': float(record['high']),
-                       'low': float(record['low']), 'close': float(record['close']),
-                       'volume': float(record.get('volume') or 0), 'turnover': float(record.get('turnover') or 0)})
-    return result
-
-
 def run_python_indicator(code, bars, inputs=None):
+    import ast
+    if any(isinstance(node, ast.Name) and node.id == 'V' for node in ast.walk(validate_code(code))):
+        check_inputs(bars, 'Python 指标', ['volume'])
     payload = {'code': code, 'inputs': validate_inputs(inputs if inputs is not None else {}), 'bars': [{field: bar[field] for field in
         ('time', 'open', 'high', 'low', 'close', 'volume', 'session', 'trade_date')} for bar in bars]}
     worker = Path(__file__).with_name('python_indicator_worker.py')
@@ -296,327 +271,99 @@ def run_python_indicator(code, bars, inputs=None):
     return data
 
 
-class Bridge:
-    def __init__(self):
-        self.ctx = None
-        self.lock = threading.RLock()
-        self.refreshing_directories = frozenset()
-        self.active: dict[tuple[str, str, str], float] = {}
-        self.last_error = None
-        self.last_request = 0.0
-        self.last_activity = time.monotonic()
-        self.snapshot_cache: dict[tuple[str, ...], tuple[float, list[dict]]] = {}
-        self.permission_errors = {}
-        self.live_sessions = {}
-
-    @staticmethod
-    def permission_market(symbol):
-        return 'CN' if symbol.startswith(('SH.', 'SZ.')) else symbol.split('.')[0]
-
-    def check_permission(self, symbol):
-        market = self.permission_market(symbol)
-        error = self.permission_errors.get(market)
-        if error and error['until'] > time.time():
-            raise QuotePermissionError(error['message'])
-        self.permission_errors.pop(market, None)
-
-    def raise_quote_error(self, symbol, error):
-        message = str(error)
-        if '无权限' in message or 'permission' in message.lower() or 'no quote right' in message.lower():
-            market = self.permission_market(symbol)
-            hint = ('OpenD 当前没有 A 股行情权限，已保留 NAS 缓存；请检查 OpenD 行情授权及登录网络地区。'
-                    if market == 'CN' else 'OpenD 当前没有该市场的行情权限，已保留 NAS 缓存。')
-            self.permission_errors[market] = {'until': time.time()+300, 'message': hint, 'detail': message}
-            raise QuotePermissionError(hint)
-        raise RuntimeError(message)
-
-    def rate_limit(self):
-        delay = 0.52 - (time.monotonic() - self.last_request)
-        if delay > 0:
-            time.sleep(delay)
-        self.last_request = time.monotonic()
-
-    def ensure(self):
-        if self.ctx is not None:
-            return self.ctx
-        from moomoo import OpenQuoteContext, CurKlineHandlerBase, RET_OK, SysConfig
-        rsa_file = os.getenv('OPEND_RSA_FILE', '')
-        if rsa_file:
-            SysConfig.enable_proto_encrypt(True)
-            SysConfig.set_init_rsa_file(rsa_file)
-        bridge = self
-        class Handler(CurKlineHandlerBase):
-            def on_recv_rsp(self, rsp_pb):
-                ret, data = super().on_recv_rsp(rsp_pb)
-                if ret == RET_OK and loop:
-                    for record in data.to_dict('records'):
-                        period = period_from_push(record.get('k_type',''))
-                        if not period:
-                            continue
-                        symbol = str(record['code'])
-                        for key in list(bridge.active):
-                            if push_matches(key, symbol, period):
-                                bars = frame_to_bars(data[(data['code'] == symbol) & (data['k_type'] == record['k_type'])], symbol)
-                                loop.call_soon_threadsafe(asyncio.create_task, publish(key, bars))
-                return ret, data
-        self.ctx = connect_quote_context(OpenQuoteContext,host=HOST,port=PORT,is_encrypt=bool(rsa_file))
-        self.ctx.set_handler(Handler())
-        self.last_error = None
-        return self.ctx
-
-    def reset(self, message):
-        self.last_error = str(message)
-        if self.ctx:
-            try:
-                self.ctx.close()
-            except Exception:
-                pass
-        self.ctx = None
-        self.active.clear()
-        self.live_sessions.clear()
-
-    def history(self, key, days, end_date=None):
-        from moomoo import KLType, AuType, Session, RET_OK
-        with self.lock:
-            self.check_permission(key[0])
-            try:
-                ctx = self.ensure()
-                end = end_date or datetime.now(ET if key[0].startswith('US.') else CN_TZ).date()
-                start = end - timedelta(days=days)
-                kwargs = dict(code=key[0], start=str(start), end=str(end), ktype=getattr(KLType, opend_kline(key[0], key[1])),
-                              autype=AuType.NONE, max_count=1000, session=Session.NONE if key[1] in LONG_PERIODS or not key[0].startswith('US.') else getattr(Session, MODES[key[2]]))
-                all_bars, page = [], None
-                while True:
-                    self.rate_limit()
-                    ret, data, page = ctx.request_history_kline(**kwargs, page_req_key=page)
-                    if ret != RET_OK:
-                        self.raise_quote_error(key[0], data)
-                    all_bars.extend(frame_to_bars(data, key[0]))
-                    if page is None:
-                        break
-                if is_us_hour(key[0], key[1]):
-                    save_bars((key[0], '60m', key[2]), all_bars)
-                    all_bars = aggregate_hours(all_bars, key[1])
-                save_bars(key, all_bars)
-                self.last_activity = time.monotonic()
-                return len(all_bars)
-            except QuotePermissionError:
-                raise
-            except Exception as exc:
-                self.reset(exc)
-                raise
-
-    def snapshots(self, symbols):
-        from moomoo import RET_OK
-        key = tuple(sorted(set(symbols)))
-        with self.lock:
-            cached = self.snapshot_cache.get(key)
-            if cached and time.monotonic() - cached[0] < 15:
-                return cached[1], False
-            try:
-                ctx = self.ensure()
-                self.rate_limit()
-                ret, data = ctx.get_market_snapshot(list(key))
-                if ret != RET_OK:
-                    raise RuntimeError(str(data))
-                def number(row, field):
-                    value = row.get(field)
-                    try:
-                        value = float(value)
-                        return value if math.isfinite(value) else None
-                    except (TypeError, ValueError):
-                        return None
-                items = []
-                for row in data.to_dict('records'):
-                    price = number(row, 'last_price')
-                    previous = number(row, 'prev_close_price')
-                    items.append({
-                        'symbol': str(row['code']), 'name': str(row.get('name') or ''),
-                        'price': price,
-                        'change_percent': round((price / previous - 1) * 100, 2) if price is not None and previous and previous > 0 else None,
-                        'pre_price': number(row, 'pre_price'), 'pre_change_percent': number(row, 'pre_change_rate'),
-                        'after_price': number(row, 'after_price'), 'after_change_percent': number(row, 'after_change_rate'),
-                        'overnight_price': number(row, 'overnight_price'), 'overnight_change_percent': number(row, 'overnight_change_rate'),
-                        'update_time': str(row.get('update_time') or ''),
-                    })
-                self.snapshot_cache[key] = (time.monotonic(), items)
-                self.last_activity = time.monotonic()
-                return items, False
-            except Exception as exc:
-                self.last_error = str(exc)
-                if cached:
-                    return cached[1], True
-                raise
-
-    def search_symbols(self, query, limit=12, market='CN'):
-        return search_directory(self, connect_db, query, limit, market)
-
-    def opening_five(self, symbol, day):
-        from moomoo import KLType, AuType, Session, RET_OK
-        with self.lock:
-            self.check_permission(symbol)
-            try:
-                self.rate_limit()
-                ret, data, _ = self.ensure().request_history_kline(code=symbol,start=day,end=day,
-                    ktype=KLType.K_5M,autype=AuType.NONE,max_count=2,
-                    session=Session.RTH if symbol.startswith('US.') else Session.NONE)
-                if ret != RET_OK:self.raise_quote_error(symbol,data)
-                rows=frame_to_bars(data,symbol)
-                save_bars((symbol,'5m','regular'),rows)
-                self.last_activity=time.monotonic()
-                return rows
-            except QuotePermissionError:raise
-            except Exception as exc:
-                self.reset(exc)
-                raise
-
-    @staticmethod
-    def cached_names(symbols):
-        with connect_db() as db:
-            rows = db.execute('SELECT * FROM symbol_names WHERE symbol IN ('+','.join('?' for _ in symbols)+')', symbols)
-            cached = {row['symbol']: row for row in rows}
-        cutoff = time.time() - 86400
-        missing = [s for s in symbols if s not in cached or cached[s]['updated'] < cutoff]
-        return {s: row['name'] for s, row in cached.items()}, missing
-
-    def names(self, symbols):
-        result, missing = self.cached_names(symbols)
-        if not missing:
-            return result
-        from moomoo import RET_OK
-        with self.lock:
-            # Another request may have populated these names while this one waited.
-            found, missing = self.cached_names(missing)
-            result.update(found)
-            for market in ('SH', 'SZ', 'US'):
-                codes = [code for code in missing if code.startswith(market+'.')]
-                if not codes:
-                    continue
-                try:
-                    self.rate_limit()
-                    ret, frame = self.ensure().get_stock_basicinfo(market=market, code_list=codes)
-                    if ret != RET_OK:
-                        continue
-                    rows = [(str(r['code']), str(r.get('name') or ''), time.time()) for r in frame.to_dict('records') if r.get('name')]
-                    with connect_db() as db:
-                        db.executemany('INSERT OR REPLACE INTO symbol_names VALUES(?,?,?)', rows)
-                    result.update({code:name for code,name,_ in rows})
-                    self.last_activity = time.monotonic()
-                except Exception:
-                    continue
-            return result
-
-    def user_watchlists(self):
-        from moomoo import RET_OK, UserSecurityGroupType
-        with self.lock:
-            ctx = self.ensure()
-            self.rate_limit()
-            ret, data = ctx.get_user_security_group(UserSecurityGroupType.ALL)
-            if ret != RET_OK:
-                raise RuntimeError(str(data))
-            groups = []
-            for row in data.to_dict('records'):
-                name, kind = str(row['group_name']), str(row['group_type'])
-                # Market-wide system categories are not personal watchlists.
-                if kind != 'CUSTOM' and name != 'Favorites':
-                    continue
-                # The OpenD watchlist endpoint has a stricter request quota.
-                time.sleep(max(0, 3.2 - (time.monotonic() - self.last_request)))
-                self.last_request = time.monotonic()
-                ret, stocks = ctx.get_user_security(name)
-                if ret != RET_OK:
-                    raise RuntimeError(f'{name}: {stocks}')
-                codes = list(dict.fromkeys(str(item['code']) for item in stocks.to_dict('records')))
-                groups.append({'name': name, 'kind': kind, 'symbols': codes})
-            self.last_activity = time.monotonic()
-            return groups
-
-    def subscribe(self, key):
-        from moomoo import SubType, Session, RET_OK
-        with self.lock:
-            self.check_permission(key[0])
-            if key in self.active:
-                return
-            if len(self.active) >= MAX_STREAMS:
-                raise RuntimeError('实时订阅已达到本服务配置的上限')
-            rank={'regular':0,'extended':1,'all':2}
-            prior=self.live_sessions.get(subscription_key(key))
-            if prior is not None and rank[prior]>=rank[key[2]]:
-                self.active[key]=time.monotonic()
-                self.last_activity=time.monotonic()
-                return
-            try:
-                ctx = self.ensure()
-                self.rate_limit()
-                session = Session.NONE if not key[0].startswith('US.') or key[1] in LONG_PERIODS else getattr(Session, MODES[key[2]])
-                ret, error = ctx.subscribe([key[0]], [getattr(SubType, opend_kline(key[0], key[1]))], session=session, subscribe_push=True)
-                if ret != RET_OK:
-                    self.raise_quote_error(key[0], error)
-                self.active[key] = time.monotonic()
-                self.live_sessions[subscription_key(key)]=key[2]
-                self.last_activity = time.monotonic()
-            except QuotePermissionError:
-                raise
-            except Exception as exc:
-                self.reset(exc)
-                raise
-
-    def unsubscribe_unused(self):
-        from moomoo import SubType
-        with self.lock:
-            for key, start in list(self.active.items()):
-                if listeners.get(key) or time.monotonic()-start < 65:
-                    continue
-                if any(other!=key and subscription_key(other)==subscription_key(key) for other in self.active):
-                    self.active.pop(key,None)
-                    continue
-                try:
-                    self.rate_limit()
-                    ret, error = self.ctx.unsubscribe([key[0]], [getattr(SubType, opend_kline(key[0], key[1]))])
-                    if ret != 0:
-                        raise RuntimeError(str(error))
-                except Exception as exc:
-                    self.reset(exc)
-                    break
-                self.active.pop(key, None)
-                self.live_sessions.pop(subscription_key(key),None)
-                self.last_activity = time.monotonic()
-
-    def close_if_idle(self):
-        with self.lock:
-            if self.ctx is not None and not self.active and not any(listeners.values()) and time.monotonic()-self.last_activity > 15:
-                self.ctx.close()
-                self.ctx = None
+def stream_error(key, message):
+    if loop:
+        loop.call_soon_threadsafe(notify_stream, key, {'type':'error','message':message})
 
 
+def Bridge():
+    return OpenDMarket(connect_db, listeners, stream_error)
+
+
+def on_provider_bars(key, bars):
+    if loop is not None:
+        asyncio.run_coroutine_threadsafe(publish(key, bars), loop)
+
+
+from .radar import bind_opend_radar
+from .market_analytics import EastmoneyLimits
 bridge = Bridge()
+opend_radar = bind_opend_radar(bridge, connect_db)
+market_data = MarketRoutes(os.getenv('MARKET_DATA_PROVIDER','opend'), os.getenv('MARKET_DATA_ADJUSTMENT','qfq').lower(),
+                           json.loads(os.getenv('MARKET_DATA_ROUTES','{}')),
+                           {'opend':bridge,'disabled':DisabledFeed(),'eastmoney':EastmoneyLimits()}, save_bars)
+streams = RoutedStreams(market_data, on_provider_bars, listeners, MAX_STREAMS)
+_scope = ContextVar('market_cache_scope', default=None)
 
 
+def scope_for(symbol):
+    pinned = _scope.get()
+    if pinned is not None:
+        return pinned
+    meta = market_data.metadata(symbol)
+    basis = meta['adjustment']
+    identity = meta['provider']
+    if meta['live_supported'] and meta['live_provider'] != identity:
+        identity += '~' + meta['live_provider']
+    revision = (str(datetime.now(ET if symbol.upper().startswith('US.') else CN_TZ).date())
+                if basis == 'qfq' else 'stable')
+    return f'{identity}/{basis}/{revision}'
+
+
+def scoped(function):
+    @wraps(function)
+    async def call(*args, **kwargs):
+        first = args[0] if args else kwargs.get('symbol') or kwargs['key']
+        symbol = first[0] if isinstance(first, tuple) else first
+        try:
+            scope = scope_for(symbol)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        token = _scope.set(scope)
+        try:
+            result = await function(*args, **kwargs)
+            if isinstance(result, dict):
+                result.update(market_data.metadata(symbol), series_revision=scope)
+                if 'bars' in result:
+                    feed = market_data.for_market(symbol)
+                    history_status = getattr(feed.provider, 'history_status', None)
+                    if history_status:
+                        try:
+                            info = await asyncio.to_thread(history_status, symbol.upper())
+                            result['stale'] = bool(result.get('stale') or info.get('stale'))
+                            for field in ('archive_as_of', 'history_notice'):
+                                if field in info:
+                                    result[field] = info[field]
+                        except Exception:
+                            result.update(stale=True, history_notice=f'{feed.provider.source_id} 无法确认历史数据更新时间')
+            return result
+        finally:
+            _scope.reset(token)
+    return call
+
+
+@scoped
 async def publish(key, bars):
-    if key[2] != 'all':
+    if key[2] != 'all' and key[1] not in LONG_PERIODS:
         bars = [b for b in bars if session_fields(b['time'], key[0])[0] == 'regular' or
                 (key[2] == 'extended' and session_fields(b['time'], key[0])[0] in ('pre', 'post'))]
-    if is_us_hour(key[0], key[1]) and bars:
-        bars = await asyncio.to_thread(rebuild_hour_push, key, bars)
+    origin = market_data.for_market(key[0], 'live').provider.source_id
+    bars = [{**bar, 'provider':origin} for bar in bars]
     await asyncio.to_thread(save_bars, key, bars)
     for bar in bars:
-        item = {'type': 'bar', 'bar': row_to_bar(dict(symbol=key[0], period=key[1], mode=key[2], **bar))}
-        for q in tuple(listeners.get(key, ())):
-            if q.full():
-                q.get_nowait()
-            q.put_nowait(item)
+        item = {'type': 'bar', 'series_revision': scope_for(key[0]), 'bar': row_to_bar(dict(symbol=key[0], period=key[1], mode=key[2], **bar))}
+        notify_stream(key, item)
 
 
-def rebuild_hour_push(key, bars):
-    source = (key[0], '60m', key[2])
-    save_bars(source, bars)
-    start = min(hour_bucket(b['time'], key[1]) for b in bars)
-    end = max(hour_bucket(b['time'], key[1]) for b in bars) + int(key[1][:-1])*60
-    with connect_db() as db:
-        rows = db.execute('SELECT * FROM bars WHERE symbol=? AND period=? AND mode=? AND time>=? AND time<? ORDER BY time',
-                          (*source, start, end)).fetchall()
-    touched = {hour_bucket(b['time'], key[1]) for b in bars}
-    return [bar for bar in aggregate_hours([dict(row) for row in rows], key[1]) if bar['time'] in touched]
+def notify_stream(key, item):
+    for queue in tuple(listeners.get(key, ())):
+        if queue.full():
+            queue.get_nowait()
+        queue.put_nowait(item)
+
+
+def stream_connected(key):
+    return streams.connected(key)
 
 
 async def maintenance():
@@ -631,24 +378,27 @@ async def maintenance():
             if time.monotonic() - previous_prune > 86400:
                 await asyncio.to_thread(prune_cache)
                 previous_prune = time.monotonic()
-            await asyncio.to_thread(bridge.unsubscribe_unused)
-            await asyncio.to_thread(bridge.close_if_idle)
+            await asyncio.to_thread(streams.unsubscribe_unused)
+            for provider in market_data.configured_providers():
+                cleanup = getattr(provider, 'cleanup', None)
+                if cleanup:
+                    await asyncio.to_thread(cleanup)
             for key in list(listeners):
                 try:
                     if not listeners[key]:
                         continue
-                    reconnect = key not in bridge.active
-                    if reconnect:
-                        await asyncio.to_thread(bridge.subscribe, key)
-                    if reconnect or time.monotonic() - last_fetch.get(key, 0) > max(REFRESH, 600):
+                    reconnect = not stream_connected(key)
+                    if reconnect and market_data.metadata(key[0])['live_supported']:
+                        await asyncio.to_thread(streams.subscribe, key)
+                    if reconnect or time.monotonic() - last_fetch.get(cache_key(key), 0) > max(REFRESH, 600):
                         days = default_history_days(key[1], key[0])
                         await refresh_history(key, days, force=True)
                 except QuotePermissionError:
                     continue
                 except Exception as exc:
-                    bridge.last_error = str(exc)
+                    streams.last_error = str(exc)
         except Exception as exc:
-            bridge.last_error = str(exc)
+            streams.last_error = str(exc)
 
 
 @asynccontextmanager
@@ -669,31 +419,38 @@ async def lifespan(app):
             raise
     market_analysis.local_bar_reader = read_analysis_bars
     task = asyncio.create_task(maintenance())
-    depth_task = asyncio.create_task(depth_maintenance())
     await scan_service.start()
     from .notifications import Notifications
     notification_task = asyncio.create_task(Notifications(connect_db).run())
-    from .ledger_opend import run as sync_trade_archive
+    from .ledger_broker import run as sync_trade_archive
     archive_task = asyncio.create_task(sync_trade_archive(connect_db))
     from .plan_daily import run as run_plan_daily
-    plan_daily_task = asyncio.create_task(run_plan_daily(connect_db, scan_service.calendar, bars))
+    plan_daily_task = asyncio.create_task(run_plan_daily(connect_db, scan_service.calendar, actual_price_bars))
     directory_stop = asyncio.Event()
-    directory_task = asyncio.create_task(maintain_directory(bridge, connect_db, directory_stop, Bridge))
-    yield
-    market_analysis.local_bar_reader = None
-    directory_stop.set()
-    await directory_task
-    plan_daily_task.cancel()
-    archive_task.cancel()
-    await asyncio.gather(archive_task, plan_daily_task, return_exceptions=True)
-    await scan_service.stop()
-    notification_task.cancel()
-    await asyncio.gather(notification_task, return_exceptions=True)
-    task.cancel()
-    depth_task.cancel()
-    await asyncio.gather(asyncio.to_thread(depth_feed.close), asyncio.to_thread(ticker_feed.close))
-    if bridge.ctx:
-        await asyncio.to_thread(bridge.ctx.close)
+    directory_markets = {m for m in ('CN','US') if market_data.for_market(m,'search_symbols').provider is bridge}
+    directory_task = (asyncio.create_task(maintain_directory(bridge, connect_db, directory_stop, Bridge, directory_markets))
+                      if directory_markets else None)
+    try:
+        yield
+    finally:
+        market_analysis.local_bar_reader = None
+        directory_stop.set()
+        if directory_task:
+            await directory_task
+        plan_daily_task.cancel()
+        archive_task.cancel()
+        await asyncio.gather(archive_task, plan_daily_task, return_exceptions=True)
+        await scan_service.stop()
+        notification_task.cancel()
+        await asyncio.gather(notification_task, return_exceptions=True)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.to_thread(streams.close)
+        for provider in market_data.configured_providers():
+            close = getattr(provider, 'close', None)
+            if close:
+                await asyncio.to_thread(close)
+        loop = None
 
 
 app = FastAPI(title='NAS Market', lifespan=lifespan)
@@ -731,18 +488,34 @@ async def auth(request: Request, call_next):
 
 
 @app.get('/api/status')
-def status():
-    return {'opend_connected': bridge.ctx is not None, 'last_error': bridge.last_error,
-            'active_streams': len(bridge.active), 'max_streams': MAX_STREAMS,
-            'permission_errors': {k:v for k,v in bridge.permission_errors.items() if v['until'] > time.time()}}
+def status(market: str = 'US'):
+    if market not in ('US', 'CN'):
+        raise HTTPException(400,'市场须为 US 或 CN')
+    selected = market_data.for_market(market)
+    methods = {'history':'fetch_bars', 'live':'subscribe_bars'}
+    capabilities = {}
+    for capability in CAPABILITIES:
+        provider = market_data.for_market(market, capability).provider
+        capabilities[capability] = callable(getattr(provider, methods.get(capability, capability), None))
+    meta = market_data.metadata(market)
+    capabilities['live'] = meta['live_supported']
+    return {**meta, 'capabilities':capabilities, 'routes':market_data.route_identities(),
+            'opend_configured': bridge in market_data.configured_providers() or broker_config().source_id == 'opend',
+            'opend_connected': bridge.ctx is not None, 'last_error': streams.last_error or getattr(selected.provider,'last_error',None),
+            'active_streams': len(streams.active), 'max_streams': MAX_STREAMS,
+            'permission_errors': {k:v for k,v in bridge.permission_errors.items()
+                                  if v['until'] > time.time() and market_data.for_market(k).provider is bridge}}
 
 
 @app.post('/api/quote/retry')
 def retry_quote(symbol: str):
     if not SYMBOL_RE.fullmatch(symbol.upper()):
         raise HTTPException(400, '股票代码无效')
-    with bridge.lock:
-        bridge.permission_errors.pop(bridge.permission_market(symbol.upper()), None)
+    for cap in ('history','live','snapshots'):
+        provider = market_data.for_market(symbol.upper(),cap).provider
+        retry = getattr(provider,'retry',None)
+        if retry:
+            retry(symbol.upper())
     return {'ok': True}
 
 
@@ -753,7 +526,7 @@ def cache_status(symbol: str | None = None):
     with connect_db() as db:
         total = db.execute('SELECT COUNT(*) FROM bars').fetchone()[0]
         rows = db.execute('SELECT symbol,period,mode,COUNT(*) AS count,MIN(time) AS oldest,MAX(time) AS newest '
-                          'FROM bars WHERE symbol=? GROUP BY symbol,period,mode', (symbol.upper(),)).fetchall() if symbol else []
+                          'FROM bars WHERE scope=? AND symbol=? GROUP BY symbol,period,mode', (scope_for(symbol),symbol.upper())).fetchall() if symbol else []
     size = sum(p.stat().st_size for p in [Path(DB), Path(DB+'-wal')] if p.exists())
     return {'storage': 'NAS SQLite', 'total_bars': total, 'bytes': size,
             'intraday_retention_days': RETENTION_DAYS, 'daily_retention_days': DAILY_RETENTION_DAYS, 'long_retention_days': LONG_RETENTION_DAYS,
@@ -772,11 +545,11 @@ def depth(symbol: str):
     if not re.fullmatch(r'US\.[A-Z][A-Z0-9.]{0,11}', symbol):
         raise HTTPException(400, '盘口密集线目前只支持美股')
     try:
-        return depth_feed.read(symbol)
+        return market_data.for_market(symbol,'depth').feature('depth')(symbol)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception:
-        raise HTTPException(503, '盘口连接异常，请检查 OpenD；旧盘口线已停用')
+        raise HTTPException(503, '盘口连接异常；旧盘口线已停用')
 
 
 @app.get('/api/order-flow')
@@ -785,11 +558,11 @@ def order_flow(symbol: str):
     if not re.fullmatch(r'US\.[A-Z][A-Z0-9.]{0,11}', symbol):
         raise HTTPException(400, '逐笔面板目前只支持美股')
     try:
-        return {'ticks': ticker_feed.read_ticks(symbol)}
+        return {'ticks': market_data.for_market(symbol,'ticks').feature('ticks')(symbol)}
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception:
-        raise HTTPException(503, '逐笔行情连接异常，请检查 OpenD')
+        raise HTTPException(503, '逐笔行情连接异常')
 
 
 @app.get('/api/option-profile')
@@ -804,18 +577,11 @@ def option_volume_profile(symbol: str, expiry: str = ''):
         except ValueError:
             raise HTTPException(400, '到期日格式应为 YYYY-MM-DD')
     try:
-        with bridge.lock:
-            ctx = bridge.ensure()
-            if expiry:
-                return {'rows': option_profile(ctx, symbol, expiry, bridge.rate_limit)}
-            bridge.rate_limit()
-            rows = quote_result(ctx.get_option_expiration_date(symbol))
-            today = datetime.now(ET).date().isoformat()
-            return {'expirations': sorted({r['strike_time'] for r in rows if r['strike_time'] >= today})}
+        return market_data.for_market(symbol,'option_profile').feature('option_profile')(symbol, expiry)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception:
-        raise HTTPException(503, '期权行情连接异常，请检查 OpenD')
+        raise HTTPException(503, '期权行情连接异常')
 
 
 @app.get('/api/symbols/search')
@@ -824,7 +590,10 @@ def search_symbols(q: str = '', market: str = 'CN', limit: int = 12):
         raise HTTPException(400, '请选择沪深或美股市场，关键词最多 32 字，最多返回 20 项')
     if not q.strip():
         return {'results': [], 'stale': False, 'source': 'nas_cache'}
-    return bridge.search_symbols(q, limit, market)
+    try:
+        return market_data.for_market(market, 'search_symbols').feature('search_symbols')(q, limit, market)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
 
 
 @app.get('/api/symbols/names')
@@ -832,10 +601,36 @@ async def symbol_names(symbols: str, prefer_cache: bool = False):
     codes = list(dict.fromkeys(s.strip().upper() for s in symbols.split(',') if s.strip()))
     if not codes or len(codes) > 100 or any(not SYMBOL_RE.fullmatch(code) for code in codes):
         raise HTTPException(400, '股票代码无效，单次最多一百只')
-    if prefer_cache:
-        names, missing = await asyncio.to_thread(bridge.cached_names, codes)
-        return {'names': names, 'missing': missing}
-    return {'names': await asyncio.to_thread(bridge.names, codes)}
+    names = {}
+    missing = []
+    for feed, group in market_data.batches(codes, 'names'):
+        cached = getattr(feed.provider, 'cached_names', None)
+        if prefer_cache and cached:
+            found, absent = await asyncio.to_thread(cached, group)
+        else:
+            reader = getattr(feed.provider, 'names', None)
+            found = await asyncio.to_thread(reader, group) if reader else {}
+            absent = [symbol for symbol in group if symbol not in found]
+        names.update(found)
+        missing.extend(absent)
+    return {'names':names, 'missing':missing} if prefer_cache or missing else {'names':names}
+
+
+@app.get('/api/chips/summary')
+def chip_summary(market: str, offset: int = 0, limit: int = 20):
+    if market not in ('CN', 'US') or offset < 0 or not 1 <= limit <= 100:
+        raise HTTPException(400, '筹码查询需要 US 或 CN，分页数量为 1 至 100')
+    feed = market_data.for_market(market, 'chip_summary')
+    try:
+        read = feed.feature('chip_summary')
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    try:
+        page = read(market, offset, limit)
+        return {**page, 'provider': feed.provider.source_id, 'market': market,
+                'offset': offset, 'limit': limit, 'kind': 'snapshot'}
+    except Exception as exc:
+        raise HTTPException(502, f'{feed.provider.source_id} 筹码查询失败：{exc}') from exc
 
 
 @app.get('/api/quotes')
@@ -844,42 +639,54 @@ async def quotes(symbols: str):
     if not codes or len(codes) > 100 or any(not SYMBOL_RE.fullmatch(s) for s in codes):
         raise HTTPException(400, '请输入 1 至 100 个有效股票代码')
     try:
-        data, stale = await asyncio.to_thread(bridge.snapshots, codes)
-        return {'quotes': data, 'stale': stale}
+        data, stale = await asyncio.to_thread(market_data.snapshots, codes)
+        providers = {market_of(code):market_data.for_market(code,'snapshots').provider.source_id for code in codes}
+        return {'quotes':data, 'stale':stale, 'providers':providers,
+                'provider':next(iter(providers.values())) if len(set(providers.values())) == 1 else 'mixed', 'adjustment':'none'}
     except Exception as exc:
-        raise HTTPException(503, f'OpenD 快照不可用：{exc}')
+        raise HTTPException(503, f'报价快照不可用：{exc}')
+
+
+def cache_key(key):
+    return (scope_for(key[0]), *key)
 
 
 def history_needs_refresh(key, days, known, success):
-    age = time.monotonic()-last_fetch[key] if key in last_fetch else time.time()-success
-    return age > REFRESH or days > max(known, fetched_days.get(key, 0))
+    age = time.monotonic()-last_fetch[cache_key(key)] if cache_key(key) in last_fetch else time.time()-success
+    return not known or age > REFRESH or days > known
 
 
+@scoped
 async def refresh_history(key, days, force=False):
     started = time.monotonic()
     async with fetch_locks.setdefault(key, asyncio.Lock()):
         known, success, latest = await asyncio.to_thread(sync_state, key)
         if not history_needs_refresh(key, days, known, success):
-            if not force or last_fetch.get(key, 0) >= started:
+            if not force or last_fetch.get(cache_key(key), 0) >= started:
                 return None
-        failure = history_failures.get(key)
+        failure = history_failures.get(cache_key(key))
         if failure and failure[0] > started - 15 and (not force or failure[0] >= started):
             return failure
         try:
-            span = refresh_span(key, days, max(known, fetched_days.get(key, 0)), latest, success)
-            await asyncio.to_thread(bridge.history, key, span)
+            span = refresh_span(key, days, known, latest, success) if known else days
+            await asyncio.to_thread(market_data.history, key, span)
         except Exception as exc:
             now = time.monotonic()
             for old in [k for k, entry in history_failures.items() if entry[0] <= now - 15]:
                 del history_failures[old]
             code = 'permission_denied' if isinstance(exc, QuotePermissionError) else 'quote_unavailable'
-            history_failures[key] = (now, code, str(exc))
-            return history_failures[key]
+            history_failures[cache_key(key)] = (now, code, str(exc))
+            return history_failures[cache_key(key)]
         await asyncio.to_thread(save_sync_state, key, days)
-        last_fetch[key] = time.monotonic()
-        fetched_days[key] = max(days, fetched_days.get(key, 0))
-        history_failures.pop(key, None)
+        last_fetch[cache_key(key)] = time.monotonic()
+        history_failures.pop(cache_key(key), None)
         return None
+
+
+async def actual_price_bars(*args, **kwargs):
+    # Plan levels and execution deviation limits are denominated in actual prices.
+    with market_data.for_market(args[0] if args else kwargs['symbol']).using_adjustment('none'):
+        return await bars(*args, **kwargs)
 
 
 @app.get('/api/bars')
@@ -889,6 +696,7 @@ async def bars_response(symbol: str, period: str = '5m', mode: str = 'all', days
     return await asyncio.to_thread(JSONResponse, result)
 
 
+@scoped
 async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | None = None, limit: int = 5000,
                refresh: bool = False, prefer_cache: bool = False):
     try:
@@ -904,7 +712,7 @@ async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | N
         cached = await asyncio.to_thread(read_bars, key, days, limit)
         if cached:
             stale = refresh or history_needs_refresh(key, days, known, success)
-            failure = history_failures.get(key)
+            failure = history_failures.get(cache_key(key))
             if stale and not refresh and failure and failure[0] > time.monotonic() - 15:
                 return {'bars': cached, 'stale': True, 'error': failure[2], 'error_code': failure[1],
                         'source': 'nas_cache', 'last_success': success}
@@ -914,17 +722,18 @@ async def bars(symbol: str, period: str = '5m', mode: str = 'all', days: int | N
     rows = await asyncio.to_thread(read_bars, key, days, limit)
     if failure:
         if not rows:
-            raise HTTPException(503, f'OpenD 行情不可用：{failure[2]}')
+            raise HTTPException(503, f'{market_data.for_market(symbol).provider.source_id} 行情不可用：{failure[2]}')
         return {'bars': rows, 'stale': True, 'error': failure[2], 'error_code': failure[1], 'source': 'nas_cache'}
     return {'bars': rows, 'stale': False, 'source': 'nas_cache'}
 
 
 def remember_history_window(key, start, end):
     with connect_db() as db:
-        db.execute('INSERT OR REPLACE INTO history_windows VALUES(?,?,?,?,?,?)', (*key,start,end,time.time()))
+        db.execute('INSERT OR REPLACE INTO history_windows VALUES(?,?,?,?,?,?,?)', (scope_for(key[0]),*key,start,end,time.time()))
 
 
 @app.get('/api/bars/window')
+@scoped
 async def bars_window(symbol: str, period: str, mode: str, start: int, end: int):
     try:
         key = validate(symbol, period, mode)
@@ -934,22 +743,23 @@ async def bars_window(symbol: str, period: str, mode: str, start: int, end: int)
         raise HTTPException(400, '日期范围无效或超出可配置的历史查询范围')
     async with fetch_locks.setdefault(key, asyncio.Lock()):
         with connect_db() as db:
-            covered = db.execute('SELECT 1 FROM history_windows WHERE symbol=? AND period=? AND mode=? AND start<=? AND end>=? AND checked>?', (*key,start,end,time.time()-86400)).fetchone()
+            covered = db.execute('SELECT 1 FROM history_windows WHERE scope=? AND symbol=? AND period=? AND mode=? AND start<=? AND end>=? AND checked>?', (scope_for(key[0]),*key,start,end,time.time()-86400)).fetchone()
         if not covered:
             zone = ET if key[0].startswith('US.') else CN_TZ
             first = datetime.fromtimestamp(start,zone).date()
             last = datetime.fromtimestamp(end,zone).date()
             try:
-                await asyncio.to_thread(bridge.history,key,(last-first).days+1,last)
+                await asyncio.to_thread(market_data.history,key,(last-first).days+1,last)
             except Exception as exc:
                 raise HTTPException(503,f'目标日期行情暂不可用：{exc}')
             remember_history_window(key,start,end)
         with connect_db() as db:
-            rows=db.execute('SELECT * FROM bars WHERE symbol=? AND period=? AND mode=? AND time>=? AND time<=? ORDER BY time',(*key,start,end)).fetchall()
+            rows=db.execute('SELECT * FROM bars WHERE scope=? AND symbol=? AND period=? AND mode=? AND time>=? AND time<=? ORDER BY time',(scope_for(key[0]),*key,start,end)).fetchall()
         return {'bars':[row_to_bar(row) for row in rows]}
 
 
 @app.get('/api/bars/older')
+@scoped
 async def older_bars(symbol: str, period: str, mode: str, before: int, limit: int = 1000):
     try:
         key = validate(symbol, period, mode)
@@ -966,7 +776,7 @@ async def older_bars(symbol: str, period: str, mode: str, before: int, limit: in
         # An isolated old date window is not proof that the gap before the
         # current viewport was fetched. Reuse only verified adjacent coverage.
         with connect_db() as db:
-            coverage=db.execute('SELECT start FROM history_windows WHERE symbol=? AND period=? AND mode=? AND start<? AND end>=? AND checked>? ORDER BY start LIMIT 1',(*key,before,before-1,time.time()-86400)).fetchone()
+            coverage=db.execute('SELECT start FROM history_windows WHERE scope=? AND symbol=? AND period=? AND mode=? AND start<? AND end>=? AND checked>? ORDER BY start LIMIT 1',(scope_for(key[0]),*key,before,before-1,time.time()-86400)).fetchone()
         if coverage:
             cached=await asyncio.to_thread(read_bars_before,key,before,limit)
             cached=[b for b in cached if b['time']>=coverage['start']]
@@ -977,7 +787,7 @@ async def older_bars(symbol: str, period: str, mode: str, before: int, limit: in
         window_days = 1825 if period == '1mo' else 730 if period == '1w' else 365 if period == '1d' else 3 if period == '1m' else 10 if period == '5m' else 21 if period == '15m' else 35
         start_date = end_date - timedelta(days=window_days)
         try:
-            await asyncio.to_thread(bridge.history, key, window_days, end_date)
+            await asyncio.to_thread(market_data.history, key, window_days, end_date)
         except Exception as exc:
             raise HTTPException(503, f'历史 K 线暂不可用：{exc}')
         remember_history_window(key, int(datetime.combine(start_date, datetime.min.time(), zone).timestamp()), before)
@@ -992,6 +802,7 @@ async def older_bars(symbol: str, period: str, mode: str, before: int, limit: in
 async def indicators(symbol: str, period: str, mode: str, name: str, params: str = '{}', reset: str = 'session', days: int | None = None):
     response = await bars(symbol, period, mode, days)
     try:
+        check_inputs(response['bars'], name.upper())
         values = calculate(response['bars'], name.upper(), json.loads(params), reset)
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(400, str(exc))
@@ -999,6 +810,7 @@ async def indicators(symbol: str, period: str, mode: str, name: str, params: str
 
 
 @app.get('/api/opening-range')
+@scoped
 async def opening_range(symbol: str, date: str | None = None):
     try:
         symbol=validate(symbol,'5m','regular')[0]
@@ -1012,18 +824,18 @@ async def opening_range(symbol: str, date: str | None = None):
     except ValueError as exc:raise HTTPException(400,str(exc))
     if time.time()<times['confirmed_at']+2:
         return {**times,'symbol':symbol,'status':'forming','message':'等待常规开盘后5分钟收线'}
-    cache_key=f'opening-range.{symbol}.{day}'
+    cache_key=f'opening-range.{scope_for(symbol)}.{symbol}.{day}'
     async with fetch_locks.setdefault((symbol,'opening-range',day),asyncio.Lock()):
         with connect_db() as db:
             row=db.execute('SELECT value FROM settings WHERE key=?',(cache_key,)).fetchone()
         cached=json.loads(row[0]) if row else None
-        label=os.getenv('OPENING_RANGE_BAR_LABEL','end')
+        label=getattr(market_data.for_market(symbol).provider,'bar_label',os.getenv('OPENING_RANGE_BAR_LABEL','end'))
         ttl=30 if cached and cached.get('status')=='missing' and day==str(today) else 900
         if cached and cached.get('label')==label and time.time()-cached.get('checked',0)<ttl:
             return {**cached,'source':'nas_cache','stale':False}
         try:
-            rows=await asyncio.to_thread(bridge.opening_five,symbol,day)
-            result=select_opening_range(rows,symbol,times)
+            rows=await asyncio.to_thread(market_data.opening_five,symbol,day)
+            result=select_opening_range(rows,symbol,times,label)
         except Exception as exc:
             if cached and cached.get('status')=='ready' and cached.get('label')==label:
                 return {**cached,'source':'nas_cache','stale':True,'error':str(exc)}
@@ -1033,7 +845,7 @@ async def opening_range(symbol: str, date: str | None = None):
         with connect_db() as db:
             db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                        (cache_key,json.dumps(result)))
-        return {**result,'source':'opend','stale':False}
+        return {**result,'source':market_data.for_market(symbol).provider.source_id,'stale':False}
 
 
 class PythonIndicatorRequest(BaseModel):
@@ -1094,14 +906,15 @@ async def strategy_evaluate(request: StrategyEvaluation):
     try:
         config=validate_strategy(request.config)
         key=validate(config['symbol'],config['period'],config['mode'])
-        if request.lease:
+        metadata = market_data.metadata(key[0])
+        if request.lease and metadata['live_supported']:
             if key not in strategy_leases and len(strategy_leases)>=8:
                 raise ValueError('策略行情最多使用 8 组股票/周期订阅')
             q=strategy_leases.get(key,(asyncio.Queue(maxsize=1),0))[0]
             listeners.setdefault(key,set()).add(q)
             strategy_leases[key]=(q,time.monotonic()+75)
             try:
-                await asyncio.to_thread(bridge.subscribe,key)
+                await asyncio.to_thread(streams.subscribe,key)
             except Exception:
                 listeners.get(key,set()).discard(q);strategy_leases.pop(key,None)
                 raise
@@ -1112,7 +925,19 @@ async def strategy_evaluate(request: StrategyEvaluation):
             result=await asyncio.to_thread(compute)
         result['stale']=response['stale']
         result['evaluated_at']=time.time()
-        result['live']=key in bridge.active
+        result['live']=stream_connected(key)
+        result.update(metadata)
+        if request.lease and (result['buy'] or result['sell']) and metadata['adjustment'] != 'none':
+            result['execution_close'] = None
+            if 'none' in market_data.for_market(key[0]).provider.adjustments:
+                try:
+                    actual = await actual_price_bars(*key, days=3, limit=100)
+                except HTTPException as exc:
+                    result['execution_issue'] = str(exc.detail)
+                else:
+                    if not actual['stale']:
+                        result['execution_close'] = next((b['close'] for b in reversed(actual['bars'])
+                                                          if b['time'] == result['bar_time']), None)
         return result
     except (ValueError,SyntaxError,TypeError) as exc:
         raise HTTPException(400,python_validation_error(exc))
@@ -1122,7 +947,7 @@ async def strategy_evaluate(request: StrategyEvaluation):
         raise HTTPException(503,str(exc))
 
 
-def merge_moomoo_groups(workspace, remote_groups):
+def merge_watchlists(workspace, remote_groups, provider='opend', selected_markets=('US','CN')):
     workspace = workspace if isinstance(workspace, dict) else {}
     if not isinstance(workspace.get('markets'), dict):
         workspace = {'activeMarket': 'US', 'markets': {'US': workspace, 'CN': {}}}
@@ -1141,20 +966,23 @@ def merge_moomoo_groups(workspace, remote_groups):
             groups = [{'id': 'featured', 'name': '精选', 'symbols': defaults}]
         current['groups'] = groups
         markets[market] = current
+    prefix = 'moomoo' if provider == 'opend' else 'feed-' + provider
     for remote in remote_groups:
         valid = [s for s in remote['symbols'] if SYMBOL_RE.fullmatch(s)]
         summary['unsupported_symbols'] += len(remote['symbols']) - len(valid)
         for market, codes in (('US', [s for s in valid if s.startswith('US.')]),
                               ('CN', [s for s in valid if s.startswith(('SH.', 'SZ.'))])):
-            if not codes:
+            if market not in selected_markets:
                 continue
             groups = markets[market]['groups']
-            group_id = 'moomoo-' + hashlib.sha256((remote['kind'] + ':' + remote['name']).encode()).hexdigest()[:16]
+            group_id = prefix + '-' + hashlib.sha256((remote['kind'] + ':' + remote['name']).encode()).hexdigest()[:16]
             existing = next((g for g in groups if isinstance(g, dict) and g.get('id') == group_id), None)
             if existing is None:
+                if not codes:
+                    continue
                 name = remote['name'][:24]
                 if any(isinstance(g, dict) and g.get('name') == name for g in groups):
-                    name = (remote['name'][:15] + ' · moomoo')[:24]
+                    name = (remote['name'][:15] + ' · ' + provider)[:24]
                 existing = {'id': group_id, 'name': name, 'symbols': []}
                 groups.append(existing)
             existing['symbols'] = list(dict.fromkeys(codes))
@@ -1163,23 +991,50 @@ def merge_moomoo_groups(workspace, remote_groups):
     return workspace, summary
 
 
-@app.post('/api/watchlists/import-moomoo')
-async def import_moomoo_watchlists():
-    try:
-        remote = await asyncio.to_thread(bridge.user_watchlists)
-    except Exception as exc:
-        raise HTTPException(502, f'读取 moomoo 自选分组失败：{exc}')
+merge_moomoo_groups = merge_watchlists
+
+
+@app.post('/api/watchlists/import-moomoo', include_in_schema=False)
+@app.post('/api/watchlists/import')
+async def import_watchlists(market: str | None = None):
+    if market is not None and market not in ('US','CN'):
+        raise HTTPException(400,'市场须为 US 或 CN')
+    selected = (market,) if market else ('US','CN')
+    by_source = {}
+    for m in selected:
+        feed = market_data.for_market(m, 'watchlists')
+        by_source.setdefault(feed.provider.source_id, (feed, []))[1].append(m)
+    imports = []
+    for provider, (feed, markets) in by_source.items():
+        try:
+            remote = await asyncio.to_thread(feed.feature('watchlists'))
+            if not isinstance(remote, list):
+                raise ValueError('自选分组须为列表')
+            for group in remote:
+                if (not isinstance(group, dict) or not isinstance(group.get('name'), str) or not isinstance(group.get('kind'), str)
+                        or not isinstance(group.get('symbols'), list) or not all(isinstance(s, str) for s in group['symbols'])):
+                    raise ValueError('自选分组格式无效')
+            imports.append((provider, markets, remote))
+        except ValueError as exc:
+            raise HTTPException(422,str(exc))
+        except Exception as exc:
+            raise HTTPException(502,f'读取 {provider} 自选分组失败：{exc}')
     with connect_db() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute("SELECT value FROM settings WHERE key='workspace'").fetchone()
-        raw = json.loads(row['value']) if row else {}
-        workspace, summary = merge_moomoo_groups(raw, remote)
+        workspace = json.loads(row['value']) if row else {}
+        summary = {'US':{'groups':0,'symbols':0},'CN':{'groups':0,'symbols':0},'unsupported_symbols':0}
+        for provider, markets, remote in imports:
+            workspace, part = merge_watchlists(workspace, remote, provider, markets)
+            for m in markets:
+                summary[m] = part[m]
+            summary['unsupported_symbols'] += part['unsupported_symbols']
         payload = json.dumps(workspace, ensure_ascii=False)
         if len(payload) > 100_000:
             raise HTTPException(413, '自选分组超出工作区容量')
         db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                    ('workspace', payload))
-    return {'value': workspace, 'summary': summary, 'remote_groups': len(remote)}
+    return {'value': workspace, 'summary': summary, 'remote_groups':sum(len(rows) for _,_,rows in imports), 'providers':list(by_source)}
 
 
 @app.get('/api/settings/{key}')
@@ -1256,16 +1111,21 @@ async def stream(ws: WebSocket):
         await ws.close(code=1008)
         return
     await ws.accept()
+    meta = market_data.metadata(key[0])
+    if not meta['live_supported']:
+        await ws.send_json({'type': 'status', 'connected': False, **meta})
+        await ws.close(code=1000)
+        return
     q = asyncio.Queue(maxsize=10)
     listeners.setdefault(key, set()).add(q)
     try:
-        await asyncio.to_thread(bridge.subscribe, key)
-        await ws.send_json({'type': 'status', 'connected': True})
+        await asyncio.to_thread(streams.subscribe, key)
+        await ws.send_json({'type': 'status', 'connected': True, **meta})
         while True:
             try:
                 await ws.send_json(await asyncio.wait_for(q.get(), timeout=25))
             except asyncio.TimeoutError:
-                await ws.send_json({'type': 'heartbeat', 'connected': key in bridge.active})
+                await ws.send_json({'type': 'heartbeat', 'connected': stream_connected(key)})
     except WebSocketDisconnect:
         pass
     except QuotePermissionError as exc:
@@ -1286,7 +1146,7 @@ from .review import install as install_review
 install_review(app, connect_db)
 
 from .radar import install as install_radar
-radar_service = install_radar(app, bridge, connect_db)
+radar_service = install_radar(app, bridge, connect_db, external=market_data, opend_radar=opend_radar)
 from .scan_service import ScanService
 from .scan_api import install as install_scan
 scan_service = ScanService(sys.modules[__name__], radar_service)

@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from .radar import select_feed
 
 
 def pool(endpoint, day):
@@ -49,26 +50,70 @@ def pool(endpoint, day):
 
 
 def ladder(current, previous, broken):
-    now={r['symbol']:r for r in current};before={r['symbol']:r for r in previous}
+    now = {row['symbol']: row for row in current}
+    missing_current = sum(type(row.get('streak')) is not int for row in current)
+    missing_previous = sum(type(row.get('streak')) is not int for row in previous)
     levels=[];advances=[]
     for level in sorted({r['streak'] for r in current if isinstance(r.get('streak'),int)},reverse=True):
         rows=[r for r in current if r.get('streak')==level]
         levels.append({'level':level,'count':len(rows),'stocks':rows})
-    for level in sorted({r['streak'] for r in previous if isinstance(r.get('streak'),int)}):
-        cohort=[r for r in previous if r['streak']==level]
-        success=sum(1 for r in cohort if now.get(r['symbol'],{}).get('streak',0)>=level+1)
-        advances.append({'from':level,'to':level+1,'denominator':len(cohort),'success':success,'rate':success/len(cohort)})
+    warnings = []
+    if missing_current:
+        warnings.append(f'今日涨停池有 {missing_current} 只缺少连板天数，梯队仅列出有数据的股票，最高连板暂不可用。')
+    if missing_previous or missing_current:
+        warnings.append(f'晋级统计需要前后两个交易日的连板天数，昨日缺少 {missing_previous} 只，今日缺少 {missing_current} 只。')
+    else:
+        for level in sorted({r['streak'] for r in previous}):
+            cohort=[r for r in previous if r['streak']==level]
+            success=sum(1 for r in cohort if now.get(r['symbol'],{}).get('streak',0)>=level+1)
+            advances.append({'from':level,'to':level+1,'denominator':len(cohort),'success':success,'rate':success/len(cohort)})
     failed={r['symbol'] for r in broken}-set(now)
     denominator=len(failed|set(now))
-    return {'levels':levels,'max_streak':max([r.get('streak') or 1 for r in current] or [0]),'promotion':advances,
+    return {'levels':levels,'max_streak':None if missing_current else max((r['streak'] for r in current),default=0),'promotion':advances,'warnings':warnings,
         'broken_count':len(failed),'broken_denominator':denominator,'broken_rate':len(failed)/denominator if denominator else None,
         'definition':'炸板为触及涨停但当前未封板的去重标的；炸板率=炸板/(炸板+当前封板)。晋级分母为上一交易日同高度涨停池，分子为今日连续高度增加者。按上游实际涨停池分类，不使用统一10%阈值。'}
 
 
+POOL_ENDPOINTS = {'up':'getTopicZTPool', 'broken':'getTopicZBPool', 'down':'getTopicDTPool',
+                  'strong':'getTopicQSPool', 'previous':'getTopicZTPool'}
+
+
+class EastmoneyLimits:
+    source_id = 'eastmoney'
+    live_adjustments = ()
+    adjustments = ()
+
+    @staticmethod
+    def limit_pool(kind, day):
+        return pool(POOL_ENDPOINTS[kind], day)
+
+
 class Analytics:
-    def __init__(self,service):
-        self.service=service;self.state={};self.tasks={}
-        self.board_lock=threading.Lock()
+    def __init__(self, service):
+        self.service = service
+        self.state, self.tasks = {}, {}
+        self.board_lock = threading.Lock()
+        feed = getattr(getattr(service, 'main', None), 'market_data', None)
+        selected = select_feed(feed, 'CN', 'limit_pool')
+        if selected is not feed or (selected and callable(getattr(selected.provider, 'limit_pool', None))):
+            self.pool_source = selected.provider.source_id
+            # An explicit route must surface missing capabilities and permission errors.
+            self.pool_feed = selected
+        else:
+            self.pool_feed = None
+            self.pool_source = EastmoneyLimits.source_id
+        self.snapshot_feed = select_feed(feed, 'CN', 'snapshots')
+
+    def read_pool(self, kind, day):
+        method = self.pool_feed.feature('limit_pool') if self.pool_feed else EastmoneyLimits.limit_pool
+        result = method(kind, day)
+        if result.get('stale'):
+            raise ValueError(result.get('error') or '涨跌停池未更新')
+        if result.get('trade_date', day) != day:
+            raise ValueError('涨跌停池返回了其他交易日')
+        if not isinstance(result.get('rows'), list):
+            raise ValueError(self.pool_source+' 涨跌停池缺少股票名单')
+        return {**result, 'source':result.get('source') or self.pool_source}
 
     def limit_board(self, day=None):
         now=datetime.now(ZoneInfo('Asia/Shanghai'))
@@ -81,13 +126,13 @@ class Analytics:
         if day not in dates:
             raise ValueError('请选择最近五个交易日')
         def fetch():
-            sealed=pool('getTopicZTPool',day)['rows']
-            opened=pool('getTopicZBPool',day)['rows']
+            sealed=self.read_pool('up',day)['rows']
+            opened=self.read_pool('broken',day)['rows']
             current={r['symbol'] for r in sealed}
             broken=[r for r in opened if r['symbol'] not in current]
             return {'trade_date':day,'sealed':sealed,'broken':broken}
-        snapshot=self.service.radar.cached('limit-board:v2:'+day,120,fetch,lock=self.board_lock)
-        return {**snapshot,'dates':dates,'source':'东方财富沪深涨停池、炸板池'}
+        snapshot=self.service.radar.cached('limit-board:v3:'+self.pool_source+':'+day,120,fetch,lock=self.board_lock)
+        return {**snapshot,'dates':dates,'source':self.pool_source+'沪深涨停池、炸板池'}
 
     def get(self, market, refresh=False):
         if market not in ('CN','US'):raise ValueError('市场无效')
@@ -109,14 +154,16 @@ class Analytics:
         s=self.service;days=await asyncio.to_thread(s.calendar.days,'SH.600000')
         now=datetime.now(ZoneInfo('Asia/Shanghai'));today=str(now.date())
         eligible=sorted(d for d in days if d<today or (d==today and now.hour>=9))
+        if len(eligible) < 2:
+            raise ValueError('交易日历需要覆盖最近两个沪深交易日')
         current,previous=eligible[-1],eligible[-2]
         pools={};state['total']=5
-        for name,endpoint,day in [('up','getTopicZTPool',current),('broken','getTopicZBPool',current),('down','getTopicDTPool',current),('previous','getTopicZTPool',previous),('strong','getTopicQSPool',previous)]:
-            try:pools[name]=await asyncio.to_thread(s.radar.cached,'pool:'+endpoint+':'+day,120,lambda ep=endpoint,d=day:pool(ep,d))
+        for name, day in [('up',current), ('broken',current), ('down',current), ('previous',previous), ('strong',previous)]:
+            try:pools[name]=await asyncio.to_thread(s.radar.cached,'pool:'+self.pool_source+':'+name+':'+day,120,lambda key=name,d=day:self.read_pool(key,d))
             except Exception as e:pools[name]={'error':str(e),'rows':None}
             state['done']+=1
-        result={'market':'CN','trade_date':current,'previous_trade_date':previous,'pools':pools,'source':'Eastmoney limit pools + OpenD snapshots',
-                'scope':'沪深证券，上游涨停/炸板/跌停/强势池；并非 OpenD 全市场分布的同一统计范围',
+        result={'market':'CN','trade_date':current,'previous_trade_date':previous,'pools':pools,'source':self.pool_source+'涨跌停池 + '+self.snapshot_feed.provider.source_id+' 快照',
+                'scope':'沪深证券，按上游涨停、炸板、跌停和强势池统计',
                 'coverage_note':'覆盖率为返回去重沪深标的/数据源公布池总数；不能代表全市场覆盖率。停牌或未返回快照从反馈分母中排除。'}
         if all(pools[k].get('rows') is not None and not pools[k].get('stale') for k in ('up','broken')):
             result.update(ladder(pools['up']['rows'],pools['previous'].get('rows') or [],pools['broken']['rows']))
@@ -129,12 +176,18 @@ class Analytics:
             values=[];missing=[];details=[]
             for start in range(0,len(cohort),100):
                 codes=[r['symbol'] for r in cohort[start:start+100]]
-                quotes,stale=await asyncio.to_thread(s.main.bridge.snapshots,codes)
+                try:
+                    quotes, stale = await asyncio.to_thread(self.snapshot_feed.snapshots, codes)
+                except (ValueError, RuntimeError, OSError) as exc:
+                    result['feedback'][key] = {'error':str(exc), 'source':self.snapshot_feed.provider.source_id}
+                    break
                 by={r['symbol']:r for r in quotes}
                 for code in codes:
                     q=by.get(code,{})
                     if stale or q.get('change_percent') is None or not str(q.get('update_time','')).startswith(current):missing.append(code)
                     else:values.append(q['change_percent']);details.append(q)
+            if 'error' in result['feedback'].get(key, {}):
+                continue
             result['feedback'][key]={'cohort_date':previous,'trade_date':current,'expected':len(cohort),'denominator':len(values),
                 'coverage':len(values)/len(cohort) if cohort else None,'average_change':sum(values)/len(values) if values else None,
                 'up_ratio':sum(v>0 for v in values)/len(values) if values else None,'missing':missing,'quotes':details,
@@ -166,12 +219,13 @@ class Analytics:
             except Exception as e:proxies.append({'symbol':'US.'+code,'name':name,'error':str(getattr(e,'detail',e))})
             state['done']+=1
         n=len(rows);long=[r for r in rows if r['new_high'] is not None]
-        return {'market':'US','scope':'NAS 美股关注列表去重样本（可能含 ETF），不是全市场或标普500成分股',
+        history = select_feed(getattr(s.main, 'market_data', None), 'US', 'history')
+        return {'market':'US', 'source':history.provider.source_id if history else None, 'scope':'NAS 美股关注列表去重样本（可能含 ETF），不是全市场或标普500成分股',
             'expected':len(symbols),'denominator':n,'coverage':n/len(symbols) if symbols else None,'rows':rows,'failures':failed,
             'above_ma20_ratio':sum(r['ma20'] for r in rows)/n if n else None,'above_ma50_ratio':sum(r['ma50'] for r in rows)/n if n else None,
             'high_low_denominator':len(long),'new_high':sum(r['new_high'] for r in long),'new_low':sum(r['new_low'] for r in long),
             'up':sum(r['change']>0 for r in rows),'down':sum(r['change']<0 for r in rows),'flat':sum(r['change']==0 for r in rows),
             'up_ratio':sum(r['change']>0 for r in rows)/n if n else None,'proxies':proxies,
             'trade_date':datetime.fromtimestamp(rows[0]['time'],ZoneInfo('America/New_York')).date().isoformat() if rows else None,
-            'definition':'最近完成交易日；MA20/MA50含当日收盘；新高/新低为当日收盘严格超过/低于前252根日线收盘极值；不足253根从该指标分母排除。均采用与图表一致的不复权价格。',
+            'definition':'最近完成交易日；MA20/MA50含当日收盘；新高/新低为当日收盘严格超过/低于前252根日线收盘极值；不足253根从该指标分母排除。均采用与图表一致的价格口径。',
             'industry_diffusion':{'up':sum(r.get('change',0)>0 for r in proxies[:11]),'denominator':sum('change' in r for r in proxies[:11]),'definition':'11行业ETF中当日上涨的ETF比例，不代表个股宽度'}}

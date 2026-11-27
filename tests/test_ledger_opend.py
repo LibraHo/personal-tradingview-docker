@@ -11,11 +11,12 @@ from unittest.mock import patch
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
-from app.ledger_opend import ET, Sync, fill, install, position, service
+from app.ledger_broker import ET, Sync, install, service
+from app.opend_broker import OpenDBroker, fill, position
 from app.trading import BrokerRejected
 
 
-class Broker:
+class Broker(OpenDBroker):
     def __init__(self):
         self.calls = []
         self.today_calls = []
@@ -125,14 +126,14 @@ class OpenDLedgerTests(unittest.TestCase):
         self.sync.once()
         with self.connect() as db:
             old = (datetime.now(ET).date() - timedelta(days=102)).isoformat()
-            db.execute('UPDATE ledger_opend_accounts SET through=?', (old,))
+            db.execute('UPDATE ledger_broker_accounts SET through=?', (old,))
         self.broker.fail_next = True
         self.sync.once()
         status = self.sync.status()
         self.assertEqual((status['state'], status['accounts'][0]['through']), ('error', old))
         self.assertNotIn('fixture', status['message'])
         restarted = Sync(self.connect, lambda: self.broker)
-        with patch('app.ledger_opend.REQUEST_GAP', 0):
+        with patch('app.ledger_broker.REQUEST_GAP', 0):
             restarted.once()
         self.assertEqual(restarted.status()['state'], 'ready')
         first, second = self.broker.calls[-2:]
@@ -190,7 +191,7 @@ class OpenDLedgerTests(unittest.TestCase):
         self.sync.once()
         with self.connect() as db:
             old = (datetime.now(ET).date()-timedelta(days=120)).isoformat()
-            db.execute('UPDATE ledger_opend_accounts SET through=?', (old,))
+            db.execute('UPDATE ledger_broker_accounts SET through=?', (old,))
         stop = threading.Event()
         history = self.broker.history_deal_list_query
         def interrupted(**kwargs):
@@ -215,7 +216,8 @@ class OpenDLedgerTests(unittest.TestCase):
         install(app, agent, self.connect)
         app.include_router(agent)
         client = TestClient(app)
-        api = '/api/v1/review/ledger/opend'
+        api = '/api/v1/review/ledger/broker'
+        self.assertEqual(client.get('/api/v1/review/ledger/opend').json(), client.get(api).json())
         self.assertEqual(client.get(api).json()['state'], 'idle')
         self.assertEqual(client.post(api+'/sync?market=CN').status_code, 422)
         self.assertEqual(client.post(api+'/sync?start=2025-11-01').status_code, 422)

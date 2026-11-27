@@ -49,9 +49,11 @@ export default function LimitBoard({refresh,onOpen}:{refresh:number;onOpen:(item
     }).sort((a,b)=>(b.streak??0)-(a.streak??0)||(a.first_seal||999999)-(b.first_seal||999999)||a.symbol.localeCompare(b.symbol));
   },[data,group,level,query]);
   const total=data?data.sealed.length+data.broken.length:0;
-  const resealed=data?.sealed.filter(r=>r.reopen_count!=null&&r.reopen_count>0).length;
+  const missingReopens=data?.sealed.filter(r=>r.reopen_count==null).length||0;
+  const missingStreaks=data?.sealed.filter(r=>r.streak==null).length||0;
+  const resealed=missingReopens?'—':data?.sealed.filter(r=>r.reopen_count!=null&&r.reopen_count>0).length;
   return <section className="limit-board" aria-label="沪深打板行情">
-    <div className="lb-heading"><div><h3>打板行情</h3><p>沪深 A 股 · {data?.source||'东方财富涨停池、炸板池'}</p></div>
+    <div className="lb-heading"><div><h3>打板行情</h3><p>沪深 A 股 · {data?.source||'涨停池、炸板池'}</p></div>
       <label>交易日 <select aria-label="打板交易日" value={day} onChange={e=>{setDay(e.target.value);setData(null)}}>
         <option value="">最新交易日</option>{dates.map(d=><option key={d}>{d}</option>)}</select></label>
     </div>
@@ -60,6 +62,8 @@ export default function LimitBoard({refresh,onOpen}:{refresh:number;onOpen:(item
     {data&&<>
       <p className="radar-meta">行情日期 {data.trade_date} · 抓取 {new Date(data.updated*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})}（北京时间）</p>
       {data.stale&&<p role="alert" className="radar-warning">上游更新失败，正在显示该交易日缓存。{data.error}</p>}
+      {missingReopens>0&&<p className="radar-warning">有 {missingReopens} 只股票缺少开板次数，回封总数暂不可用。首封和回封筛选只显示有开板记录的股票。</p>}
+      {missingStreaks>0&&<p className="radar-warning">有 {missingStreaks} 只股票缺少连板天数，按连板高度筛选时会跳过这些股票。</p>}
       <div className="lb-metrics">{[['封板',data.sealed.length],['其中回封',resealed],['炸板',data.broken.length],['封板率',total?(100*data.sealed.length/total).toFixed(1)+'%':'—']].map(([label,value])=>
         <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
       <div className="lb-filters"><div className="lb-groups" aria-label="封板状态">{(Object.keys(groups) as Group[]).map(k=>
@@ -69,7 +73,7 @@ export default function LimitBoard({refresh,onOpen}:{refresh:number;onOpen:(item
       </div>
       <div className="radar-table"><table aria-label="打板股票明细"><thead><tr>{['股票','封板状态','连板','现价','首封时间','最近封板','开板次数','封单金额','封单 / 成交额','封单 / 流通市值','换手率','行业','操作'].map(h=><th key={h}>{h}</th>)}</tr></thead>
         <tbody>{rows.map(s=><tr key={s.symbol}>
-          <td><button className="radar-name" onClick={()=>onOpen(s)}>{s.name}</button><small>{s.symbol}</small></td>
+          <td><button className="radar-name" onClick={()=>onOpen({...s,name:s.name||s.symbol})}>{s.name||s.symbol}</button><small>{s.symbol}</small></td>
           <td>{group==='broken'?'炸板':s.reopen_count==null?'封板':s.reopen_count>0?'回封':'首封未开'}</td>
           <td>{s.streak!=null?s.streak+' 板':'—'}</td><td>{s.price?.toFixed(2)??'—'}</td><td>{clock(s.first_seal)}</td><td>{clock(s.last_seal)}</td>
           <td>{s.reopen_count??'—'}</td><td>{funds(s.sealed_funds)}</td>

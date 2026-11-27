@@ -38,13 +38,15 @@ class HourAggregationTests(unittest.TestCase):
 
 class HourPushTests(unittest.IsolatedAsyncioTestCase):
     async def test_push_rebuilds_full_bucket_from_cached_source_and_corrects(self):
-        key=('US.AAPL','120m','regular');source=('US.AAPL','60m','regular')
+        key=('US.AAPL','120m','regular')
         with tempfile.TemporaryDirectory() as root, patch.object(market,'DB',str(Path(root)/'db.sqlite3')):
-            market.init_db();market.save_bars(source,[bar('09:30',2),bar('10:30',3)])
+            market.init_db()
+            adapter = market.Bridge()
+            adapter.remember_hours(key,[bar('09:30',2),bar('10:30',3)])
             queue=asyncio.Queue(maxsize=10);market.listeners[key]={queue}
             try:
                 for close in (4,5):
-                    await market.publish(key,[bar('10:30',close)])
+                    await market.publish(key, adapter.live_rows(key, [bar('10:30', close)]))
                     item=await queue.get()
                     self.assertEqual(item['bar']['volume'],20)
                     self.assertEqual(item['bar']['close'],close)

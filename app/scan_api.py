@@ -47,20 +47,20 @@ class RunRequest(BaseModel):
 
 class LimitBoardStock(BaseModel):
     symbol: str
-    name: str
-    industry: str | None
-    price: float | None
-    change: float | None = Field(description='涨跌幅，%')
-    streak: int | None = Field(description='连续涨停交易日数')
-    reopen_count: int | None
-    first_seal: int | None = Field(description='首次封板，北京时间 HHMMSS 数字')
-    last_seal: int | None = Field(description='最近封板，北京时间 HHMMSS 数字')
-    sealed_funds: float | None = Field(description='封单金额，元')
-    turnover_amount: float | None = Field(description='当日成交额，元')
-    turnover_pct: float | None = Field(description='换手率，%')
-    float_market_cap: float | None = Field(description='流通市值，元')
-    seal_to_turnover_pct: float | None = Field(description='封单金额占成交额的百分比')
-    seal_to_float_pct: float | None = Field(description='封单金额占流通市值的百分比')
+    name: str | None = None
+    industry: str | None = None
+    price: float | None = None
+    change: float | None = Field(default=None, description='涨跌幅，%')
+    streak: int | None = Field(default=None, description='连续涨停交易日数')
+    reopen_count: int | None = None
+    first_seal: int | None = Field(default=None, description='首次封板，北京时间 HHMMSS 数字')
+    last_seal: int | None = Field(default=None, description='最近封板，北京时间 HHMMSS 数字')
+    sealed_funds: float | None = Field(default=None, description='封单金额，元')
+    turnover_amount: float | None = Field(default=None, description='当日成交额，元')
+    turnover_pct: float | None = Field(default=None, description='换手率，%')
+    float_market_cap: float | None = Field(default=None, description='流通市值，元')
+    seal_to_turnover_pct: float | None = Field(default=None, description='封单金额占成交额的百分比')
+    seal_to_float_pct: float | None = Field(default=None, description='封单金额占流通市值的百分比')
 
 
 class LimitBoardSnapshot(BaseModel):
@@ -293,22 +293,41 @@ def install(app, service):
             'monitor_count':len(monitors),'errors':[{'id':m['id'],'error':m['last_error']} for m in monitors if m.get('last_error')]}
 
     @api.get('/markets')
-    def markets():return {'markets':['CN','US'],'categories':{'CN':['industry','concept'],'US':['industry','concept','theme','etf']},'adjustment':'NONE','session':'regular','unsupported':{'other':'OpenD OTHER 只能用于所属板块返回值，不能查询目录','CN.theme':'该市场无独立 theme 热力图，请使用 concept 概念题材目录'}}
+    def markets():
+        sources = service.market_sources()
+        adjustments = {row['adjustment'].upper() for row in sources.values()}
+        return {'markets':['CN','US'], 'categories':{'CN':['industry','concept'],'US':['industry','concept','theme','etf']},
+                'market_sources':sources, 'session':'regular',
+                'adjustment':next(iter(adjustments)) if len(adjustments) == 1 else 'MIXED' if adjustments else None}
+
+    async def radar_query(method, *args):
+        try:
+            return await asyncio.to_thread(method, *args)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (OSError, RuntimeError, ImportError) as exc:
+            raise HTTPException(503, str(exc)) from exc
 
     @api.get('/sectors')
     async def sectors(market:str='CN',kind:str='industry',page:str='',q:str=''):
-        r=await __import__('asyncio').to_thread(service.radar.heatmap,market,kind,page) if kind=='theme' else await __import__('asyncio').to_thread(service.radar.catalog,market,kind)
+        if kind == 'theme':
+            r = await radar_query(service.radar.heatmap, market, kind, page)
+        else:
+            r = await radar_query(service.radar.catalog, market, kind)
         if q:r={**r,'rows':[x for x in r['rows'] if q.lower() in (x['name']+' '+x['symbol']).lower()]}
         return r
 
     @api.get('/sectors/heatmap')
-    async def heatmap(market:str='CN',kind:str='industry',page:str=''):return await __import__('asyncio').to_thread(service.radar.heatmap,market,kind,page)
+    async def heatmap(market:str='CN',kind:str='industry',page:str=''):
+        return await radar_query(service.radar.heatmap, market, kind, page)
 
     @api.get('/sectors/members')
-    async def members(symbol:str):return await __import__('asyncio').to_thread(service.radar.members,symbol)
+    async def members(symbol:str):
+        return await radar_query(service.radar.members, symbol)
 
     @api.get('/emotion')
-    async def emotion(market:str='CN',symbol:str=''):return await __import__('asyncio').to_thread(service.radar.emotion,market,symbol)
+    async def emotion(market:str='CN',symbol:str=''):
+        return await radar_query(service.radar.emotion, market, symbol)
 
     @api.get('/limit-up', summary='沪深 A 股打板行情', response_model=LimitBoardSnapshot, response_model_exclude_unset=True)
     @app.get('/api/radar/limit-up', summary='沪深 A 股打板行情', response_model=LimitBoardSnapshot, response_model_exclude_unset=True)
@@ -324,7 +343,15 @@ def install(app, service):
     async def emotion_analytics(market:str='CN',refresh:bool=False):return await invoke(analytics.get,market,refresh)
 
     @api.get('/bars')
-    async def bars(symbol:str,period:str='1d'):return {'bars':await invoke(service.load,symbol,period),'source':'OpenD','adjustment':'NONE','session':'regular'}
+    async def bars(symbol:str, period:str='1d'):
+        rows = await invoke(service.load, symbol, period)
+        market = 'US' if symbol.upper().startswith('US.') else 'CN'
+        route = service.market_sources(market).get(market, {})
+        last = rows[-1] if rows else {}
+        basis = last.get('adjustment') or route.get('adjustment')
+        providers = sorted({row['provider'] for row in rows if row.get('provider')})
+        return {'bars':rows, 'source':route.get('history') or last.get('provider'), 'bar_providers':providers,
+                'adjustment':basis.upper() if basis else None, 'session':'regular', 'market_sources':route}
 
     @api.get('/quotes')
     async def quotes(symbols:str):return await service.main.quotes(symbols)

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .scan_engine import validate_plan, evaluate
 from .scan_calendar import TradingCalendar, annotate, expected_day, latest_intraday_close, close_time
-from .radar import SYMBOL, BOARD
+from .radar import SYMBOL, BOARD, save_labels, select_feed
 from .scan_audit import execution_plan, scope_snapshot, scope_summary, job_summary
 
 
@@ -120,7 +120,7 @@ class ScanService:
                 monitor.update(last_status='interrupted', next_run=0, force_run=True)
                 self.put('monitors', monitor)
         # Commit historical fingerprints together to avoid a disk sync per job at startup.
-        migrations = [(self.fingerprint(json.loads(snapshot)), ident) for ident, snapshot in legacy]
+        migrations = [(('legacy:' if self.feed_identity() else '') + self.fingerprint(json.loads(snapshot)), ident) for ident, snapshot in legacy]
         if migrations:
             with self.db() as db:
                 db.executemany("UPDATE scan_jobs SET payload=json_set(payload,'$.fingerprint',?) WHERE id=?", migrations)
@@ -213,14 +213,28 @@ class ScanService:
 
     def watchlists(self, market=None):
         if market is not None and market not in ("US","CN"):raise ValueError("市场须为 US 或 CN")
-        requested_market=market
+        requested_market = market
+        names = {}
+        markets = (market,) if market else ('CN','US')
+        feed = getattr(self.main, 'market_data', None)
         with self.db() as db:
-            row=db.execute("SELECT value FROM settings WHERE key='workspace'").fetchone()
-            names={r[0]:r[1] for r in db.execute('SELECT symbol,name FROM symbol_names')}
-            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='radar_cache'").fetchone():
-                for cached in db.execute("SELECT payload FROM radar_cache WHERE key LIKE 'catalog:%'"):
-                    for item in json.loads(cached[0]).get('rows',[]):
-                        if item.get('name'):names.setdefault(item['symbol'],item['name'])
+            row = db.execute("SELECT value FROM settings WHERE key='workspace'").fetchone()
+            tables = {value[0] for value in db.execute(
+                "SELECT name FROM sqlite_master WHERE name IN ('radar_cache','scan_symbol_labels')")}
+            for scope in markets:
+                pattern = 'US.*' if scope == 'US' else 'S[HZ].*'
+                for capability in ('catalog', 'names'):
+                    reader = select_feed(feed, scope, capability)
+                    source = reader.provider.source_id if reader else 'opend'
+                    if source == 'opend' and capability == 'names':
+                        names.update(db.execute('SELECT symbol,name FROM symbol_names WHERE symbol GLOB ?', (pattern,)))
+                    elif source == 'opend' and 'radar_cache' in tables:
+                        for cached in db.execute("SELECT payload FROM radar_cache WHERE key LIKE ?", ('catalog:'+scope+':%',)):
+                            names.update((item['symbol'], item['name']) for item in json.loads(cached[0]).get('rows',[]) if item.get('name'))
+                    elif 'scan_symbol_labels' in tables:
+                        names.update(db.execute(
+                            'SELECT symbol,name FROM scan_symbol_labels WHERE source=? AND capability=? AND symbol GLOB ?',
+                            (source, capability, pattern)))
         ws=json.loads(row[0]) if row else {}
         groups=[]
         for market,v in ws.get('markets',{'US':ws}).items():
@@ -261,18 +275,50 @@ class ScanService:
         if len(result)>10000: raise ValueError('扫描范围超过 10000')
         if cached_names_only:
             return list(result.values())
-        bridge=getattr(self.main,'bridge',None)
-        missing=[code for code,r in result.items() if r['name']==code]
-        if bridge:
-            for start in range(0,len(missing),100):
-                names=await asyncio.to_thread(bridge.names,missing[start:start+100])
-                for code,name in names.items():
-                    if code in result:result[code]['name']=name
+        feed = getattr(self.main, 'market_data', None)
+        missing = [code for code, row in result.items() if row['name'] == code]
+        for scope in ('CN', 'US'):
+            codes = [code for code in missing if code.startswith('US.') == (scope == 'US')]
+            if not codes:
+                continue
+            reader = select_feed(feed, scope, 'names')
+            provider = reader.provider if reader else getattr(self.main, 'bridge', None)
+            names_reader = getattr(provider, 'names', None)
+            if names_reader:
+                for start in range(0, len(codes), 100):
+                    batch = codes[start:start+100]
+                    received = await asyncio.to_thread(names_reader, batch)
+                    names = {code: received[code] for code in batch if received.get(code)}
+                    if reader and provider.source_id != 'opend':
+                        await asyncio.to_thread(save_labels, self.db, provider.source_id, 'names', names)
+                    for code, name in names.items():
+                        result[code]['name'] = name
         return list(result.values())
 
     def launch(self,coro):
         t=asyncio.create_task(coro); self.tasks.add(t); t.add_done_callback(self.tasks.discard)
         return t
+
+    def feed_identity(self):
+        feed = getattr(self.main, 'market_data', None)
+        if feed is None:
+            return ''
+        return feed.identity if hasattr(feed, 'identity') else f'{feed.provider.source_id}/{feed.adjustment}'
+
+    def market_sources(self, market=None):
+        feed = getattr(self.main, 'market_data', None)
+        if not feed:
+            return {}
+        sources = {}
+        for scope in (market,) if market else ('CN', 'US'):
+            history = select_feed(feed, scope, 'history')
+            sources[scope] = {'history': history.provider.source_id, 'adjustment': history.adjustment,
+                              'live': select_feed(feed, scope, 'live').provider.source_id,
+                              'calendar': select_feed(feed, scope, 'trading_days').provider.source_id}
+            if hasattr(feed, 'metadata'):
+                meta = feed.metadata(scope)
+                sources[scope].update({key:meta[key] for key in ('live_supported','live_reason') if key in meta})
+        return sources
 
     def fingerprint(self, plan):
         scope = json.loads(dump(plan.get('scope', {'kind': 'all'})))
@@ -307,7 +353,7 @@ class ScanService:
             for side in ('left', 'right'):
                 normalized[side] = {'line': '', 'params': {}, 'value': 6, 'scale': 1, 'offset': 0, **rule[side]}
             rules.append(normalized)
-        content = {'rules': rules, 'scope': scope, 'scope_version': scope_version,
+        content = {'market_feed': self.feed_identity(), 'rules': rules, 'scope': scope, 'scope_version': scope_version,
                    'periods': sorted(set(plan['periods'])), 'join': plan.get('join', 'all'),
                    'lookback': plan.get('lookback', 1), 'live': plan.get('live', True)}
         return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -360,7 +406,7 @@ class ScanService:
     def plan_results(self, plan, max_age_seconds=86400):
         fingerprint = self.fingerprint(plan)
         with self.db() as db:
-            row = db.execute("SELECT id FROM scan_jobs WHERE json_extract(payload,'$.fingerprint')=? OR (json_extract(payload,'$.plan.id')=? AND json_extract(payload,'$.plan.version')=? AND json_extract(payload,'$.monitor_snapshot.follow_watchlists')=0) ORDER BY json_extract(payload,'$.created') DESC LIMIT 1", (fingerprint, plan['id'], plan.get('version'))).fetchone()
+            row = db.execute("SELECT id FROM scan_jobs WHERE json_extract(payload,'$.fingerprint')=? OR (json_extract(payload,'$.plan.id')=? AND json_extract(payload,'$.plan.version')=? AND json_extract(payload,'$.monitor_snapshot.follow_watchlists')=0 AND coalesce(json_extract(payload,'$.market_feed'),'')=?) ORDER BY json_extract(payload,'$.created') DESC LIMIT 1", (fingerprint, plan['id'], plan.get('version'), self.feed_identity())).fetchone()
         if not row:
             return {'status': 'not_started', 'ready': False, 'fresh': False, 'job_id': None,
                     'plan_id': plan['id'], 'plan_version': plan.get('version'), 'retry_after_seconds': None}
@@ -393,6 +439,8 @@ class ScanService:
     async def submit(self, p, monitor=None, request_id=None, force=False, reuse_seconds=86400, source='api', parent=None):
         validate_plan(p)
         fingerprint = self.fingerprint(p) if not parent else 'retry:' + parent['id']
+        if parent and parent.get('market_feed', '') != self.feed_identity():
+            raise JobConflict('行情源或复权口径已变更，请发起新扫描')
         if parent:
             request_id = 'retry:' + parent['id']
         monitor_id = monitor['id'] if monitor else None
@@ -431,7 +479,8 @@ class ScanService:
                 job = {'id': ident, 'plan': json.loads(dump(p)), 'monitor_id': monitor_id,
                        'execution_plan': execution_plan(p), 'audit_version': 1,
                        'scope_snapshot': snapshot, 'scope_summary': scope_summary(snapshot),
-                       'fingerprint': fingerprint, 'status': 'queued', 'phase': 'queued',
+                       'fingerprint': fingerprint, 'market_feed': self.feed_identity(),
+                       'market_sources': self.market_sources(p.get('scope', {}).get('market')), 'status': 'queued', 'phase': 'queued',
                        'source': 'monitor' if monitor else source, 'created': now, 'queued_at': now,
                        'monitor_snapshot': json.loads(dump(monitor)) if monitor else None,
                        'started': None, 'finished': None, 'total': 0, 'done': 0, 'results': [],
@@ -515,7 +564,12 @@ class ScanService:
         return True
 
     async def load(self, symbol, period, live=False):
-        # Same endpoint, unadjusted prices, history window and regular sessions as charts.
+        feed = select_feed(getattr(self.main, 'market_data', None), symbol, 'history')
+        status_reader = getattr(feed.provider, 'history_status', None) if feed else None
+        if status_reader:
+            status = await asyncio.to_thread(status_reader, symbol)
+            if status.get('stale'):
+                raise ValueError('行情过期：'+str(status.get('history_notice') or status.get('error') or feed.provider.source_id))
         payload=None
         days=await asyncio.to_thread(self.calendar.days,symbol)
         tz=ZoneInfo('America/New_York' if symbol.startswith('US.') else 'Asia/Shanghai')
@@ -552,7 +606,7 @@ class ScanService:
             if payload is not None:break
             try:
                 payload=await self.main.bars(symbol,period,'regular',None,10000,False)
-                if payload.get('stale'): raise ValueError('行情过期：'+payload.get('error',''))
+                if payload.get('stale'): raise ValueError('行情过期：'+str(payload.get('history_notice') or payload.get('error') or '数据源返回过期行情'))
                 break
             except Exception:
                 payload=None
@@ -560,7 +614,7 @@ class ScanService:
                 await asyncio.sleep(3.2)
         bars=payload['bars']
         if not bars: raise ValueError('没有历史 K 线')
-        if any(not all(isinstance(b.get(k),(int,float)) and __import__('math').isfinite(b[k]) for k in ('open','high','low','close','volume')) for b in bars): raise ValueError('行情包含无效数值')
+        if any(not all(isinstance(b.get(k),(int,float)) and __import__('math').isfinite(b[k]) for k in ('open','high','low','close')) for b in bars): raise ValueError('行情包含无效数值')
         result=annotate(bars,symbol,period,days)
         # A cache obtained before the close cannot confirm a candle merely because
         # wall clock time crossed its boundary. Fetch the final OHLC first.
@@ -571,7 +625,7 @@ class ScanService:
                 _,success,_=await asyncio.to_thread(self.main.sync_state,(symbol,period,'regular'))
             if success<completed[-1]['close_time']:
                 final=await self.main.bars(symbol,period,'regular',None,10000,True)
-                if final.get('stale'):raise ValueError('收盘后刷新失败，不能确认缓存 K 线')
+                if final.get('stale'):raise ValueError(final.get('history_notice') or '收盘后刷新失败，不能确认缓存 K 线')
                 result=annotate(final['bars'],symbol,period,days)
         expected=expected_day(symbol,days)
         last_day=str(datetime.fromtimestamp(result[-1]['time'],tz).date())
@@ -592,7 +646,7 @@ class ScanService:
             if missing(result):
                 refreshed = await self.main.bars(symbol,period,'regular',None,10000,True)
                 if refreshed.get('stale'):
-                    raise ValueError('重新读取行情失败：'+str(refreshed.get('error') or '数据源返回过期行情'))
+                    raise ValueError('重新读取行情失败：'+str(refreshed.get('history_notice') or refreshed.get('error') or '数据源返回过期行情'))
                 result = annotate(refreshed['bars'],symbol,period,days)
                 if missing(result):
                     def label(stamp):
@@ -608,6 +662,8 @@ class ScanService:
                 if self.halt_requested(j):
                     return
                 j = self.get('jobs', j['id'])
+                if j.get('market_feed', '') != self.feed_identity():
+                    raise ValueError('行情源或复权口径已变更，请发起新扫描')
                 j.update(status='running', started=j.get('started') or time.time(), phase='resolving_scope',
                          phase_started_at=time.time(), finished=None)
                 self.put('jobs', j)
@@ -665,8 +721,10 @@ class ScanService:
                                 return
                             found = [value for value in values[-p.get('lookback', 1):] if value['match']]
                             value = found[-1] if found else values[-1]
+                            providers = sorted({bar['provider'] for key in required for bar in data[key] if bar.get('provider')})
                             row.update(value, status='matched' if value['match'] else 'unmatched',
-                                       source='OpenD / NAS cache', data_time=data[period][-1]['time'], detected_at=time.time())
+                                       source=data[period][-1].get('provider', 'nas_cache'), bar_providers=providers,
+                                       adjustment=data[period][-1].get('adjustment'), data_time=data[period][-1]['time'], detected_at=time.time())
                             if monitor:
                                 self.record(monitor, p, row, values)
                         except Exception as error:
@@ -717,7 +775,7 @@ class ScanService:
         with self.db() as db:
             old=db.execute('SELECT payload FROM scan_checkpoints WHERE monitor_id=? AND symbol=? AND period=?',(m['id'],row['symbol'],row['period'])).fetchone()
             state=json.loads(old[0]) if old else {'time':0,'matched':False,'confirmed':False}
-            if state.get('plan_id', p['id']) != p['id'] or state.get('plan_version', p['version']) != p['version']:
+            if state.get('market_feed', '') != self.feed_identity() or state.get('plan_id', p['id']) != p['id'] or state.get('plan_version', p['version']) != p['version']:
                 old=None
                 state={'time':0,'matched':False,'confirmed':False}
             if old and values[0]['time']>state['time'] and state['time']:
@@ -739,7 +797,7 @@ class ScanService:
                         'delivery_kind':'delayed' if time.time()-v['close_time']>max(m['interval_seconds']*2,180) else 'realtime',
                         'chart_url':public.scheme+'://'+public.netloc+'/chart?symbol='+row['symbol']+'&period='+row['period']}
                     db.execute('INSERT OR IGNORE INTO scan_events(event_id,monitor_id,symbol,payload) VALUES(?,?,?,?)',(eid,m['id'],row['symbol'],dump(event)))
-                state={'time':v['time'],'matched':v['match'],'confirmed':v['confirmed'],'plan_id':p['id'],'plan_version':p['version']}
+                state={'market_feed':self.feed_identity(),'time':v['time'],'matched':v['match'],'confirmed':v['confirmed'],'plan_id':p['id'],'plan_version':p['version']}
             db.execute('INSERT OR REPLACE INTO scan_checkpoints VALUES(?,?,?,?)',(m['id'],row['symbol'],row['period'],dump(state)))
 
     async def create_monitor(self, body):

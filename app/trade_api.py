@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from .broker_provider import broker_config
 from .trading import TradeEngine, TradeError
 
 ROOT = Path(os.getenv('TRADING_DATA_DIR', '/trade-data'))
@@ -36,7 +37,7 @@ class Credentials(BaseModel):
 
 
 class Unlock(BaseModel):
-    acc_id: str = Field(pattern=r'^\d{1,25}$')
+    acc_id: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$')
     password: SecretStr
     confirm: str
 
@@ -55,7 +56,9 @@ def create_app(data_dir=None, broker=None):
         fd = os.open(str(bootstrap_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'w') as f:
             f.write(secrets.token_urlsafe(32))
-    engine = TradeEngine(root / 'trading.sqlite3', broker)
+    config = broker_config(broker)
+    broker_root = config.trading_directory(root)
+    engine = TradeEngine(broker_root / 'trading.sqlite3', config=config)
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='trade-broker')
     gate = asyncio.Semaphore(1)
     auth_lock = asyncio.Lock()
@@ -63,6 +66,8 @@ def create_app(data_dir=None, broker=None):
     attempts = deque()
 
     async def rpc(method, *args):
+        if 'trading' not in config.capabilities and method not in {'state', 'accounts', 'lock', 'preferences', 'journal'}:
+            raise HTTPException(503, '当前未启用券商交易接口')
         try:
             await asyncio.wait_for(gate.acquire(), timeout=.2)
         except asyncio.TimeoutError:
@@ -78,7 +83,7 @@ def create_app(data_dir=None, broker=None):
         except TradeError as exc:
             raise HTTPException(400, str(exc))
         except Exception:
-            raise HTTPException(503, 'OpenD 暂不可用，请检查登录和网络；已提交操作请到流水核对')
+            raise HTTPException(503, '券商暂不可用，请检查登录和网络；已提交操作请到流水核对')
         finally:
             if future.done():
                 gate.release()
@@ -94,22 +99,22 @@ def create_app(data_dir=None, broker=None):
     async def maintenance():
         while True:
             await asyncio.sleep(5)
-            try:
-                await rpc('tick')
-            except HTTPException:
-                pass
+            if 'trading' in config.capabilities:
+                try:
+                    await rpc('tick')
+                except HTTPException:
+                    pass
             expired = [k for k, v in sessions.items() if v['expires'] <= time.time()]
             for key in expired:
                 sessions.pop(key, None)
 
     @asynccontextmanager
     async def lifespan(app):
-        task = asyncio.create_task(maintenance())
-        strategy_task = asyncio.create_task(strategy_poll())
+        tasks = [asyncio.create_task(maintenance()), asyncio.create_task(strategy_poll())]
         yield
-        task.cancel()
-        strategy_task.cancel()
-        await asyncio.gather(task,strategy_task,return_exceptions=True)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         try:
             await rpc('lock')
         except Exception:
@@ -251,7 +256,7 @@ def create_app(data_dir=None, broker=None):
             await rpc('lock')
             note = '已退出并锁定交易'
         except HTTPException:
-            note = '已退出平台；OpenD 锁定尚未确认，请在 OpenD 检查'
+            note = '已退出平台；券商锁定尚未确认，请在券商端检查'
         response = JSONResponse({'message': note})
         response.delete_cookie(COOKIE, path='/', secure=True, httponly=True, samesite='strict')
         return response
@@ -286,6 +291,8 @@ def create_app(data_dir=None, broker=None):
 
     @app.post('/api/trade/unlock')
     async def unlock(body: Unlock, request: Request):
+        if config.source_id == 'opend' and (not body.acc_id.isdecimal() or len(body.acc_id) > 25):
+            raise HTTPException(422, 'OpenD 账号格式无效')
         if body.confirm != 'UNLOCK REAL':
             raise HTTPException(400, '请确认本次实盘账号')
         return await rpc('unlock', request.state.owner, body.acc_id, body.password.get_secret_value())
@@ -335,10 +342,11 @@ def create_app(data_dir=None, broker=None):
     register_chart_gateway(app, sessions, COOKIE)
 
     from .strategy_api import register_strategy_api
-    strategy_poll=register_strategy_api(app,root,sessions,rpc)
+    strategy_poll=register_strategy_api(app,broker_root,sessions,rpc)
 
-    from .opend_login_api import register_opend_login
-    register_opend_login(app, root, gate)
+    if config.source_id == 'opend':
+        from .opend_login_api import register_opend_login
+        register_opend_login(app, root, gate)
 
     static = Path(__file__).parent / 'static'
     if (static / 'assets').exists():

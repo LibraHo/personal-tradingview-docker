@@ -1,8 +1,29 @@
 from __future__ import annotations
 import math
+import json
+from pathlib import Path
+from .market_data import ADJUSTMENTS
 from .extra_indicators import calculate_extra
 from .advanced_indicators import calculate_advanced
 from .tdx_indicators import calculate_tdx
+
+
+INPUTS = json.loads(Path(__file__).with_name('indicator_inputs.json').read_text(encoding='utf8'))
+FIELD_NAMES = {'volume': '成交量（股）', 'turnover': '成交额', 'chip_winner_95': '逐根历史 WINNER(0.95×收盘价)', 'chip_cost_85': '逐根历史 COST(85)'}
+
+
+def check_inputs(bars, name, fields=None):
+    spec = INPUTS.get(name, {})
+    if spec.get('providers') and any(b.get('provider') not in spec['providers'] for b in bars):
+        raise ValueError(f"{name} 需要行情源 " + '、'.join(spec['providers']))
+    if spec.get('adjustment') and any(b.get('adjustment', 'none') != spec['adjustment'] for b in bars):
+        raise ValueError(f"{name} 需要{ADJUSTMENTS[spec['adjustment']]}价格")
+    for field in spec.get('fields', ()) if fields is None else fields:
+        values = (b.get(field) if field in ('volume','turnover') else b.get('fields', {}).get(field) for b in bars)
+        count = sum(not isinstance(v, (int, float)) or not math.isfinite(v) for v in values)
+        if count:
+            raise ValueError(f'{name} 所需的{FIELD_NAMES.get(field, field)}缺失，影响 {count} 根 K 线')
+
 
 
 def sma(values, n):
@@ -31,6 +52,8 @@ def calculate(bars, name, params=None, reset='session'):
     if params is not None and not isinstance(params, dict):
         raise ValueError('指标参数须为对象')
     p = params or {}
+    # TDX graphs propagate absent turnover as gaps in their output.
+    check_inputs(bars, name, [f for f in INPUTS.get(name, {}).get('fields', ()) if f != 'turnover'])
     tdx = calculate_tdx(bars, name, p)
     if tdx is not None:
         return tdx

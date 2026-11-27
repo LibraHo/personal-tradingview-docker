@@ -28,6 +28,25 @@ class APITests(unittest.TestCase):
             with db:yield db
         finally:db.close()
     def headers(self,t):return {'Authorization':'Bearer '+t['token']}
+    def test_markets_and_bars_use_per_market_price_and_live_sources(self):
+        from unittest.mock import AsyncMock, Mock, patch
+        sources = {'US': {'history':'equities', 'live':'stream', 'adjustment':'none', 'calendar':'sessions'},
+                   'CN': {'history':'cn_bars', 'live':'cn_bars', 'adjustment':'qfq', 'calendar':'sessions'}}
+        rows = [{'provider':'equities','adjustment':'none'}, {'provider':'stream','adjustment':'none'}]
+        headers = self.headers(self.read)
+        with patch.object(self.s, 'market_sources', side_effect=lambda market=None: sources if not market else {market:sources[market]}), \
+             patch.object(self.s, 'load', new=AsyncMock(return_value=rows)):
+            markets = self.client.get('/api/v1/markets',headers=headers).json()
+            self.assertEqual(markets['adjustment'],'MIXED')
+            self.assertEqual(markets['market_sources'],sources)
+            bars = self.client.get('/api/v1/bars',params={'symbol':'US.AAPL'},headers=headers).json()
+            self.assertEqual(bars['source'],'equities')
+            self.assertEqual(bars['bar_providers'],['equities','stream'])
+            self.assertEqual(bars['adjustment'],'NONE')
+        self.s.radar = SimpleNamespace(members=Mock(side_effect=ValueError('boards 不提供板块成分')))
+        response = self.client.get('/api/v1/sectors/members',params={'symbol':'SH.BK001'},headers=headers)
+        self.assertEqual(response.status_code,422)
+        self.assertIn('boards',response.json()['detail'])
     def test_limit_board_read_contract_matches_browser(self):
         from datetime import date, timedelta
         from unittest.mock import patch

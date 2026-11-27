@@ -24,7 +24,7 @@ local_bar_reader = None
 COLUMNS = ('time', 'open', 'high', 'low', 'close', 'volume')
 PROMPT = (
     '以中文分析给定标的最新盘面，主周期是 primary。仅根据所附各周期 OHLCV 数据，'
-    '先概括主周期走势和成交量变化，再结合较高周期说明趋势一致或分歧、关键价位和后续观察条件。'
+    '先概括主周期走势和成交量变化（成交量缺失时说明原因），再结合较高周期说明趋势一致或分歧、关键价位和后续观察条件。'
     '引用具体周期、价量或时间作为依据。同周期、可比时段内比较成交量，不直接比较不同周期总量。'
     '每组最后一根可能尚未收盘，其成交量可能不完整。时间戳为 UTC 秒，按给定时区解释。'
     '文字分析只讨论量价、结构和观察条件，不计算或讨论斐波那契回撤、扩展。'
@@ -78,12 +78,13 @@ def sample(chart, period, limit):
     item = {'period': period, 'mode': mode, 'bars': [], 'stale': False}
     try:
         data = recent_bars(chart.symbol, period, mode, limit)
+        item.update({key: data[key] for key in ('provider','adjustment') if key in data})
         for bar in data['bars'][-limit:]:
             if period not in LONG and (mode == 'regular' and bar['session'] != 'regular'
                                        or mode == 'extended' and bar['session'] == 'overnight'):
                 continue
             row = [bar[k] for k in COLUMNS]
-            if all(isinstance(v, (int, float)) and math.isfinite(v) for v in row):
+            if all(isinstance(v, (int, float)) and math.isfinite(v) for v in row[:-1]) and (row[-1] is None or isinstance(row[-1], (int,float)) and math.isfinite(row[-1])):
                 item['bars'].append(row)
         item['stale'] = bool(data.get('stale'))
     except (OSError, ValueError, KeyError, TypeError, HTTPException):
