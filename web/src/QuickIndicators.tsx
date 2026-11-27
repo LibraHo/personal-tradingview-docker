@@ -1,7 +1,7 @@
 import {advancedCatalog,advancedDefaults} from './advancedCatalog';
 import {useEffect,useId,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {Activity,X} from 'lucide-react';
+import {X} from 'lucide-react';
 import {useDepthSettings} from './depthSettings';
 import {indicatorPane,type Indicator} from './indicators';
 import {indicatorLabels} from './IndicatorParameters';
@@ -34,7 +34,7 @@ export default function QuickIndicators({indicators,index,period,symbol,onToggle
   return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',key);window.removeEventListener('resize',place);window.removeEventListener('scroll',place,true)};
  },[open]);
  const count=indicators.filter(i=>i.visible&&!scopeReason(i,index,period,symbol)).length+Number(isUS&&depth.settings.enabled);
- return <><button ref={button} className="quick-indicator-trigger" aria-label="指标快捷开关" aria-expanded={open} aria-controls={open?id:undefined} onClick={()=>setOpen(v=>!v)}><Activity size={13}/> 指标 <small>{count}</small></button>{open&&createPortal(<div ref={panel} id={id} className="quick-indicator-panel" role="dialog" aria-label="指标快捷开关" style={pos}>
+ return <><button ref={button} className="quick-indicator-trigger" aria-label="指标快捷开关" aria-expanded={open} aria-controls={open?id:undefined} onClick={()=>setOpen(v=>!v)}>指标 <small>{count}</small></button>{open&&createPortal(<div ref={panel} id={id} className="quick-indicator-panel" role="dialog" aria-label="指标快捷开关" style={pos}>
   <header><strong>指标快捷开关</strong><button aria-label="关闭指标快捷开关" onClick={()=>{setOpen(false);button.current?.focus()}}><X size={16}/></button></header>
   <p>开关会保存，并应用于该指标已选的图表与周期。</p>
   {(['main','separate'] as const).map(pane=>{const items=indicators.filter(i=>indicatorPane(i)===pane);const showDepth=pane==='main'&&isUS;return (items.length>0||showDepth)&&<section key={pane}><h4>{pane==='main'?'主图叠加':'独立副图'}</h4>{showDepth&&<label><span><strong>盘口密集线</strong><small>{symbol} · 按股票保存</small></span><input type="checkbox" aria-label="盘口密集线 显示" checked={depth.settings.enabled} disabled={!depth.ready} onChange={e=>depth.patch({enabled:e.target.checked})}/></label>}{items.map((i,n)=>{const reason=scopeReason(i,index,period,symbol);return <label key={i.id} className={reason?'unavailable':''}><span><strong>{i.title||indicatorLabels[i.name]||i.name}{items.some((x,j)=>j!==n&&x.name===i.name)&&` · ${n+1}`}</strong><small>{reason||description(i)||'按已保存参数显示'}</small></span><input type="checkbox" aria-label={`${i.title||i.name} ${i.id} 显示`} checked={i.visible&&!reason} disabled={!!reason} onChange={e=>onToggle(i.id,e.target.checked)}/></label>})}</section>})}

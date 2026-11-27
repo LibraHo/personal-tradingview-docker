@@ -1,0 +1,110 @@
+/* The chart toolbar stays in normal flow so a narrow pane can wrap the tool groups. */
+.chart-workspace .chart-command-bar {
+  display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px;
+  min-height:42px; padding:5px 10px; position:relative; z-index:7;
+  background:var(--theme-surface,#111b29);
+}
+.chart-command-bar .period-switch {gap:2px;}
+.chart-command-bar .period-switch button {font-weight:600;min-height:27px;}
+.chart-command-bar .period-selected {color:var(--theme-focus,#91bbff);font-weight:700;}
+.chart-command-bar .market-session {padding-left:10px;border-left:1px solid var(--theme-border,#344252);}
+.chart-command-bar .market-session small {color:var(--theme-muted,#a3b2c4);font-size:11px;white-space:nowrap;}
+.chart-workspace .chart-command-bar .workspace-drawing-host {margin-left:auto;max-width:100%;min-width:0;}
+.compact-chart-tools {display:flex;align-items:center;flex-wrap:wrap;gap:4px;}
+.compact-chart-tools > button,.compact-chart-tools > details > summary {
+  display:inline-flex;align-items:center;gap:5px;list-style:none;cursor:pointer;
+  min-height:28px;padding:4px 8px;border:1px solid var(--theme-border,#344252);
+  border-radius:5px;background:var(--theme-surface-raised,#182536);color:var(--theme-text,#e4edf6);
+  font:inherit;font-size:12px;line-height:1.2;white-space:nowrap;
+}
+.compact-chart-tools summary::-webkit-details-marker {display:none;}
+.compact-chart-tools > details > summary::after {
+ content:'';width:5px;height:5px;margin:0 2px 3px 4px;
+ border:solid currentColor;border-width:0 1px 1px 0;transform:rotate(45deg);opacity:.7;
+}
+.compact-chart-tools > details[open] > summary,.compact-chart-tools > .engaged > summary {
+ background:var(--theme-surface-active,#243f60);border-color:var(--theme-border-active,#587ba4);
+}
+.chart-command-menu {position:relative;}
+.chart-command-list {
+ position:absolute;top:calc(100% + 4px);right:0;z-index:55;min-width:155px;
+ padding:5px;border:1px solid var(--theme-border,#344252);border-radius:7px;
+ background:var(--theme-surface,#141f2f);box-shadow:0 5px 18px #0003;color:var(--theme-text,#dce7f3);
+}
+.chart-command-list button {display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;
+ padding:5px 9px;min-height:29px;background:transparent;color:inherit;border:0;text-align:left;border-radius:4px;font-size:12px;}
+.chart-command-list button:enabled:hover,.chart-command-list button[aria-pressed=true] {background:var(--theme-surface-active,#253c55);}
+.chart-command-list button:disabled {opacity:.4;cursor:default;}
+.chart-command-list kbd {font:11px system-ui;color:var(--theme-muted,#93a6bb);}
+.chart-command-list hr {border:0;border-top:1px solid var(--theme-border,#344252);margin:4px;}
+.chart-command-list .date-command {display:grid;gap:4px;padding:5px;font-size:12px;}
+.chart-command-list input {width:100%;min-width:0;}
+.chart-workspace .chart-card .chart-head {height:auto;min-height:60px;padding-block:5px;}
+.chart-workspace .chart-card .chart-head .quote {display:grid;justify-items:end;align-content:center;row-gap:3px;text-align:right;}
+.chart-workspace .chart-card .chart-head .quote > strong {font-size:clamp(28px,2.3vw,34px);font-weight:750;line-height:1;letter-spacing:-.035em;}
+.chart-workspace .chart-card .chart-head .quote > span {font-size:14px;line-height:1.1;font-weight:650;}
+.chart-workspace .header-right .connection .header-stream-host {display:inline-flex;align-items:center;}
+.header-stream-host:not(:empty) {border-left:1px solid var(--theme-border,#39495e);padding-left:6px;margin-left:3px;}
+.stream-link {display:inline-flex;align-items:center;}
+.chart-workspace .chart-card:focus-visible {outline:2px solid var(--theme-focus,#80b1ef);outline-offset:-2px;}
+.candle-readout .draw-instruction {color:var(--theme-link,#9abce4);margin-left:auto;}
+@media(max-width:900px){
+ .chart-workspace .chart-command-bar {gap:4px 6px;}
+ .chart-workspace .chart-command-bar .workspace-drawing-host {margin-left:0;}
+ .chart-command-list {left:0;right:auto;}
+ .chart-command-menu:nth-last-child(-n+3) .chart-command-list {left:auto;right:0;}
+ .compact-chart-tools .drawing-list {position:fixed;inset:20vh 8px auto;width:auto;max-height:65vh;}
+ .shell.chart-workspace>header .header-right button.connection {display:inline-flex;align-items:center;gap:2px;font-size:0;}
+ .shell.chart-workspace>header .header-right button.connection .dot {display:inline-block;}
+}
+.chart-workspace .guide-library-link svg {display:none;}
+@media(max-width:700px){
+ .shell.chart-workspace>header .workspace-view-select {width:72px;}
+ .shell.chart-workspace>header .guide-library-link {display:inline-flex;align-items:center;justify-content:center;width:28px;padding:0;}
+ .shell.chart-workspace>header .guide-library-link svg {display:block;}
+ .shell.chart-workspace>header .guide-library-link span {display:none;}
+ .shell.chart-workspace>header .layout-picker {padding:0 2px;gap:0;}
+ .shell.chart-workspace>header .layout-picker button {min-width:19px;padding:0 3px;}
+ .shell.chart-workspace>header .header-right button.connection {padding-inline:3px;}
+ .shell.chart-workspace>header .header-right {gap:2px;}
+ .shell.chart-workspace>header .header-right .watch-toggle {padding-inline:5px;}
+}
+@media(max-width:380px){
+ .shell.chart-workspace>header:has(.header-right) {height:auto;min-height:42px;padding-block:4px;flex-wrap:wrap;}
+ .shell.chart-workspace>header .workspace-actions {order:2;}
+}
+
+/* A single row in the period menu offers separate actions for switching and pinning. */
+.chart-command-bar .period-switch {position:relative;flex-wrap:wrap;max-width:100%;}
+.period-switch > .chart-command-menu {position:static;}
+.period-switch > .chart-command-menu > summary {
+ display:flex;align-items:center;gap:6px;padding:5px 8px;min-height:27px;cursor:pointer;list-style:none;
+ color:var(--theme-text,#e0e9f5);font-size:12px;white-space:nowrap;border-radius:4px;
+}
+.period-switch > .chart-command-menu > summary::-webkit-details-marker {display:none;}
+.period-switch > .chart-command-menu > summary::after {
+ content:'';width:5px;height:5px;border:solid currentColor;border-width:0 1px 1px 0;transform:rotate(45deg);margin-top:-3px;
+}
+.period-switch > .chart-command-menu[open] > summary,.period-switch > .engaged > summary {background:var(--theme-surface-active,#243f60);}
+.chart-command-bar .period-switch .chart-command-list {
+ left:max(0px,calc(100% - 170px));right:auto;width:170px;max-height:min(420px,55vh);overflow:auto;
+}
+.period-menu-row,.period-menu-heading {display:grid;grid-template-columns:1fr 42px;align-items:center;}
+.period-menu-heading {padding:4px 0 5px 8px;font-size:11px;color:var(--theme-muted,#9cacbf);}
+.period-menu-heading span:last-child,.period-menu-row label {text-align:center;}
+.period-menu-row label {display:grid;place-items:center;min-height:29px;cursor:pointer;}
+.period-menu-row input[type=checkbox] {width:15px;height:15px;margin:0;accent-color:var(--theme-primary,#397ad1);}
+.chart-date-jump {display:inline-flex;align-items:center;height:27px;border:1px solid var(--theme-border,#354559);border-radius:5px;background:var(--theme-surface,#152233);}
+.chart-date-jump input,.chart-date-jump button {background:transparent;color:var(--theme-text,#dde7f4);font:inherit;font-size:11px;border:0;}
+.chart-date-jump input {padding:3px 5px;width:111px;color-scheme:inherit;}
+.chart-date-jump button {padding:0 7px;height:100%;border-left:1px solid var(--theme-border,#354559);}
+.chart-date-jump button:disabled {color:var(--theme-muted,#98aabc);cursor:default;}
+.chart-workspace .chart-card .instrument-summary {min-width:0;display:grid;gap:4px;}
+.instrument-name,.instrument-meta {display:flex;align-items:baseline;flex-wrap:wrap;}
+.instrument-name {gap:7px;}
+.chart-workspace .chart-card .instrument-name strong {color:var(--theme-text,#eaf0f8);font-size:18px;line-height:1.1;font-weight:650;}
+.instrument-name span,.instrument-meta,.instrument-notice {font-size:11px;color:var(--theme-muted,#94a6bf);line-height:1.35;}
+.instrument-name span {font-variant-numeric:tabular-nums;}
+.instrument-meta > span + span::before {content:'·';padding-inline:6px;}
+.instrument-meta .multi-chart-active {display:none;}
+.charts-grid:not(.cols-1) .instrument-meta .multi-chart-active {display:inline;}

@@ -91,8 +91,8 @@ export default function MarketAnalysis({chart,onClose,onSettings,onApply,busy,on
   },[chart.symbol,chart.period,attempt]);
   return createPortal(<dialog className="market-analysis" ref={dialog} aria-labelledby="analysis-title"
     onCancel={e=>{e.preventDefault();onClose()}} onKeyDown={e=>e.stopPropagation()}>
-    <header><span className="analysis-mark"><Sparkles size={19} aria-hidden="true"/></span><div><h2 id="analysis-title">AI 盘面分析</h2><p>{chart.symbol} · {periodNames[chart.period]} · {sessions[chart.mode]}</p></div>
-      <button type="button" aria-label="关闭盘面分析" onClick={onClose}><X size={18}/></button></header>
+    <header><span className="analysis-mark"><Sparkles size={19} aria-hidden="true"/></span><div><h2 id="analysis-title">AI分析</h2><p>{chart.symbol} · {periodNames[chart.period]} · {sessions[chart.mode]}</p></div>
+      <button type="button" aria-label="关闭AI分析" onClick={onClose}><X size={18}/></button></header>
 
       <div className="analysis-mode" role="group" aria-label="AI 功能">
         <button type="button" aria-pressed={view==='analysis'} onClick={()=>setView('analysis')}><ChartNoAxesCombined size={15} aria-hidden="true"/>盘面解读</button>

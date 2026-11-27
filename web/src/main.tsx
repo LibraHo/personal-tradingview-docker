@@ -18,7 +18,7 @@ import type{PointerEvent as ReactPointerEvent}from'react';
 import{backfillHistory,marketDateWindow}from'./historyTools';
 import{createSeriesMarkers,type SeriesMarker,createChart,CandlestickSeries,HistogramSeries,LineSeries,CrosshairMode,TickMarkType,type IChartApi,type ISeriesApi,type MouseEventParams,type Time,type UTCTimestamp}from'lightweight-charts';
 import './analysis-tool.css';
-import{Activity,Sparkles,Plus,Settings2,Trash2,Save,LayoutGrid,Wifi,WifiOff,RotateCw,Minus}from'lucide-react';
+import{Activity,BookOpen,Sparkles,Plus,Settings2,Trash2,Save,LayoutGrid,Wifi,WifiOff,RotateCw,Minus}from'lucide-react';
 import {inputIssue} from './indicatorInputs';
 import{type Bar,type Indicator,compute,indicatorPane}from'./indicators';
 import{formula}from'./formula';
@@ -48,6 +48,8 @@ import {sessionBackground} from './SessionBackground';
 import {macdHistogramColor,volumeColor,selectedColor,indicatorDefaultColor} from './histogramColors';
 import IndicatorAppearance from './IndicatorAppearance';
 import DrawingsPanel from './DrawingsPanel';
+import ChartMenu from './ChartMenu';
+import './chart-toolbar.css';
 import {measureLine} from './MeasureLine';
 import {measureNames,measurePoints,type MeasureDrawing,type MeasureAxis,fibPrices,drawingStyle,normalizeDrawingRecords,drawingsForPeriod,updateDrawingRecords,newDrawingId,hitTestDrawing,type FibDrawing,type HorizontalDrawing,type TrendDrawing,type DrawingSelection} from './drawingTools';
 import {useBackgroundReport,type OpenReport} from './useBackgroundReport';
@@ -65,9 +67,36 @@ const percent=(value:number|null)=>value===null?'—':`${value>0?'+':''}${value.
 const priceText=(value:number|null,market:'US'|'CN')=>value===null?'—':`${market==='US'?'$':'¥'}${value.toFixed(2)}`;
 const mergeBars=(older:Bar[],newer:Bar[])=>[...new Map([...older,...newer].map(bar=>[bar.time,bar])).values()].sort((a,b)=>a.time-b.time);
 type TrendPoint={time:number;price:number};
+const defaultPinnedPeriods:Period[]=['5m','15m','60m','1d','1w'];
 const periods:Period[]=['1m','5m','15m','30m','60m','120m','240m','1d','1w','1mo'];
 const isLongPeriod=(p:string)=>['1d','1w','1mo'].includes(p);
 const periodLabel=(p:string)=>({ '120m':'2小时','240m':'4小时','1d':'日线','1w':'周线','1mo':'月线'} as Record<string,string>)[p]||p;
+
+function PeriodSwitcher({current,onSelect}:{current:Period;onSelect:(period:Period)=>void}){
+ const [pinned,setPinned]=useState<Period[]>(()=>{
+  try{
+   const saved=JSON.parse(localStorage.getItem('chart-pinned-periods')??'null');
+   if(Array.isArray(saved))return periods.filter(p=>saved.includes(p));
+  }catch{}
+  return defaultPinnedPeriods;
+ });
+ const togglePin=(period:Period)=>{
+  const next=periods.filter(p=>p===period?!pinned.includes(p):pinned.includes(p));
+  setPinned(next);
+  try{localStorage.setItem('chart-pinned-periods',JSON.stringify(next))}catch{}
+ };
+ return <div className="toolbar-section period-switch" role="group" aria-label="K 线周期">
+  {pinned.map(p=><button type="button" key={p} aria-pressed={current===p} className={current===p?'on':''} onClick={()=>onSelect(p)}>{periodLabel(p)}</button>)}
+  <ChartMenu label={pinned.includes(current)?'更多周期':`更多周期 · ${periodLabel(current)}`} active={!pinned.includes(current)}>
+   <div className="period-menu-heading"><span>切换周期</span><span>常驻</span></div>
+   {periods.map(p=><div className="period-menu-row" key={p}>
+    <button type="button" aria-pressed={current===p} onClick={()=>onSelect(p)}>{periodLabel(p)}</button>
+    <label title={`常驻 ${periodLabel(p)}`}><input type="checkbox" aria-label={`常驻 ${periodLabel(p)}`} checked={pinned.includes(p)} onChange={()=>togglePin(p)}/></label>
+   </div>)}
+  </ChartMenu>
+ </div>;
+}
+
 const names=['ORB5','EMA','SMA','VWAP','BBI','BOLL','ATR','MACD','DMI','RSI','VOLUME','WMA','VWMA','DC','STOCH','CCI','WR','ROC','MOM','OBV','CMF',...Object.keys(advancedCatalog)];
 const chartSlots=[0,1,2,3];
 const pythonExample='fast = EMA(C, PARAMS["fast"])\nslow = EMA(C, PARAMS["slow"])\nmacd = fast - slow\nsignal = EMA(macd, PARAMS["signal"])\nresult = {"MACD": macd, "Signal": signal, "Histogram": macd - signal}';
@@ -125,7 +154,14 @@ const cnDay=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',month:'2-d
 const cnFull=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const chartGroup=new Map<number,{chart:IChartApi;candle:ISeriesApi<'Candlestick'>;ready:boolean;suppressSyncUntil:number;showFreeCrosshair:(x:number|null)=>void;freeCrosshair:HTMLDivElement}>();
 let syncingCharts=false;
-function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrosshairTime,indicators,onIndicatorToggle,active,onActivate,drawings,onDraw:commitHorizontal,trends,onTrend:commitTrends,fibos,onFibos:commitFibos,measures,onMeasures,drawingsHidden,onDrawingsHidden,version,stockName,depthHost}:{drawingHost:HTMLDivElement|null;onAnalysis:(tile:Tile,mode:Mode)=>void;index:number;tile:Tile;mode:Mode;appearance:CandleAppearance;snapCrosshairTime:boolean;indicators:Indicator[];onIndicatorToggle:(id:string,visible:boolean)=>void;active:boolean;onActivate:()=>void;drawings:HorizontalDrawing[];onDraw:(v:HorizontalDrawing[])=>void;trends:TrendDrawing[];onTrend:(v:TrendDrawing[])=>void;fibos:FibDrawing[];onFibos:(v:FibDrawing[])=>void;measures:MeasureDrawing[];onMeasures:(v:MeasureDrawing[])=>void;drawingsHidden:boolean;onDrawingsHidden:(value:boolean)=>void;version:number;stockName?:string;depthHost:HTMLDivElement|null}){
+type DrawingCopy =
+ | {kind:'horizontal';item:HorizontalDrawing}
+ | {kind:'trend';item:TrendDrawing}
+ | {kind:'fib';item:FibDrawing}
+ | {kind:'measure';item:MeasureDrawing};
+type DrawingClipboard={symbol:string;copy:DrawingCopy;count:number}|null;
+
+function ChartPane({dateHost,drawingClipboard,setDrawingClipboard,streamHost,drawingHost,onAnalysis,index,tile,mode,appearance,snapCrosshairTime,indicators,onIndicatorToggle,active,onActivate,drawings,onDraw:commitHorizontal,trends,onTrend:commitTrends,fibos,onFibos:commitFibos,measures,onMeasures,drawingsHidden,onDrawingsHidden,version,stockName,depthHost}:{dateHost:HTMLDivElement|null;drawingClipboard:DrawingClipboard;setDrawingClipboard:(clip:DrawingClipboard)=>void;streamHost:HTMLSpanElement|null;drawingHost:HTMLDivElement|null;onAnalysis:(tile:Tile,mode:Mode)=>void;index:number;tile:Tile;mode:Mode;appearance:CandleAppearance;snapCrosshairTime:boolean;indicators:Indicator[];onIndicatorToggle:(id:string,visible:boolean)=>void;active:boolean;onActivate:()=>void;drawings:HorizontalDrawing[];onDraw:(v:HorizontalDrawing[])=>void;trends:TrendDrawing[];onTrend:(v:TrendDrawing[])=>void;fibos:FibDrawing[];onFibos:(v:FibDrawing[])=>void;measures:MeasureDrawing[];onMeasures:(v:MeasureDrawing[])=>void;drawingsHidden:boolean;onDrawingsHidden:(value:boolean)=>void;version:number;stockName?:string;depthHost:HTMLDivElement|null}){
  const theme=useTheme();
  const [depthLines,setDepthLines]=useState<DepthLevel[]>([]);
  const [hoverTime,setHoverTime]=useState<number|null>(null);
@@ -185,7 +221,7 @@ function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrossh
  const previousRefresh=useRef(version);
  const seriesRevision=useRef('');
  const priceBasis=bars[0]?.adjustment;
- const [feedLabel,setFeedLabel]=useState('');
+ const [feed,setFeed]=useState({description:'',basis:'',notice:''});
  const [cacheSyncTime,setCacheSyncTime]=useState(0);
  useEffect(()=>{let stop=false,ws:WebSocket|null=null,timer:number|undefined,initialized=false,openedOnce=false,retryDelay=5000;
   const group=chartGroup.get(index);if(group&&loadedKey!==key){group.ready=false;group.suppressSyncUntil=Infinity}pendingHistoryJump.current=null;
@@ -193,7 +229,7 @@ function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrossh
   const controller=new AbortController();
   let liveSupported=true;
   seriesRevision.current='';
-  setFeedLabel('');
+  setFeed({description:'',basis:'',notice:''});
   const barsUrl=`/api/bars?symbol=${encodeURIComponent(tile.symbol)}&period=${tile.period}&mode=${isLongPeriod(tile.period)?'regular':mode}`;
   let requestId=0;
   let pushedDuringLoad:Map<number,Bar>|null=null;
@@ -214,7 +250,7 @@ function ChartPane({drawingHost,onAnalysis,index,tile,mode,appearance,snapCrossh
     }
     seriesRevision.current=data.series_revision||'';
     liveSupported=data.live_supported!==false;
-    setFeedLabel([data.provider,data.adjustment_label,data.history_notice,liveSupported&&data.live_provider!==data.provider?'实时 '+data.live_provider:'',liveSupported?'':(data.live_reason||'')+' · 定时刷新'].filter(Boolean).join(' · '));
+    setFeed({description:[data.provider,data.adjustment_label,data.history_notice,liveSupported&&data.live_provider!==data.provider?'实时 '+data.live_provider:'',liveSupported?'':(data.live_reason||'')+' · 定时刷新'].filter(Boolean).join(' · '),basis:data.adjustment_label||'',notice:data.history_notice||''});
     initialized=true;
     const incoming=pushes.size?mergeBars(data.bars,[...pushes.values()]):data.bars;
     setBars(old=>first?incoming:mergeBars(old,incoming));
@@ -458,12 +494,12 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
    if(!trendStart){setTrendStart(end);return}
    const points=measurePoints(measureAxis,trendStart,end);
    if(points[0].time===points[1].time&&points[0].price===points[1].price)return;
-   saveMeasures([...measures,{id:newDrawingId(),axis:measureAxis,points,...drawingStyle({},'measure')}]);
+   const id=newDrawingId();saveMeasures([...measures,{id,axis:measureAxis,points,...drawingStyle({},'measure')}]);setSelectedDrawing({kind:'measure',id});
    setTrendStart(null);setDraw('off');return;
   }
   const price=candle.coordinateToPrice(p.point.y);if(price===null||Number(price)<=0)return;const drawPrice=Number(Number(price).toFixed(Number(price)>=1?2:4));
-  if(draw==='horizontal'){record();onDraw([...drawings,{id:newDrawingId(),price:drawPrice,...drawingStyle({},'horizontal')}]);setDraw('off')}
-  else{const samples=barTimes.flatMap(time=>{const x=chart.timeScale().timeToCoordinate(toTime(time));return x===null?[]:[{time,x}]});const time=typeof p.time==='number'?p.time:drawingTimeAtX(p.point.x,samples,drawingStep,chart.timeScale().options().barSpacing);if(time===null)return;const point={time,price:drawPrice};if(!trendStart)setTrendStart(point);else if(point.time!==trendStart.time){record();if(draw==='fib')onFibos([...fibos,{id:newDrawingId(),points:[trendStart,point],...drawingStyle({},'fib')}]);else{const id=newDrawingId();onTrend([...trends,{id,points:[trendStart,point],extend:'none' as const,...drawingStyle({},'trend')}]);setSelectedDrawing({kind:'trend',id})}setTrendStart(null);setDraw('off')}}
+  if(draw==='horizontal'){const id=newDrawingId();saveHorizontal([...drawings,{id,price:drawPrice,...drawingStyle({},'horizontal')}]);setSelectedDrawing({kind:'horizontal',id});setDraw('off')}
+  else{const samples=barTimes.flatMap(time=>{const x=chart.timeScale().timeToCoordinate(toTime(time));return x===null?[]:[{time,x}]});const time=typeof p.time==='number'?p.time:drawingTimeAtX(p.point.x,samples,drawingStep,chart.timeScale().options().barSpacing);if(time===null)return;const point={time,price:drawPrice};if(!trendStart)setTrendStart(point);else if(point.time!==trendStart.time){record();if(draw==='fib'){const id=newDrawingId();onFibos([...fibos,{id,points:[trendStart,point],...drawingStyle({},'fib')}]);setSelectedDrawing({kind:'fib',id})}else{const id=newDrawingId();onTrend([...trends,{id,points:[trendStart,point],extend:'none' as const,...drawingStyle({},'trend')}]);setSelectedDrawing({kind:'trend',id})}setTrendStart(null);setDraw('off')}}
  };
  useEffect(()=>{const chart=chartRef.current;if(!chart)return;const handler=(p:any)=>drawingClick.current(p);chart.subscribeClick(handler);return()=>chart.unsubscribeClick(handler)},[index]);
  useEffect(()=>{const candle=candleRef.current,chart=chartRef.current;if(!candle||priceBasis==='hfq')return;const lines=depthLines.map(l=>candle.createPriceLine({price:l.price,color:l.side==='buy'?'#42d4a3':'#ff718b',lineWidth:2,lineStyle:l.cached?2:0,axisLabelVisible:true,title:`${l.cached?'缓存':'当前'}挂${l.side==='buy'?'买':'卖'} ${new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1}).format(l.qty)}股`}));return()=>{if(chartRef.current===chart)for(const line of lines)candle.removePriceLine(line)}},[depthLines,key,priceBasis]);
@@ -502,20 +538,22 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
  };
  const endTrendDrag=(event:ReactPointerEvent<HTMLDivElement>,commit:boolean)=>{if(dragState.current?.pointerId!==event.pointerId)return;event.preventDefault();event.stopPropagation();stopTrendDrag(commit)};
  const createDrawingFromClick=(event:React.MouseEvent<HTMLDivElement>)=>{if(draw==='off')return;event.preventDefault();event.stopPropagation();const start=drawingPointerStart.current;if(start&&Math.hypot(event.clientX-start.x,event.clientY-start.y)>5)return;const rect=event.currentTarget.getBoundingClientRect();drawingClick.current({point:{x:event.clientX-rect.left,y:event.clientY-rect.top},paneIndex:0})};
- const last=filtered.at(-1),previous=filtered.at(-2),change=last&&previous?(last.close-previous.close)/previous.close*100:0;
+ const last=loadedKey===key?filtered.at(-1):undefined,previous=filtered.at(-2),change=last&&previous&&previous.close>0?(last.close-previous.close)/previous.close*100:null;
  const hoverIndex=hoverTime===null?-1:barTimes.indexOf(hoverTime);
  const quoteIndex=hoverIndex>=0?hoverIndex:filtered.length-1;
  const quoteBar=loadedKey===key?filtered[quoteIndex]:undefined;
  const priorClose=filtered[quoteIndex-1]?.close;
  const quoteChange=quoteBar && priorClose>0 ? (quoteBar.close-priorClose)/priorClose*100 : null;
- const candleReadout=<div className="candle-readout" role="group" aria-label="K 线行情">
-  <strong>{hoverIndex>=0?'所指 K 线':'最新 K 线'}</strong>
+ const hint=draw==='off'?'':draw==='horizontal'?'点击价格':!trendStart?'点击起点':'点击终点';
+ const candleReadout=<div className="candle-readout" role="group" aria-label={hoverIndex>=0?'所指 K 线行情':'最新 K 线行情'}>
+
   {quoteBar&&<time>{quoteBar.trade_date}{!isLongPeriod(tile.period)&&' '+displayTime.clock.format(quoteBar.time*1000)}</time>}
   <span>开 <b>{quoteBar?.open.toFixed(2)??'—'}</b></span>
   <span>高 <b>{quoteBar?.high.toFixed(2)??'—'}</b></span>
   <span>低 <b>{quoteBar?.low.toFixed(2)??'—'}</b></span>
   <span>收 <b>{quoteBar?.close.toFixed(2)??'—'}</b></span>
   <span title="相对上一根 K 线收盘价的涨跌幅">涨跌幅 <b style={{color:quoteChange?quoteChange>0?appearance.upColor:appearance.downColor:undefined}}>{quoteChange===null?'—':`${quoteChange>0?'+':''}${quoteChange.toFixed(2)}%`}</b></span>
+  {hint&&<span role="status" className="draw-instruction">{hint} · Esc 取消</span>}
  </div>;
  const resetView=()=>{const chart=chartRef.current;if(!chart||loadedKey!==key)return;historyInteraction.current=false;const entry=chartGroup.get(index);if(entry)entry.suppressSyncUntil=performance.now()+350;resetChartViewport(chart,filtered.length)};
  const locateResonance=()=>{
@@ -533,14 +571,98 @@ const barTimes=useMemo(()=>filtered.map(b=>b.time),[filtered]);
   <span><i style={{background:resonanceColors.buy}}/>共振买点</span>
   {resonanceBar?<button type="button" onClick={locateResonance}>定位最近买点 · {resonanceBar.trade_date}{!isLongPeriod(tile.period)&&` ${((isUS?etClock:cnClock).format(resonanceBar.time*1000))}`}</button>:<span>{resonanceValues?.['共振'].includes(0)?'已载入 K 线暂无共振':'等待有效量价数据'}</span>}
  </div>:null;
- const measureHint=measureAxis&&`${measureNames[measureAxis]} · ${!trendStart?'点击起点':measureAxis==='horizontal'?'点击结束时间':'点击目标价格'} · Esc 取消`;
- const measureButtons=(['measureTime','measurePrice'] as const).map((tool)=>
-  <button key={tool} aria-pressed={draw===tool} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw===tool?'off':tool)}}>
-   {measureNames[tool==='measureTime'?'horizontal':'vertical']}
-  </button>);
- const tools=<><div className="chart-tools"><span>{draw!=='off'?(measureHint|| (draw==='horizontal'?'在主图选择水平线价格':trendStart?'在主图选择另一横向位置作为终点 · Esc 取消':'在主图选择起点 · Esc 取消')):isUS?(isLongPeriod(tile.period)?'常规时段':mode==='all'?'24H 全时段':mode==='extended'?'盘前 · 常规 · 盘后':'常规时段'):'A 股常规时段'} · {isUS?'美东':'北京'}时间</span><div className="drawing-toolbar" role="toolbar" aria-label="画图工具"><label className="chart-date">日期<input type="date" aria-label="定位日期" value={dateTarget} onChange={e=>setDateTarget(e.target.value)}/></label><button disabled={!dateTarget||loadingOlder} onClick={jumpToDate}>{loadingOlder?'补载中…':'前往'}</button><button onClick={()=>{historicView.current=false;setHistoryNotice('');setDateTarget('');window.dispatchEvent(new CustomEvent('market-return-live',{detail:index}))}}>实时</button><button aria-label="重置视图" title="恢复适量近期 K 线，并自动适配各图价格轴" disabled={loadedKey!==key||!filtered.length} onClick={resetView}>重置视图</button><button aria-pressed={showExtremes} onClick={()=>{const next=!showExtremes;setShowExtremes(next);try{localStorage.setItem('chart-visible-extremes',next?'on':'off')}catch{}}}>区间高低</button><button aria-pressed={draw==='off'} onClick={()=>{setDraw('off');setTrendStart(null)}}>选择 / 编辑</button><button aria-pressed={draw==='horizontal'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='horizontal'?'off':'horizontal')}}>水平线</button><button aria-pressed={draw==='trend'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='trend'?'off':'trend')}}>趋势线</button><button aria-pressed={draw==='fib'} onClick={()=>{onDrawingsHidden(false);setSelectedDrawing(null);setTrendStart(null);setDraw(draw==='fib'?'off':'fib')}}>斐波那契</button>{measureButtons}{draw!=='off'&&<button onClick={()=>{setDraw('off');setTrendStart(null)}}>取消绘制</button>}<button disabled={!drawingUndo} onClick={()=>{if(!drawingUndo)return;onDraw(drawingUndo.horizontal);onTrend(drawingUndo.trends);onFibos(drawingUndo.fibos);onMeasures(drawingUndo.measures);onDrawingsHidden(drawingUndo.hidden);setSelectedDrawing(null);setDrawingUndo(null)}}>撤销</button><button aria-pressed={drawingsHidden} title="整体隐藏不改变单个对象的显隐设置" onClick={()=>toggleAllDrawings(!drawingsHidden)}>{drawingsHidden?'全部显示':'全部隐藏'}</button><button type="button" className="chart-plan-create" onClick={()=>setShowPlan(true)}>创建交易计划</button><QuickIndicators indicators={indicators} index={index} period={tile.period} symbol={tile.symbol} onToggle={onIndicatorToggle}/><div className="drawing-analysis-tools"><DrawingsPanel hidden={drawingsHidden} onHidden={toggleAllDrawings} selected={selectedDrawing} onSelect={setSelectedDrawing} editorRequest={editorRequest} measures={measures} onMeasures={saveMeasures} barTimes={barTimes} horizontal={drawings} trends={trends} fibos={fibos} onHorizontal={saveHorizontal} onTrends={saveTrends} onFibos={saveFibos}/><button className="chart-analysis-tool" type="button" aria-haspopup="dialog" onClick={()=>onAnalysis(tile,mode)}><Sparkles size={14} strokeWidth={1.7} aria-hidden="true"/>AI 盘面分析</button></div></div></div><div className="drawing-interaction-row">{selectedDrawing?<div className="drawing-selection-actions" role="toolbar" aria-label="选中画线操作"><strong>已选：{drawingLabel(selectedDrawing)}</strong>{selectedDrawing.kind==='trend'&&<span className="trend-drag-help">{draggingTrend?'正在拖动 · 松开保存 · Esc 取消':'拖动两端圆点可调整长度与角度'}</span>}<button onClick={()=>setEditorRequest(n=>n+1)}>编辑样式</button><button aria-label="删除选中画线" onClick={deleteSelectedDrawing}>删除此对象</button><button onClick={()=>setSelectedDrawing(null)}>取消选择</button></div>:<div className="drawing-interaction-help" role="status">{draw!=='off'?(measureHint||(draw==='horizontal'?'绘制水平线：在主图点击目标价格':trendStart?'已选起点，请点击另一横向位置完成绘制 · Esc 取消':'绘制：先点击起点，再点击另一横向位置作为终点 · Esc 取消')):drawingsHidden?'画线已隐藏，点击“全部显示”恢复':hoveredDrawing?`可选：${drawingLabel(hoveredDrawing)} · 点击打开编辑`:'选择模式：靠近自己画的线，出现手形后点击；也可打开“画线管理”'}</div>}</div></>;
- return <div className={`chart-card ${active?'selected':''}`} onMouseDown={onActivate}><div className="chart-head"><div>{active&&<span className="current-chart-tag">当前图</span>}<strong>{chartName}</strong><span className="chart-symbol-code">{tile.symbol}</span><span className="market-tag">{isUS?"美股":`${tile.symbol} · 沪深 A 股`} · {periodLabel(tile.period)}{feedLabel&&' · '+feedLabel}</span>{stale&&<span className="warning">NAS 缓存 · 未同步最新行情{cacheSyncTime>0?' · 上次同步 '+new Date(cacheSyncTime*1000).toLocaleString('zh-CN'):''}</span>}</div><div className="quote"><strong className={change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change>=0?'up':'down'}>{change>=0?'+':''}{change.toFixed(2)}%</span><span title={live?'实时订阅成功':'实时行情未连接；可能正在重试或等待权限'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span></div></div>{active&&drawingHost&&createPortal(tools,drawingHost)}{active&&isUS&&<MarketFlowPanel key={tile.symbol} symbol={tile.symbol}/>}{isUS&&priceBasis==='hfq'&&depthLines.length>0&&<span className="warning">盘口使用实际报价，后复权图隐藏盘口价格线</span>}{isUS&&<DepthPanel symbol={tile.symbol} onLines={setDepthLines} settingsHost={depthHost}/>}
-{showPlan&&<Suspense fallback={<p role="status">正在打开交易计划…</p>}><ChartPlanDialog market={isUS?'US':'CN'} symbol={tile.symbol} period={tile.period} mode={mode} indicators={activeIndicators} bars={filtered} stockName={stockName} onClose={()=>setShowPlan(false)}/></Suspense>}{resonanceInfo}{(drawingIssue||error||formulaError||pythonError||(openingEnabled&&(openingStyleError||(opening.key===key&&opening.error))))&&<div className="chart-error">{[drawingIssue,error,formulaError,pythonError,openingEnabled&&(openingStyleError||opening.error)].filter(Boolean).join('；')}</div>}{candleReadout}<div className={`chart-canvas ${draw!=='off'?'drawing-mode':hoveredDrawing?'drawing-hit':''} ${draggingTrend?'trend-dragging':hoveredHandle?'trend-handle-hover':''}`} ref={box} style={activeIndicators.some(ind=>tdxCatalog[ind.name])?{height:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length,minHeight:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length}:undefined} onClickCapture={createDrawingFromClick} onPointerDownCapture={startTrendDrag} onPointerMoveCapture={moveTrendDrag} onPointerUpCapture={e=>endTrendDrag(e,true)} onPointerCancelCapture={e=>endTrendDrag(e,false)} onLostPointerCapture={()=>{if(dragState.current)cancelDrag.current()}} onPointerLeave={()=>{setHoverTime(null);setHoveredDrawing(null);setHoveredHandle(false)}} onPointerDown={()=>{historyInteraction.current=true}} onWheel={()=>{historyInteraction.current=true}}/><div className="chart-foot"><span>NAS 缓存 · {filtered.length} 根 K 线{live?' · 实时更新中':''}</span><button className="older-button" disabled={!hasMore||loadingOlder||historyCursor===null} onClick={()=>void requestOlder(true)}>{loadingOlder?'加载中…':hasMore?'← 更早 K 线':'已到历史保留范围'}</button><span>{historyError||historyNotice||(openingEnabled&&opening.key===key&&opening.data?.message)}</span></div></div>
+ const toolsList={off:'选择',horizontal:'水平线',trend:'趋势线',fib:'斐波那契',measureTime:'水平测量',measurePrice:'垂直测量'} as const;
+ const startTool=(tool:typeof draw)=>{
+  setDraw(tool);setTrendStart(null);setSelectedDrawing(null);
+  if(tool!=='off')onDrawingsHidden(false);
+ };
+ const currentCopy=():DrawingCopy|null=>{
+  if(!selectedDrawing)return null;
+  const {kind,id}=selectedDrawing;
+  switch(kind){
+   case 'horizontal':{const item=drawings.find(v=>v.id===id);return item?{kind,item}:null}
+   case 'trend':{const item=trends.find(v=>v.id===id);return item?{kind,item}:null}
+   case 'fib':{const item=fibos.find(v=>v.id===id);return item?{kind,item}:null}
+   case 'measure':{const item=measures.find(v=>v.id===id);return item?{kind,item}:null}
+  }
+ };
+ const copyDrawing=()=>{
+  const copy=currentCopy();
+  if(!copy)return false;
+  setDrawingClipboard({symbol:tile.symbol,copy:structuredClone(copy),count:0});
+  return true;
+ };
+ const pasteDrawing=()=>{
+  const clip=drawingClipboard,candle=candleRef.current;
+  if(!clip||clip.symbol!==tile.symbol||!candle||loadedKey!==key)return false;
+  const {copy}=clip,id=newDrawingId();
+  const targetRows={horizontal:drawings,trend:trends,fib:fibos,measure:measures}[copy.kind];
+  if(!acceptDrawingRows([...targetRows,{id}]))return false;
+  const reference=copy.kind==='horizontal'?copy.item.price:copy.item.points[0].price;
+  const y=candle.priceToCoordinate(reference);
+  const next=y===null?null:candle.coordinateToPrice(y-12);
+  const offset=(next===null?reference*.005:next-reference)*(clip.count+1);
+  const shift=(p:TrendPoint)=>({...p,price:p.price+offset});
+  switch(copy.kind){
+   case 'horizontal':{const rows=[...drawings,{...copy.item,id,price:reference+offset}];saveHorizontal(rows);break}
+   case 'trend':{const rows=[...trends,{...copy.item,id,points:copy.item.points.map(shift)}];saveTrends(rows);break}
+   case 'fib':{const rows=[...fibos,{...copy.item,id,points:copy.item.points.map(shift)}];saveFibos(rows);break}
+   case 'measure':{const points:[TrendPoint,TrendPoint]=[shift(copy.item.points[0]),shift(copy.item.points[1])];const rows=[...measures,{...copy.item,id,points}];saveMeasures(rows);break}
+  }
+  setDrawingClipboard({...clip,count:clip.count+1});onDrawingsHidden(false);setDraw('off');setSelectedDrawing({kind:copy.kind,id});return true;
+ };
+ const undoDrawing=()=>{
+  if(!drawingUndo)return;
+  onDraw(drawingUndo.horizontal);onTrend(drawingUndo.trends);onFibos(drawingUndo.fibos);
+  onMeasures(drawingUndo.measures);onDrawingsHidden(drawingUndo.hidden);setSelectedDrawing(null);setDrawingUndo(null);
+ };
+ const onDrawingKey=(e:React.KeyboardEvent)=>{
+  const target=e.target as HTMLElement;
+  if(!active||e.defaultPrevented||e.altKey||e.shiftKey||e.nativeEvent.isComposing||target.closest('input,textarea,select,[contenteditable]:not([contenteditable=false]),[role=dialog]'))return;
+  if(e.ctrlKey||e.metaKey){
+   if(window.getSelection()?.toString())return;
+   const key=e.key.toLowerCase();
+   if((key==='c'&&copyDrawing())||(key==='v'&&!e.repeat&&pasteDrawing()))e.preventDefault();
+  }else if(selectedDrawing&&(e.key==='Delete'||e.key==='Backspace')){
+   e.preventDefault();if(!e.repeat)deleteSelectedDrawing();
+  }
+ };
+
+ const dateControl=<form className="chart-date-jump" aria-label="历史日期定位" onSubmit={e=>{e.preventDefault();if(dateTarget&&!loadingOlder)void jumpToDate()}}>
+  <input type="date" aria-label="定位日期" value={dateTarget} onChange={e=>setDateTarget(e.target.value)}/>
+  <button type="submit" disabled={!dateTarget||loadingOlder||loadedKey!==key}>{loadingOlder?'定位中':'定位'}</button>
+ </form>;
+ const tools=<div className="compact-chart-tools" role="toolbar" aria-label="图表工具">
+  <ChartMenu label={draw==='off'?'画线':toolsList[draw]} active={draw!=='off'}>
+   {(Object.keys(toolsList) as (keyof typeof toolsList)[]).map(tool=><button key={tool} aria-pressed={draw===tool} onClick={()=>startTool(tool)}>{toolsList[tool]}</button>)}
+   <hr/>
+   <button disabled={!selectedDrawing} onClick={()=>setEditorRequest(n=>n+1)}>编辑选中画线</button>
+   <button disabled={!selectedDrawing} onClick={copyDrawing}>复制 <kbd>Ctrl+C</kbd></button>
+   <button disabled={drawingClipboard?.symbol!==tile.symbol} onClick={pasteDrawing}>粘贴 <kbd>Ctrl+V</kbd></button>
+   <button disabled={!selectedDrawing} onClick={deleteSelectedDrawing}>删除 <kbd>Del</kbd></button>
+   <button disabled={!drawingUndo} onClick={undoDrawing}>撤销</button>
+  </ChartMenu>
+  <DrawingsPanel hidden={drawingsHidden} onHidden={toggleAllDrawings} selected={selectedDrawing} onSelect={setSelectedDrawing} editorRequest={editorRequest} measures={measures} onMeasures={saveMeasures} barTimes={barTimes} horizontal={drawings} trends={trends} fibos={fibos} onHorizontal={saveHorizontal} onTrends={saveTrends} onFibos={saveFibos}/>
+  <QuickIndicators indicators={indicators} index={index} period={tile.period} symbol={tile.symbol} onToggle={onIndicatorToggle}/>
+  <ChartMenu label="视图">
+   <button onClick={()=>{historicView.current=false;setHistoryNotice('');setDateTarget('');window.dispatchEvent(new CustomEvent('market-return-live',{detail:index}))}}>返回实时</button>
+   <button disabled={loadedKey!==key||!filtered.length} onClick={resetView}>重置视图</button>
+   <button aria-pressed={showExtremes} onClick={()=>{const value=!showExtremes;setShowExtremes(value);try{localStorage.setItem('chart-visible-extremes',value?'on':'off')}catch{}}}>区间高低</button>
+  </ChartMenu>
+  <button type="button" onClick={()=>setShowPlan(true)}>交易计划</button>
+  <button type="button" className="chart-analysis-tool" aria-haspopup="dialog" onClick={()=>onAnalysis(tile,mode)}><Sparkles size={14}/>AI分析</button>
+ </div>;
+ return <div className={`chart-card ${active?'selected':''}`} tabIndex={0} onFocus={onActivate} onKeyDown={onDrawingKey} onMouseDown={e=>{onActivate();if(box.current?.contains(e.target as Node))e.currentTarget.focus({preventScroll:true})}}><div className="chart-head">
+  <div className="instrument-summary">
+   <div className="instrument-name"><strong>{chartName}</strong>{chartName!==tile.symbol&&chartName!==tile.symbol.replace('US.','')&&<span>{tile.symbol}</span>}</div>
+   <div className="instrument-meta" title={feed.description}>
+    <span>{isUS?'美股':'沪深 A 股'}</span><span>{periodLabel(tile.period)}</span>{feed.basis&&<span>{feed.basis}</span>}
+    {active&&<span className="multi-chart-active">当前图</span>}
+   </div>
+   {feed.notice&&<small className="instrument-notice">{feed.notice}</small>}
+   {stale&&<span className="warning">NAS 缓存 · 未同步最新行情{cacheSyncTime>0?' · 上次同步 '+new Date(cacheSyncTime*1000).toLocaleString('zh-CN'):''}</span>}
+  </div><div className="quote"><strong className={change===null?'':change>=0?'up':'down'}>{last?.close.toFixed(2)||'—'}</strong><span className={change===null?'':change>=0?'up':'down'}>{change===null?'—':(change>0?'+':'')+change.toFixed(2)+'%'}</span></div></div>{active&&dateHost&&createPortal(dateControl,dateHost)}{active&&drawingHost&&createPortal(tools,drawingHost)}{active&&streamHost&&createPortal(<span id="active-chart-stream" className="stream-link" role="img" aria-label={live?'图表行情已连接':'图表行情未实时连接'} title={live?'实时订阅成功':'实时行情未连接；可能正在重试或等待权限'}>{live?<Wifi size={14} className="up"/>:<WifiOff size={14} className="down"/>}</span>,streamHost)}{active&&isUS&&<MarketFlowPanel key={tile.symbol} symbol={tile.symbol}/>}{isUS&&priceBasis==='hfq'&&depthLines.length>0&&<span className="warning">盘口使用实际报价，后复权图隐藏盘口价格线</span>}{isUS&&<DepthPanel symbol={tile.symbol} onLines={setDepthLines} settingsHost={depthHost}/>}
+{showPlan&&<Suspense fallback={<p role="status">正在打开交易计划…</p>}><ChartPlanDialog market={isUS?'US':'CN'} symbol={tile.symbol} period={tile.period} mode={mode} indicators={activeIndicators} bars={filtered} stockName={stockName} onClose={()=>setShowPlan(false)}/></Suspense>}{resonanceInfo}{(drawingIssue||error||formulaError||pythonError||(openingEnabled&&(openingStyleError||(opening.key===key&&opening.error))))&&<div className="chart-error">{[drawingIssue,error,formulaError,pythonError,openingEnabled&&(openingStyleError||opening.error)].filter(Boolean).join('；')}</div>}{candleReadout}<div title={hint?`${toolsList[draw]} · ${hint} · Esc 取消`:selectedDrawing?`已选 ${drawingLabel(selectedDrawing)}`:undefined} className={`chart-canvas ${draw!=='off'?'drawing-mode':hoveredDrawing?'drawing-hit':''} ${draggingTrend?'trend-dragging':hoveredHandle?'trend-handle-hover':''}`} ref={box} style={activeIndicators.some(ind=>tdxCatalog[ind.name])?{height:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length,minHeight:320+150*activeIndicators.filter(ind=>indicatorPane(ind)==='separate').length}:undefined} onClickCapture={createDrawingFromClick} onPointerDownCapture={startTrendDrag} onPointerMoveCapture={moveTrendDrag} onPointerUpCapture={e=>endTrendDrag(e,true)} onPointerCancelCapture={e=>endTrendDrag(e,false)} onLostPointerCapture={()=>{if(dragState.current)cancelDrag.current()}} onPointerLeave={()=>{setHoverTime(null);setHoveredDrawing(null);setHoveredHandle(false)}} onPointerDown={()=>{historyInteraction.current=true}} onWheel={()=>{historyInteraction.current=true}}/><div className="chart-foot"><span>NAS 缓存 · {filtered.length} 根 K 线{live?' · 实时更新中':''}</span><button className="older-button" disabled={!hasMore||loadingOlder||historyCursor===null} onClick={()=>void requestOlder(true)}>{loadingOlder?'加载中…':hasMore?'← 更早 K 线':'已到历史保留范围'}</button><span>{historyError||historyNotice||(openingEnabled&&opening.key===key&&opening.data?.message)}</span></div></div>
 }
 type Market = 'US' | 'CN';
 type WatchGroup = {id:string; name:string; symbols:string[]};
@@ -623,6 +745,9 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
     if (tab==='agents'||tab==='plans') return 'agents';
     return tab==='notifications'?'notifications':tab==='connection'?'connection':null;
   }),[depthHost,setDepthHost]=useState<HTMLDivElement|null>(null);
+ const [drawingClipboard,setDrawingClipboard]=useState<DrawingClipboard>(null);
+ const [streamHost,setStreamHost]=useState<HTMLSpanElement|null>(null);
+ const [dateHost,setDateHost]=useState<HTMLDivElement|null>(null);
  const [drawingHost,setDrawingHost]=useState<HTMLDivElement|null>(null);
   const [snapCrosshairTime,setSnapCrosshairTime]=useState(()=>{
     try{return localStorage.getItem('chart-snap-crosshair-time-v2')!=='off'}catch{return true}
@@ -733,7 +858,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
   const [customName,setCustomName]=useState(''),[customFormula,setCustomFormula]=useState('EMA(C,12)-EMA(C,26)'),[customInputs,setCustomInputs]=useState('{"fast":12,"slow":26,"signal":9}'),[customLanguage,setCustomLanguage]=useState<'formula'|'python'>('formula'),[customPane,setCustomPane]=useState<'main'|'separate'>('separate'),[customError,setCustomError]=useState('');
   const [quotes,setQuotes]=useState<Record<string,StockQuote>>({}),[quotesStale,setQuotesStale]=useState(false),[quoteError,setQuoteError]=useState('');
   const market=state.activeMarket,ws=state.markets[market];
-  const lastExtendedMode=useRef<Mode>('all');if(market==='US'&&ws.mode!=='regular')lastExtendedMode.current=ws.mode;
+
   const selectedGroup=ws.groups.find(g=>g.id===ws.selectedGroupId)||ws.groups[0];
   const featured=ws.groups.find(g=>g.id==='featured')!;
   const current=ws.tiles[active]||ws.tiles[0];
@@ -977,7 +1102,7 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
         <button aria-pressed={showReview} onClick={()=>setWorkspaceView('review')}>每日复盘</button>
         <button aria-pressed={showApi} onClick={()=>setWorkspaceView('api')}>API 管理</button>
       </nav>
-      <div className="workspace-actions"><a className="guide-library-link" href="?view=indicator-guide" target="_blank" rel="noopener">指标说明</a><button className="secondary" aria-label="设置" disabled={!ready} onClick={()=>setSettingsTab('indicators')}><Settings2 size={16}/> 设置</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>{setActive(i=>Math.min(i,n-1));updateMarket(w=>({...w,layout:n,tiles:Array.from({length:Math.max(n,w.tiles.length)},(_,i)=>w.tiles[i]||{symbol:w.tiles[0]?.symbol||'US.SNDK',period:(["5m","15m","60m","1d"] as Period[])[i]})}))}}>{n}</button>)}</div></div><div className="header-right"><button className="watch-toggle" aria-label="切换自选侧栏" aria-expanded={!watchCollapsed} onClick={toggleWatch}>自选</button><button className="connection" aria-label="OpenD 连接与登录" title="管理 OpenD 连接与登录" onClick={()=>setSettingsTab('connection')}>{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:status.last_error?<><span className="dot red"/> OpenD 连接异常</>:<><span className="dot idle"/> OpenD 按需连接</>}</button><ThemeToggle/><button className="icon-button" aria-label="刷新行情" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
+      <div className="workspace-actions"><a className="guide-library-link" href="?view=indicator-guide" target="_blank" rel="noopener" aria-label="指标说明" title="指标说明"><BookOpen size={15} aria-hidden="true"/><span>指标说明</span></a><button className="secondary" aria-label="设置" disabled={!ready} onClick={()=>setSettingsTab('indicators')}><Settings2 size={16}/> 设置</button><div className="layout-picker"><LayoutGrid size={15}/>{[1,2,4].map(n=><button key={n} className={ws.layout===n?'chosen':''} onClick={()=>{setActive(i=>Math.min(i,n-1));updateMarket(w=>({...w,layout:n,tiles:Array.from({length:Math.max(n,w.tiles.length)},(_,i)=>w.tiles[i]||{symbol:w.tiles[0]?.symbol||'US.SNDK',period:(["5m","15m","60m","1d"] as Period[])[i]})}))}}>{n}</button>)}</div></div><div className="header-right"><button className="watch-toggle" aria-label="切换自选侧栏" aria-expanded={!watchCollapsed} onClick={toggleWatch}>自选</button><button className="connection" aria-label="OpenD 连接与登录" aria-describedby="active-chart-stream" title="OpenD 连接与当前图行情订阅" onClick={()=>setSettingsTab('connection')}>{status.opend_connected?<><span className="dot green"/> OpenD 已连接</>:status.last_error?<><span className="dot red"/> OpenD 连接异常</>:<><span className="dot idle"/> OpenD 按需连接</>}<span className="header-stream-host" ref={setStreamHost}/></button><ThemeToggle/><button className="icon-button" aria-label="刷新行情" title="刷新行情" onClick={()=>setRefresh(x=>x+1)}><RotateCw size={17}/></button></div>
     </header>
     <div className="app-body"><aside className={mobileWatchOpen?'mobile-open':''}>
       <div className="side-title"><span>自选行情</span><span className="side-title-caption">WATCHLIST</span></div>
@@ -1025,8 +1150,15 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
 
 
       {market==='CN'&&status.permission_errors?.CN&&<div className="market-permission-note" role="status"><strong>A 股实时行情权限不足</strong><span>继续显示 NAS 已有历史数据。请在 OpenD 检查 A 股行情授权及登录网络地区；moomoo App 的权限不一定等同于 API。</span><button onClick={async()=>{await fetch('/api/quote/retry?symbol='+encodeURIComponent(current?.symbol||'SH.600584'),{method:'POST'});setRefresh(x=>x+1)}}>已检查权限，重试</button></div>}
-      <div className="toolbar"><div className="toolbar-section"><span>周期</span>{periods.map(p=><button key={p} className={current?.period===p?'on':''} onClick={()=>setTile({period:p})}>{periodLabel(p)}</button>)}</div><div className="toolbar-line"/><div className="toolbar-section"><span>时段</span>{market==='US'?<><button className={!isLongPeriod(current?.period||'5m')&&ws.mode!=='regular'?'on':''} aria-label="扩展时段" aria-pressed={!isLongPeriod(current?.period||'5m')&&ws.mode!=='regular'} disabled={isLongPeriod(current?.period||'5m')} title="开关盘前/盘后；右侧可选择是否包括隔夜，重新开启恢复上次范围" onClick={()=>updateMarket(w=>({...w,mode:w.mode==='regular'?lastExtendedMode.current:'regular'}))}>扩展时段</button><select aria-label="图表交易时段" disabled={isLongPeriod(current?.period||'5m')} value={isLongPeriod(current?.period||'5m')?'regular':ws.mode} onChange={e=>updateMarket(w=>({...w,mode:e.target.value as Mode}))}><option value="all">24H 全时段</option><option value="extended">盘前 + 常规 + 盘后</option><option value="regular">仅常规</option></select>{!isLongPeriod(current?.period||'5m')&&ws.mode!=='regular'&&<span className="session-legend" aria-label="扩展时段背景图例"><i className="pre"/>盘前<i className="post"/>盘后{ws.mode==='all'&&<><i className="overnight"/>隔夜</>}</span>}</>:<span className="cn-session">沪深常规时段 · 北京时间</span>}</div><div className="toolbar-end">{ws.indicators.filter(i=>current&&tdxAvailable(i.name,current.symbol)&&appliesTo(i,active,current.period)).length} 个指标用于当前图</div></div>
-      {drawingSyncNotice&&<div className="drawing-sync-notice" role="status">{drawingSyncNotice}<button onClick={()=>{saveRetryCount.current=0;lastSavedWorkspace.current='';setWorkspaceRetry(v=>v+1)}}>重试保存</button><button onClick={()=>setDrawingSyncNotice('')}>知道了</button></div>}<div className="workspace-drawing-host" ref={setDrawingHost}/>{workspaceView==='chart'&&(ws.tiles.some(t=>Boolean(t.symbol))?<div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane drawingHost={drawingHost} onAnalysis={openAnalysis} key={`${market}-${i}-${tile.symbol}`} index={i} tile={tile} mode={ws.mode} appearance={ws.chartAppearance} snapCrosshairTime={snapCrosshairTime} indicators={ws.indicators} onIndicatorToggle={(id,visible)=>patchIndicator(id,{visible})} active={active===i} onActivate={()=>setActive(i)} drawings={drawingViews[i].horizontal} onDraw={v=>updateMarket(w=>({...w,drawings:updateDrawingRecords(w.drawings,tile.symbol,tile.period,v)}))} trends={drawingViews[i].trends} onTrend={v=>updateMarket(w=>({...w,trends:updateDrawingRecords(w.trends,tile.symbol,tile.period,v)}))} fibos={drawingViews[i].fibos} onFibos={v=>updateMarket(w=>({...w,fibos:updateDrawingRecords(w.fibos,tile.symbol,tile.period,v)}))} measures={drawingViews[i].measures} onMeasures={v=>updateMarket(w=>({...w,measures:updateDrawingRecords(w.measures,tile.symbol,tile.period,v)}))} drawingsHidden={ws.drawingsHidden[`${tile.symbol}:${tile.period}`]===true} onDrawingsHidden={value=>updateMarket(w=>({...w,drawingsHidden:{...w.drawingsHidden,[`${tile.symbol}:${tile.period}`]:value}}))} version={refresh} stockName={stockNames[tile.symbol]||quotes[tile.symbol]?.name} depthHost={active===i?depthHost:null}/>)}</div>:
+      <div className="toolbar chart-command-bar">
+       <PeriodSwitcher current={current.period} onSelect={period=>setTile({period})}/>
+       <div className="chart-date-host" ref={setDateHost}/>
+       <div className="toolbar-section market-session">{market==='US'?<select aria-label="图表交易时段" title="美东时间" disabled={isLongPeriod(current.period)} value={isLongPeriod(current.period)?'regular':ws.mode} onChange={e=>updateMarket(w=>({...w,mode:e.target.value as Mode}))}>
+        <option value="all">24H 全时段</option><option value="extended">盘前盘后</option><option value="regular">常规时段</option>
+       </select>:<small title="沪深常规交易时段">北京时间</small>}</div>
+       <div className="workspace-drawing-host" ref={setDrawingHost}/>
+      </div>
+      {drawingSyncNotice&&<div className="drawing-sync-notice" role="status">{drawingSyncNotice}<button onClick={()=>{saveRetryCount.current=0;lastSavedWorkspace.current='';setWorkspaceRetry(v=>v+1)}}>重试保存</button><button onClick={()=>setDrawingSyncNotice('')}>知道了</button></div>}{workspaceView==='chart'&&(ws.tiles.some(t=>Boolean(t.symbol))?<div className={`charts-grid cols-${ws.layout}`}>{ws.tiles.slice(0,ws.layout).map((tile,i)=><ChartPane dateHost={dateHost} drawingClipboard={drawingClipboard} setDrawingClipboard={setDrawingClipboard} streamHost={streamHost} drawingHost={drawingHost} onAnalysis={openAnalysis} key={`${market}-${i}-${tile.symbol}`} index={i} tile={tile} mode={ws.mode} appearance={ws.chartAppearance} snapCrosshairTime={snapCrosshairTime} indicators={ws.indicators} onIndicatorToggle={(id,visible)=>patchIndicator(id,{visible})} active={active===i} onActivate={()=>setActive(i)} drawings={drawingViews[i].horizontal} onDraw={v=>updateMarket(w=>({...w,drawings:updateDrawingRecords(w.drawings,tile.symbol,tile.period,v)}))} trends={drawingViews[i].trends} onTrend={v=>updateMarket(w=>({...w,trends:updateDrawingRecords(w.trends,tile.symbol,tile.period,v)}))} fibos={drawingViews[i].fibos} onFibos={v=>updateMarket(w=>({...w,fibos:updateDrawingRecords(w.fibos,tile.symbol,tile.period,v)}))} measures={drawingViews[i].measures} onMeasures={v=>updateMarket(w=>({...w,measures:updateDrawingRecords(w.measures,tile.symbol,tile.period,v)}))} drawingsHidden={ws.drawingsHidden[`${tile.symbol}:${tile.period}`]===true} onDrawingsHidden={value=>updateMarket(w=>({...w,drawingsHidden:{...w.drawingsHidden,[`${tile.symbol}:${tile.period}`]:value}}))} version={refresh} stockName={stockNames[tile.symbol]||quotes[tile.symbol]?.name} depthHost={active===i?depthHost:null}/>)}</div>:
         <div className="empty-watchlist"><strong>{selectedGroup.name}还是空的</strong><p>在左侧输入股票代码，就能开始看盘。</p><small>{market==='US'?'示例：AAPL、US.SNDK':'示例：SH.600519、SZ.000001'}</small></div>)}
       {market==='US'&&!/^US\.(BK|LIST)\d+$/.test(current?.symbol||'')&&<div className="market-trade-strip"><div><strong>{current?.symbol||'US.SNDK'}</strong><span>当前图表 · 快捷交易</span></div><div className="market-trade-buttons"><button className="buy" onClick={()=>openTrading(current?.symbol||'US.SNDK','buy')}>买入</button><button className="close" onClick={()=>openTrading(current?.symbol||'US.SNDK','close')}>平仓</button><button className="stop" onClick={()=>openTrading(current?.symbol||'US.SNDK','stop')}>设置止损</button><button onClick={()=>openTrading(current?.symbol||'US.SNDK','options')}>期权</button><button className="strategy-entry" onClick={()=>openTrading(current?.symbol||'US.SNDK','strategy')}>自定义策略</button></div><small>图内交易面板 · 自定义快捷方案 · 实盘需解锁</small></div>}
       {market==='US'&&secureChart&&showStrategies&&<Suspense fallback={<p>正在打开策略编辑器…</p>}><StrategyPanel symbol={current?.symbol||'US.SNDK'} period={current?.period||'5m'} mode={ws.mode} indicators={ws.indicators} onClose={()=>setShowStrategies(false)} onOpenTrading={()=>openTrading(current?.symbol||'US.SNDK','overview')}/></Suspense>}
@@ -1036,8 +1168,8 @@ function App({onSessionEnd}:{onSessionEnd?:()=>void}={}){
       </div>
     </main></div>
 
-    {backgroundReport.busy&&!analysisChart&&<div className="background-report-status" role="status">盘面分析进行中，完成后自动打开报告</div>}
-    {analysisChart&&<Suspense fallback={<p role="status">正在打开盘面分析…</p>}><MarketAnalysis key={[analysisChart.symbol,analysisChart.period,analysisChart.mode].join(':')} chart={analysisChart}
+    {backgroundReport.busy&&!analysisChart&&<div className="background-report-status" role="status">AI分析进行中，完成后自动打开报告</div>}
+    {analysisChart&&<Suspense fallback={<p role="status">正在打开AI分析…</p>}><MarketAnalysis key={[analysisChart.symbol,analysisChart.period,analysisChart.mode].join(':')} chart={analysisChart}
       busy={backgroundReport.busy} opened={openedReport} onOpen={showReport}
       onStart={refs=>{setOpenedReport(null);void backgroundReport.start(analysisChart,refs)}} onApply={applyAnalysisDrawings} onClose={()=>setAnalysisChart(null)} onSettings={()=>{setAnalysisChart(null);setSettingsTab('agents')}}/></Suspense>}
     {workspaceView!=='chart'&&hasDepthIndicator&&depthHost&&<DepthPanel key={current.symbol} symbol={current.symbol} settingsHost={depthHost}/>}
