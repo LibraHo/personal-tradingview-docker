@@ -48,7 +48,7 @@ export const emptyPlanLevels: PlanLevels = {
 };
 export type PlanDetails = {
   version: 1;
-  strategy?: 'indicator' | 'limit_up';
+  strategy?: 'indicator' | 'limit_up' | 'news' | 'other';
   tracking_period?: PlanPeriod | null;
   structure_mode?: 'auto' | 'manual';
   title: string;

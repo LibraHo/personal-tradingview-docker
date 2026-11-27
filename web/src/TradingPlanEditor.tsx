@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { ChartNoAxesCombined, Check, Copy, RefreshCw, Save, WandSparkles, Zap } from 'lucide-react';
+import { ChartNoAxesCombined, Check, Copy, Newspaper, Pencil, RefreshCw, Save, WandSparkles, Zap } from 'lucide-react';
 import type { Bar, Indicator } from './indicators';
 import type { ReviewMarket } from './reviewClient';
 import {
@@ -68,6 +68,14 @@ type Props = {
 };
 const noIndicators: Indicator[] = [];
 const noBars: Bar[] = [];
+const entryStrategies = {
+  indicator: { label: '指标条件', icon: ChartNoAxesCombined, field: '入场理由补充', placeholder: '写下你为什么想做这笔交易，也可以只写文字理由。' },
+  limit_up: { label: '打板（首封 / 回封）', icon: Zap, field: '首封 / 回封参与条件', placeholder: '首封还是回封？记录封板时间、开板次数、板块跟随等要求。' },
+  news: { label: '新闻驱动', icon: Newspaper, field: '新闻触发条件', placeholder: '例如：等公司发布订单公告，核实客户和合同金额后再考虑入场。' },
+  other: { label: '其他', icon: Pencil, field: '自定义入场条件', placeholder: '写下要观察什么，以及什么情况出现时考虑入场。' },
+} as const;
+type EntryStrategy = keyof typeof entryStrategies;
+const strategyKeys = Object.keys(entryStrategies) as EntryStrategy[];
 const optionalNumber = (value: string) => (value === '' ? null : Number(value));
 const amount = (value: number | null) =>
   value === null
@@ -162,7 +170,10 @@ export default function TradingPlanEditor({
   }>({ key: '', bars: {}, issues: {}, loading: true });
   const initialContext = useRef({ bars: initialBars, period, symbol, mode });
   const details = draft.details;
-  const board = details.strategy === 'limit_up';
+  const strategy = details.strategy ?? 'indicator';
+  const board = strategy === 'limit_up';
+  const indicatorEntry = strategy === 'indicator';
+  const entryField = entryStrategies[strategy];
   const autoStructure = details.structure_mode === 'auto';
   const following = details.risk.defense_reference;
   const indicatorGroups = useRef({entry: details.entry, exit: details.exit});
@@ -338,12 +349,14 @@ export default function TradingPlanEditor({
     setBeforeClear(draft);setReferencePeriod(draft.period);setFillFailure('');setEditingStop(false);
     setAgentText('');setAgentInput('');setNotice('已清空当前表单，保存后才会更新 NAS。');
   }
-  function changeStrategy(next: 'indicator' | 'limit_up') {
+  function changeStrategy(next: EntryStrategy) {
+    if (indicatorEntry) indicatorGroups.current.entry = details.entry;
+    if (!board) indicatorGroups.current.exit = details.exit;
+    const entry = next === 'indicator' ? indicatorGroups.current.entry : {...details.entry, items: []};
     if (next === 'limit_up') {
-      indicatorGroups.current = {entry: details.entry, exit: details.exit};
-      patch({stop, details: {...details, strategy: next, entry: {...details.entry, items: []},
+      patch({stop, details: {...details, strategy: next, entry,
         exit: {...details.exit, items: []}, risk: {...details.risk, defense_source: following ? '固定价' : details.risk.defense_source, defense_reference: null}}});
-    } else patchDetails({strategy: next, ...indicatorGroups.current});
+    } else patchDetails({strategy: next, entry, exit: indicatorGroups.current.exit});
   }
 
   async function save(event: FormEvent) {
@@ -443,7 +456,9 @@ export default function TradingPlanEditor({
   }
 
   async function copyForAgent() {
-    const text = `请帮我完善${market === 'CN' ? 'A 股' : '美股'} ${draft.symbol} 的交易计划，保留我已写的理由，补充入场、出场和风险考虑。${board ? '这是打板计划，保留空指标列表，围绕首封、回封和炸板描述观察条件。' : ''}请返回 JSON 草稿，字段沿用下面的 details、size、stop，供我粘贴到交易计划编辑器。数值与指标来源请写在 notes 中。\n${JSON.stringify({ symbol: draft.symbol, period: draft.period, side: draft.side, size: draft.size, stop, details: snapshotDetails, ...(plan ? { id: plan.id, revision: plan.revision } : {}) }, null, 2)}`;
+    const guidance = board ? '这是打板计划，保留空指标列表，围绕首封、回封和炸板描述观察条件。'
+      : indicatorEntry ? '' : `入场方式为「${entryField.label}」，用文字记录待确认的触发条件，保留空的入场指标列表。`;
+    const text = `请帮我完善${market === 'CN' ? 'A 股' : '美股'} ${draft.symbol} 的交易计划，保留我已写的理由，补充入场、出场和风险考虑。${guidance}请返回 JSON 草稿，字段沿用下面的 details、size、stop，供我粘贴到交易计划编辑器。数值与指标来源请写在 notes 中。\n${JSON.stringify({ symbol: draft.symbol, period: draft.period, side: draft.side, size: draft.size, stop, details: snapshotDetails, ...(plan ? { id: plan.id, revision: plan.revision } : {}) }, null, 2)}`;
     setAgentText(text);
     try {
       await navigator.clipboard.writeText(text);
@@ -466,6 +481,8 @@ export default function TradingPlanEditor({
       if (value.version !== 1) throw Error('请粘贴包含 version 为 1 的 details 草稿。');
       const normalized = {
         ...newPlanDetails(draft.period, details.mode, indicators),
+        entry: details.entry,
+        exit: details.exit,
         ...value,
         risk: { ...details.risk, ...value.risk },
         levels: { ...emptyPlanLevels, ...details.levels, ...value.levels },
@@ -476,6 +493,8 @@ export default function TradingPlanEditor({
       };
       if (board && (normalized.entry?.items?.length || normalized.exit?.items?.length))
         throw Error('打板计划请使用文字条件，清空指标列表。');
+      if (!indicatorEntry && normalized.entry?.items?.length)
+        throw Error('当前入场方式使用文字触发条件，请清空入场指标列表。');
       normalized.risk.defense_reference = details.risk.defense_reference || null;
       for (const group of [normalized.entry, normalized.exit]) {
         if (!['all', 'any'].includes(group?.join) || !Array.isArray(group.items) || group.items.length > 12)
@@ -670,18 +689,17 @@ export default function TradingPlanEditor({
                 <progress aria-label="等待填表结果"/>
               </div>}
               {fillFailure && <div className="plan-fill-error" role="alert">{fillFailure}</div>}
-              {market === 'CN' && <fieldset className="plan-entry-mode" aria-label="入场条件">
-                <label>
-                  <input type="radio" name="entry-strategy" checked={!board} onChange={()=>changeStrategy('indicator')}/>
-                  <span><ChartNoAxesCombined aria-hidden="true" size={17}/>指标条件</span>
-                </label>
-                <label>
-                  <input type="radio" name="entry-strategy" checked={board} onChange={()=>changeStrategy('limit_up')}/>
-                  <span><Zap aria-hidden="true" size={17}/>打板（首封 / 回封）</span>
-                </label>
-              </fieldset>}
+              <fieldset className="plan-entry-mode" aria-label="入场方式">
+                {strategyKeys.filter(key => key !== 'limit_up' || market === 'CN').map(key => {
+                  const {label, icon: Icon} = entryStrategies[key];
+                  return <label key={key}>
+                    <input type="radio" name="entry-strategy" checked={strategy === key} onChange={()=>changeStrategy(key)}/>
+                    <span><Icon aria-hidden="true" size={17}/>{label}</span>
+                  </label>;
+                })}
+              </fieldset>
               <div className={board ? 'plan-board-notes' : 'plan-indicator-notes'}>
-            {!board && <PlanConditionsEditor
+            {indicatorEntry && <PlanConditionsEditor
               label="入场理由"
               group={details.entry}
               period={draft.period}
@@ -691,12 +709,12 @@ export default function TradingPlanEditor({
               onPrice={(price) => patchRisk({ entry_price: price })}
             />}
             <label className="plan-note-field">
-              {board ? '首封 / 回封参与条件' : '入场理由补充'}
+              {entryField.field}
               <textarea
-                aria-label={board ? '首封 / 回封参与条件' : '入场理由补充'}
+                aria-label={entryField.field}
                 maxLength={5000}
                 rows={3}
-                placeholder={board ? "首封还是回封？记录封板时间、开板次数、板块跟随等要求。" : "写下你为什么想做这笔交易，也可以只写文字理由。"}
+                placeholder={entryField.placeholder}
                 value={details.entry_note}
                 onChange={(e) => patchDetails({ entry_note: e.target.value })}
               />

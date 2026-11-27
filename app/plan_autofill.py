@@ -37,6 +37,7 @@ def agent_text(url, token, agent_id, facts, blanks):
     prompt = ('你在填写 NAS Market 的单份交易计划草稿。只根据给定数据，以中文简明描述待观察的条件。'
               '只回答 JSON 对象，仅填写 blanks 中的文本字段。title 是短标题，entry_note 是入场条件，'
               'exit_note 是退出或放弃条件，risk_note 是风险说明。打板只写首封、回封与炸板等文字条件。'
+              'news 表示新闻驱动，只填写待核实的消息和确认条件。other 表示自定义入场，具体触发条件留给用户填写。'
               'period 是唯一主周期；不同周期的指标条件仅作明确标注的独立触发条件。'
               '按行情列顺序读取各周期样本；最后一根可能未收盘。区分主周期判断和高周期确认，注明缺失或过期数据。'
               '遵守 settlement 约束，区分当日新增仓位和已有可卖仓位。'
@@ -137,7 +138,9 @@ def autofill(market:Market,body:FormDraft,config):
         source = 'openclaw'
     elif blanks:
         text = {'title':f'{body.symbol} · {body.period} '+('打板计划' if board else '交易计划'),
-                'entry_note':('首封时核对封单和板块跟随；若已炸板，等回封再评估。' if board else
+                'entry_note':('核对消息来源、发布时间和公告原文，确认与标的相关后再评估入场。' if d.strategy=='news' else
+                              '待填写自定义触发条件及确认方式。' if d.strategy=='other' else
+                              '首封时核对封单和板块跟随；若已炸板，等回封再评估。' if board else
                               '观察'+condition_summary(d.entry)+'。' if d.entry.items else '触发条件待确认，确认前保持观察。'),
                 'exit_note':('回封失败或封单持续减弱时放弃排板；已成交部分按可卖时段复核退出条件。' if board
                              else '出现'+condition_summary(d.exit)+'时复核退出安排。' if d.exit.items else '退出条件待确认。'),

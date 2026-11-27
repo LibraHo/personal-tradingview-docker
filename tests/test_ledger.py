@@ -143,6 +143,21 @@ class LedgerTests(unittest.TestCase):
         body['details']['entry'] = {'items': [dict(id='x', source='SIXPULSE', period='1d', signal='reds')]}
         self.call('plans', body, status=422)
 
+    def test_text_entry_strategies_round_trip_with_indicator_exits(self):
+        condition = dict(id='exit', source='PRICE', period='1d', signal='below', threshold=10)
+        for market, symbol in [('CN', CN['symbol']), ('US', US['symbol'])]:
+            for strategy, note in [('news', '等待公司公告确认'), ('other', '观察自定义条件')]:
+                with self.subTest(market=market, strategy=strategy):
+                    details = dict(strategy=strategy, entry_note=note, exit={'items': [condition]})
+                    body = dict(symbol=symbol, period='1d', side='BUY', trigger=note, details=details,
+                                request_id=f'{market}-{strategy}')
+                    saved = self.call('plans', body, market=market)
+                    stored = self.call('plans/' + saved['id'], market=market)['details']
+                    self.assertEqual((stored['strategy'], stored['entry_note']), (strategy, note))
+                    self.assertEqual(stored['exit']['items'][0]['id'], 'exit')
+                    details['entry'] = {'items': [dict(condition, id='entry')]}
+                    self.call('plans', body, market=market, status=422)
+
     def test_daily_worker_applies_prior_close_and_retries_missing_bars(self):
         days = {'2026-11-20':'WHOLE', '2026-11-23':'WHOLE', '2026-11-24':'WHOLE'}
         class Calendar:

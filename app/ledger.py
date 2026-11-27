@@ -148,7 +148,7 @@ class PlanReference(Input):
 
 class PlanDetails(Input):
     tracking_period: PlanPeriod | None = None
-    strategy: Literal['indicator', 'limit_up'] = 'indicator'
+    strategy: Literal['indicator', 'limit_up', 'news', 'other'] = 'indicator'
     structure_mode: Literal['manual', 'auto'] = 'manual'
     version: Literal[1] = 1
     title: Annotated[str, StringConstraints(max_length=100)] = ''
@@ -167,6 +167,8 @@ class PlanDetails(Input):
     def unique_condition_ids(self):
         if self.strategy == 'limit_up' and (self.entry.items or self.exit.items or self.risk.defense_reference):
             raise ValueError('打板计划使用封板与回封条件')
+        if self.strategy in ('news', 'other') and self.entry.items:
+            raise ValueError('新闻驱动和其他入场方式使用文字触发条件')
         identifiers = [item.id for item in self.entry.items + self.exit.items]
         if len(set(identifiers)) != len(identifiers):
             raise ValueError('每个入场和出场条件须使用独立编号')
