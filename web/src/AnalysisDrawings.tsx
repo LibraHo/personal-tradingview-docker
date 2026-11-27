@@ -74,16 +74,18 @@ export default function AnalysisDrawings({chart,onApply}:{chart:AnalysisChart;on
   }
   const checked=result?.proposals.filter(p=>selected.includes(p.id))||[];
   return <div className="analysis-drawings">
-    <fieldset disabled={busy}><legend>画线类型</legend>{(Object.keys(focusNames) as Focus[]).map(k=>
+    <div className="analysis-card">
+    <fieldset className="analysis-choices" disabled={busy}><legend>画线类型</legend>{(Object.keys(focusNames) as Focus[]).map(k=>
       <label key={k}><input type="radio" name="analysis-focus" checked={focus===k} onChange={()=>{setFocus(k);setResult(null);setError('');setNotice('')}}/>{focusNames[k]}</label>)}</fieldset>
-    {focus==='fibonacci'&&<label>顺势扩展
+    {focus==='fibonacci'&&<label className="analysis-select">顺势扩展
       <select aria-label="顺势扩展" disabled={busy} value={extensions} onChange={e=>{setExtensions(e.target.value);setResult(null);setNotice('')}}>
         <option value="auto">自动 · 收盘突破波段终点时显示</option><option value="always">包含扩展线</option><option value="off">仅回撤线</option>
       </select></label>}
     <p>使用{periodNames[chart.period]}已完成的 K 线生成候选，勾选后添加到当前周期。</p>
     <button className="analysis-run" type="button" disabled={busy} onClick={()=>void generate()}>{busy?'正在生成候选…':'生成画线建议'}</button>
+    </div>
     {error&&<p role="alert">{error}</p>}
-    {result&&<section aria-label="画线预览"><h3>候选预览 <small>{result.trace.length} 根已完成 K 线{result.stale?' · 缓存未同步':''}</small></h3>
+    {result&&<section className="analysis-card" aria-label="画线预览"><h3>候选预览 <small>{result.trace.length} 根已完成 K 线{result.stale?' · 缓存未同步':''}</small></h3>
       {!!result.proposals.length&&<><Preview trace={result.trace} proposals={checked}/>
         <ul className="analysis-proposals">{result.proposals.map(p=><li key={p.id}>
           <label><input type="checkbox" checked={selected.includes(p.id)} onChange={e=>{setSelected(e.target.checked?[...selected,p.id]:selected.filter(id=>id!==p.id));setNotice('')}}/>
